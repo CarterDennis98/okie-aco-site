@@ -1,0 +1,24 @@
+# Local development database only. Production is Cloud SQL.
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: okie-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: okie
+      POSTGRES_PASSWORD: okie
+      POSTGRES_DB: okie
+    ports:
+      # 5433 on the host: this machine already runs a native PostgreSQL 17 service on
+      # 5432, which would otherwise shadow the container over IPv4.
+      - "5433:5432"
+    volumes:
+      - okie-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U okie -d okie"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  okie-pgdata:

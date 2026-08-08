@@ -1,0 +1,428 @@
+// Okie ACO data model.
+//
+// Conventions, all load-bearing:
+//   - Discord snowflake IDs are String, never Int/BigInt. 1478471872726302922 already
+//     exceeds 2^53 and a numeric type would silently corrupt it.
+//   - Money is Int cents everywhere, matching the bot. Never a float, never Decimal.
+//   - Domain rows key off DiscordMember.discordUserId, NOT User.id, because a member has
+//     checkouts and bills long before they ever sign in to the website.
+//   - Anything already sent to a member is immutable. Corrections append.
+//   - snake_case in the database, camelCase in the client. Every column carries @map so
+//     raw SQL and psql sessions never need double-quoted identifiers.
+//
+// Prisma 7: no `url` here (it lives in prisma.config.ts) and the generator emits
+// TypeScript into src/generated/prisma, which is gitignored and rebuilt by `prisma generate`.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Auth.js
+// ---------------------------------------------------------------------------
+// Created on first sign-in. Deliberately NOT the canonical member record --
+// DiscordMember is. `email` stays null because we never request the email scope.
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+
+  // The link to everything else. Set from the Discord OAuth profile on first sign-in.
+  discordUserId String? @unique @map("discord_user_id")
+
+  hideFromPublicFeed Boolean   @default(false) @map("hide_from_public_feed")
+  firstLoginAt       DateTime  @default(now()) @map("first_login_at")
+  lastLoginAt        DateTime? @map("last_login_at")
+
+  accounts Account[]
+  sessions Session[]
+  member   DiscordMember? @relation(fields: [discordUserId], references: [discordUserId])
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  // Nulled out after sign-in -- we never call Discord as the user, so there is no
+  // reason to hold a live credential.
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// Database sessions rather than JWT: deleting a row is instant revocation, which
+// matters on a site where an admin controls what people are billed.
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Discord membership
+// ---------------------------------------------------------------------------
+// Synced by the bot on ready and on member add/remove/update, so the site makes zero
+// Discord API calls at request time. This is the canonical member record.
+
+model DiscordMember {
+  discordUserId String    @id @map("discord_user_id")
+  username      String
+  globalName    String?   @map("global_name")
+  avatarHash    String?   @map("avatar_hash")
+  roles         String[]  @default([])
+  isOg          Boolean   @default(false) @map("is_og")
+  joinedAt      DateTime? @map("joined_at")
+  leftAt        DateTime? @map("left_at")
+  syncedAt      DateTime  @default(now()) @map("synced_at")
+
+  user     User?
+  profiles Profile[]
+  pasBills PasBill[]
+
+  @@index([leftAt])
+  @@map("discord_members")
+}
+
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+// Checkouts are recorded against a checkout-profile name, not a Discord ID. This is
+// the mapping. profileKey is normalized: lowercased with a trailing " - N" stripped,
+// so "carter" and "carter - 3" are one row.
+
+enum ProfileStatus {
+  MAPPED
+  UNMAPPED
+  IGNORED
+
+  @@map("profile_status")
+}
+
+model Profile {
+  profileKey    String        @id @map("profile_key")
+  displayName   String        @map("display_name")
+  discordUserId String?       @map("discord_user_id")
+  status        ProfileStatus @default(UNMAPPED)
+  note          String?
+  mappedBy      String?       @map("mapped_by")
+  mappedAt      DateTime?     @map("mapped_at")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  member    DiscordMember? @relation(fields: [discordUserId], references: [discordUserId])
+  checkouts Checkout[]
+
+  @@index([discordUserId])
+  @@index([status])
+  @@map("profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Items and fees
+// ---------------------------------------------------------------------------
+
+model Item {
+  id String @id @default(uuid())
+
+  // Normalized product name. Must match the bot's normalizeProduct() byte for byte.
+  productKey String  @unique @map("product_key")
+  label      String
+  source     String?
+  // Null until a SKU is actually extractable from the vendor embeds. The composite
+  // unique below only binds once both source and sku are non-null -- Postgres treats
+  // NULLs as distinct -- so this upgrades cleanly without blocking on data we lack.
+  sku        String?
+
+  // The "edit fees on the fly" column. This is only the DEFAULT that pre-fills the
+  // bot's fee modal; what a member was actually charged lives on PasBillLine.
+  currentFeeCents Int? @map("current_fee_cents")
+
+  // True for bare numeric SKUs that would read as a meaningless number on a bill.
+  unreadable Boolean @default(false)
+  active     Boolean @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  aliases   ItemAlias[]
+  checkouts Checkout[]
+  billLines PasBillLine[]
+
+  @@unique([source, sku])
+  @@index([active])
+  @@map("items")
+}
+
+// Maps raw product strings onto a canonical item. Replaces productAliases.json and
+// is how the same product arriving from two vendors under different names gets merged.
+model ItemAlias {
+  aliasKey  String   @id @map("alias_key")
+  itemId    String   @map("item_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
+  @@map("item_aliases")
+}
+
+// ---------------------------------------------------------------------------
+// Checkouts
+// ---------------------------------------------------------------------------
+
+model Checkout {
+  id String @id @default(uuid())
+
+  // Idempotency. Both are nullable-safe: Postgres treats NULLs as distinct, so
+  // backfilled rows without an order ID don't collide with each other.
+  orderId          String? @map("order_id")
+  sourceBot        String  @map("source_bot")
+  discordMessageId String  @unique @map("discord_message_id")
+  discordChannelId String  @map("discord_channel_id")
+
+  occurredAt DateTime @map("occurred_at")
+  site       String?
+
+  productRaw String? @map("product_raw")
+  productKey String  @map("product_key")
+  itemId     String? @map("item_id")
+
+  profileRaw   String? @map("profile_raw")
+  profileKey   String? @map("profile_key")
+  profileIndex Int?    @map("profile_index")
+
+  quantity        Int     @default(1)
+  quantityAssumed Boolean @default(false) @map("quantity_assumed")
+
+  // Parser observations worth surfacing to the operator, e.g. quantity-assumed,
+  // unreadable-product, no-profile, clock-skew.
+  flags String[] @default([])
+
+  // The complete vendor embed as it arrived. This is what makes order-ID and SKU
+  // extraction recoverable later without re-scraping Discord.
+  rawEmbed Json? @map("raw_embed")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  item    Item?    @relation(fields: [itemId], references: [id])
+  profile Profile? @relation(fields: [profileKey], references: [profileKey])
+
+  @@unique([sourceBot, orderId])
+  @@index([occurredAt(sort: Desc)])
+  @@index([profileKey])
+  @@index([itemId])
+  @@map("checkouts")
+}
+
+// ---------------------------------------------------------------------------
+// PAS billing
+// ---------------------------------------------------------------------------
+
+enum PasRunStatus {
+  DRAFT
+  PREVIEW
+  SENDING
+  SENT
+  ABORTED
+  CANCELLED
+
+  @@map("pas_run_status")
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  SKIPPED
+  DMS_CLOSED
+  UNKNOWN_USER
+  ERROR
+
+  @@map("delivery_status")
+}
+
+model PasRun {
+  id String @id @default(uuid())
+
+  // The bot's own session id, e.g. "msjtwyva-b9e6".
+  sessionId   String       @unique @map("session_id")
+  windowStart DateTime     @map("window_start")
+  windowEnd   DateTime     @map("window_end")
+  dropLabel   String       @map("drop_label")
+  status      PasRunStatus @default(DRAFT)
+  dryRun      Boolean      @default(true) @map("dry_run")
+  operatorId  String       @map("operator_id")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  sentAt      DateTime?    @map("sent_at")
+
+  bills PasBill[]
+
+  @@index([windowStart(sort: Desc)])
+  @@map("pas_runs")
+}
+
+// One bill per member per run. Immutable once sent -- corrections append a Payment
+// or a new run, they never rewrite these numbers.
+model PasBill {
+  id            String @id @default(uuid())
+  pasRunId      String @map("pas_run_id")
+  discordUserId String @map("discord_user_id")
+
+  subtotalCents Int @map("subtotal_cents")
+  discountCents Int @default(0) @map("discount_cents")
+  totalCents    Int @map("total_cents")
+
+  // Snapshot of OG status at billing time. A later role change must not alter a
+  // bill that has already been sent.
+  ogApplied Boolean @default(false) @map("og_applied")
+
+  deliveryStatus DeliveryStatus @default(PENDING) @map("delivery_status")
+  deliveryError  String?        @map("delivery_error")
+  dmMessageId    String?        @map("dm_message_id")
+  // The exact text the member received. Makes the member's charge page authoritative
+  // rather than a reconstruction, which is what settles a dispute months later.
+  dmText         String?        @map("dm_text")
+
+  paidAt       DateTime? @map("paid_at")
+  markedPaidBy String?   @map("marked_paid_by")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  run      PasRun        @relation(fields: [pasRunId], references: [id], onDelete: Cascade)
+  member   DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+  lines    PasBillLine[]
+  payments Payment[]
+
+  @@unique([pasRunId, discordUserId])
+  @@index([discordUserId, paidAt])
+  @@map("pas_bills")
+}
+
+// Snapshot of what was charged. feeCents is deliberately NOT a join to
+// Item.currentFeeCents -- editing a fee must never rewrite an existing bill.
+model PasBillLine {
+  id            String @id @default(uuid())
+  pasBillId     String @map("pas_bill_id")
+  itemId        String @map("item_id")
+  qty           Int
+  feeCents      Int    @map("fee_cents")
+  subtotalCents Int    @map("subtotal_cents")
+  // Denormalized so the bill still renders correctly if an item is later renamed.
+  label         String
+
+  bill PasBill @relation(fields: [pasBillId], references: [id], onDelete: Cascade)
+  item Item    @relation(fields: [itemId], references: [id])
+
+  @@index([pasBillId])
+  @@index([itemId])
+  @@map("pas_bill_lines")
+}
+
+// The receipt. Marking a bill paid writes one of these and stamps PasBill.paidAt;
+// the bill's amounts are never touched.
+model Payment {
+  id          String   @id @default(uuid())
+  pasBillId   String   @map("pas_bill_id")
+  amountCents Int      @map("amount_cents")
+  method      String?
+  note        String?
+  recordedBy  String   @map("recorded_by")
+  recordedAt  DateTime @default(now()) @map("recorded_at")
+
+  bill PasBill @relation(fields: [pasBillId], references: [id], onDelete: Cascade)
+
+  @@index([pasBillId])
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// Site content and audit
+// ---------------------------------------------------------------------------
+
+enum TestimonialSource {
+  MANUAL
+  DISCORD
+
+  @@map("testimonial_source")
+}
+
+model Testimonial {
+  id          String            @id @default(uuid())
+  body        String
+  attribution String?
+  source      TestimonialSource @default(MANUAL)
+  // Set when pulled through from a Discord vouches channel.
+  sourceMessageId String?       @map("source_message_id")
+  approved        Boolean       @default(false)
+  sortOrder       Int           @default(0) @map("sort_order")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  @@index([approved, sortOrder])
+  @@map("testimonials")
+}
+
+// Append-only. Every admin mutation lands here; nothing ever updates or deletes.
+model AdminAudit {
+  id             String   @id @default(uuid())
+  actorDiscordId String   @map("actor_discord_id")
+  action         String
+  entity         String
+  entityId       String?  @map("entity_id")
+  before         Json?
+  after          Json?
+  at             DateTime @default(now())
+
+  @@index([at(sort: Desc)])
+  @@index([entity, entityId])
+  @@map("admin_audit")
+}
+
+// Lets the one-time history backfill resume after a crash instead of restarting.
+model BackfillProgress {
+  channelId         String    @id @map("channel_id")
+  sourceBot         String    @map("source_bot")
+  lastMessageId     String?   @map("last_message_id")
+  messagesSeen      Int       @default(0) @map("messages_seen")
+  checkoutsIngested Int       @default(0) @map("checkouts_ingested")
+  startedAt         DateTime  @default(now()) @map("started_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  completedAt       DateTime? @map("completed_at")
+
+  @@map("backfill_progress")
+}
