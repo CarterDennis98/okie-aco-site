@@ -1,1 +1,45 @@
 @import "tailwindcss";
+
+/*
+ * Dark by default -- this sits next to a Discord server and that's the context
+ * members arrive from. Single theme, no toggle: there's no user preference to honour
+ * on a page most people see once before joining.
+ */
+@theme {
+  --color-ink: #0a0b0f;
+  --color-surface: #12141c;
+  --color-surface-2: #1a1d28;
+  --color-edge: #262a38;
+  --color-fg: #e8eaf2;
+  --color-muted: #9298ad;
+  --color-accent: #2af598;
+  --color-accent-dim: #1d9e64;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-ink);
+  color: var(--color-fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The feed ticks over on a 60s revalidate; a subtle entrance keeps it feeling live
+   without animating on every scroll. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .animate-rise {
+    animation: rise 0.35s ease-out both;
+  }
+}

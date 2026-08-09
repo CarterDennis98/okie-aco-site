@@ -1,4 +1,6 @@
-# Local development database only. Production is Cloud SQL.
+# Optional fallback only. Day-to-day development runs against the native PostgreSQL 17
+# install (see README); this exists for when you want a guaranteed-clean instance.
+# Production is Cloud SQL -- nothing here is ever deployed.
 services:
   db:
     image: postgres:17-alpine

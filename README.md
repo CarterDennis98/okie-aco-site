@@ -15,18 +15,40 @@ Tailwind v4 · deployed to Cloud Run with Cloud SQL.
 
 ## Local development
 
-Requires Node 24 and Docker Desktop.
+Requires Node 24 and a local PostgreSQL 17 with an `okie-aco` database. One-time database
+setup, run in pgAdmin's Query Tool **while connected to `okie-aco`**:
+
+```sql
+CREATE ROLE okie LOGIN CREATEDB PASSWORD 'okie';
+ALTER DATABASE "okie-aco" OWNER TO okie;
+GRANT ALL ON SCHEMA public TO okie;
+ALTER SCHEMA public OWNER TO okie;
+```
+
+`CREATEDB` is required for `prisma migrate dev`'s shadow database. The schema grants are
+required because PostgreSQL 15 dropped the implicit `CREATE` on `public` — without them
+the first migration fails with `permission denied for schema public`.
+
+Then:
 
 ```bash
-cp .env.example .env.local   # then fill in the Discord app credentials
-docker compose up -d         # Postgres on :5432
+cp .env.example .env
 npm install
-npx prisma migrate dev
+npm run db:migrate
+npm run db:seed
 npm run dev
 ```
 
-The seed imports real billing-run records from the bot repo, so local data includes the
-actual product names — including the `é` and em-dash that catch UTF-8 bugs.
+Use `.env`, not `.env.local`. Next reads both, but the Prisma CLI only reads `.env`, so a
+single file keeps the app and migrations from disagreeing about the database.
+
+The seed imports real billing-run records from the bot repo (`MIRROR_REPO_PATH`, defaults
+to `../okie-aco-mirror`), so local data carries the actual product names — including the
+`é` and em-dash that catch UTF-8 bugs — plus 147 checkouts and 61 members.
+
+`docker-compose.yml` is a fallback if you ever want a guaranteed-clean instance:
+`npm run db:up` starts one on **5433**, since 5432 is taken by the native install. Point
+`DATABASE_URL` at it and everything else is unchanged.
 
 ## Notable constraints
 
