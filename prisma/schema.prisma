@@ -32,15 +32,15 @@ model User {
   id            String    @id @default(cuid())
   name          String?
   email         String?   @unique
-  emailVerified DateTime? @map("email_verified")
+  emailVerified DateTime? @map("email_verified") @db.Timestamptz(3)
   image         String?
 
   // The link to everything else. Set from the Discord OAuth profile on first sign-in.
   discordUserId String? @unique @map("discord_user_id")
 
   hideFromPublicFeed Boolean   @default(false) @map("hide_from_public_feed")
-  firstLoginAt       DateTime  @default(now()) @map("first_login_at")
-  lastLoginAt        DateTime? @map("last_login_at")
+  firstLoginAt       DateTime  @default(now()) @map("first_login_at") @db.Timestamptz(3)
+  lastLoginAt        DateTime? @map("last_login_at") @db.Timestamptz(3)
 
   accounts Account[]
   sessions Session[]
@@ -77,7 +77,7 @@ model Session {
   id           String   @id @default(cuid())
   sessionToken String   @unique @map("session_token")
   userId       String   @map("user_id")
-  expires      DateTime
+  expires      DateTime @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -88,7 +88,7 @@ model Session {
 model VerificationToken {
   identifier String
   token      String
-  expires    DateTime
+  expires    DateTime @db.Timestamptz(3)
 
   @@unique([identifier, token])
   @@map("verification_tokens")
@@ -107,9 +107,9 @@ model DiscordMember {
   avatarHash    String?   @map("avatar_hash")
   roles         String[]  @default([])
   isOg          Boolean   @default(false) @map("is_og")
-  joinedAt      DateTime? @map("joined_at")
-  leftAt        DateTime? @map("left_at")
-  syncedAt      DateTime  @default(now()) @map("synced_at")
+  joinedAt      DateTime? @map("joined_at") @db.Timestamptz(3)
+  leftAt        DateTime? @map("left_at") @db.Timestamptz(3)
+  syncedAt      DateTime  @default(now()) @map("synced_at") @db.Timestamptz(3)
 
   user     User?
   profiles Profile[]
@@ -139,11 +139,14 @@ model Profile {
   displayName   String        @map("display_name")
   discordUserId String?       @map("discord_user_id")
   status        ProfileStatus @default(UNMAPPED)
+  // Owned but not billed: the operator's own house profiles. Their checkouts still
+  // belong to a person and still appear on the site -- they just never generate a fee.
+  billable      Boolean       @default(true)
   note          String?
   mappedBy      String?       @map("mapped_by")
-  mappedAt      DateTime?     @map("mapped_at")
-  createdAt     DateTime      @default(now()) @map("created_at")
-  updatedAt     DateTime      @updatedAt @map("updated_at")
+  mappedAt      DateTime?     @map("mapped_at") @db.Timestamptz(3)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   member    DiscordMember? @relation(fields: [discordUserId], references: [discordUserId])
   checkouts Checkout[]
@@ -173,12 +176,16 @@ model Item {
   // bot's fee modal; what a member was actually charged lives on PasBillLine.
   currentFeeCents Int? @map("current_fee_cents")
 
+  // Product thumbnail. Stored as Discord's proxy URL rather than the retailer's own:
+  // one remotePatterns entry then covers every retailer, present and future.
+  imageUrl String? @map("image_url")
+
   // True for bare numeric SKUs that would read as a meaningless number on a bill.
   unreadable Boolean @default(false)
   active     Boolean @default(true)
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   aliases   ItemAlias[]
   checkouts Checkout[]
@@ -194,7 +201,7 @@ model Item {
 model ItemAlias {
   aliasKey  String   @id @map("alias_key")
   itemId    String   @map("item_id")
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
@@ -216,7 +223,7 @@ model Checkout {
   discordMessageId String  @unique @map("discord_message_id")
   discordChannelId String  @map("discord_channel_id")
 
-  occurredAt DateTime @map("occurred_at")
+  occurredAt DateTime @map("occurred_at") @db.Timestamptz(3)
   site       String?
 
   productRaw String? @map("product_raw")
@@ -226,6 +233,10 @@ model Checkout {
   profileRaw   String? @map("profile_raw")
   profileKey   String? @map("profile_key")
   profileIndex Int?    @map("profile_index")
+
+  // As observed on this checkout, so Item.imageUrl can be re-derived if a retailer
+  // swaps artwork or a URL rots.
+  imageUrl String? @map("image_url")
 
   quantity        Int     @default(1)
   quantityAssumed Boolean @default(false) @map("quantity_assumed")
@@ -238,7 +249,7 @@ model Checkout {
   // extraction recoverable later without re-scraping Discord.
   rawEmbed Json? @map("raw_embed")
 
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   item    Item?    @relation(fields: [itemId], references: [id])
   profile Profile? @relation(fields: [profileKey], references: [profileKey])
@@ -281,14 +292,14 @@ model PasRun {
 
   // The bot's own session id, e.g. "msjtwyva-b9e6".
   sessionId   String       @unique @map("session_id")
-  windowStart DateTime     @map("window_start")
-  windowEnd   DateTime     @map("window_end")
+  windowStart DateTime     @map("window_start") @db.Timestamptz(3)
+  windowEnd   DateTime     @map("window_end") @db.Timestamptz(3)
   dropLabel   String       @map("drop_label")
   status      PasRunStatus @default(DRAFT)
   dryRun      Boolean      @default(true) @map("dry_run")
   operatorId  String       @map("operator_id")
-  createdAt   DateTime     @default(now()) @map("created_at")
-  sentAt      DateTime?    @map("sent_at")
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  sentAt      DateTime?    @map("sent_at") @db.Timestamptz(3)
 
   bills PasBill[]
 
@@ -318,10 +329,10 @@ model PasBill {
   // rather than a reconstruction, which is what settles a dispute months later.
   dmText         String?        @map("dm_text")
 
-  paidAt       DateTime? @map("paid_at")
+  paidAt       DateTime? @map("paid_at") @db.Timestamptz(3)
   markedPaidBy String?   @map("marked_paid_by")
 
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   run      PasRun        @relation(fields: [pasRunId], references: [id], onDelete: Cascade)
   member   DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
@@ -362,7 +373,7 @@ model Payment {
   method      String?
   note        String?
   recordedBy  String   @map("recorded_by")
-  recordedAt  DateTime @default(now()) @map("recorded_at")
+  recordedAt  DateTime @default(now()) @map("recorded_at") @db.Timestamptz(3)
 
   bill PasBill @relation(fields: [pasBillId], references: [id], onDelete: Cascade)
 
@@ -382,16 +393,16 @@ enum TestimonialSource {
 }
 
 model Testimonial {
-  id          String            @id @default(uuid())
-  body        String
-  attribution String?
-  source      TestimonialSource @default(MANUAL)
+  id              String            @id @default(uuid())
+  body            String
+  attribution     String?
+  source          TestimonialSource @default(MANUAL)
   // Set when pulled through from a Discord vouches channel.
-  sourceMessageId String?       @map("source_message_id")
-  approved        Boolean       @default(false)
-  sortOrder       Int           @default(0) @map("sort_order")
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
+  sourceMessageId String?           @map("source_message_id")
+  approved        Boolean           @default(false)
+  sortOrder       Int               @default(0) @map("sort_order")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@index([approved, sortOrder])
   @@map("testimonials")
@@ -406,7 +417,7 @@ model AdminAudit {
   entityId       String?  @map("entity_id")
   before         Json?
   after          Json?
-  at             DateTime @default(now())
+  at             DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([at(sort: Desc)])
   @@index([entity, entityId])
@@ -420,9 +431,9 @@ model BackfillProgress {
   lastMessageId     String?   @map("last_message_id")
   messagesSeen      Int       @default(0) @map("messages_seen")
   checkoutsIngested Int       @default(0) @map("checkouts_ingested")
-  startedAt         DateTime  @default(now()) @map("started_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
-  completedAt       DateTime? @map("completed_at")
+  startedAt         DateTime  @default(now()) @map("started_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz(3)
 
   @@map("backfill_progress")
 }

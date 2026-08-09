@@ -1,13 +1,13 @@
-import Link from "next/link";
 import { CheckoutFeed } from "@/components/checkout-feed";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
+import { StatsPanel } from "@/components/stats-panel";
+import { SupportedSites } from "@/components/supported-sites";
 import {
   getApprovedTestimonials,
   getPublicFeed,
-  getPublicStats,
-  getRecentProducts,
+  getRangeStats,
+  getRecentDrops,
 } from "@/db/queries/public";
-import { count, plural } from "@/lib/format";
 
 // ISR: the feed is delayed 30 minutes anyway, so a 60s window costs nothing in
 // freshness and means a scraper hits cache rather than Postgres.
@@ -15,23 +15,25 @@ export const revalidate = 60;
 
 const DISCORD_INVITE = process.env.DISCORD_INVITE_URL ?? "#";
 
-function Stat({ value, label }: { value: string; label: string }) {
+function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex-1 px-5 py-4 text-center">
-      <div className="text-2xl font-bold tabular-nums text-[var(--color-fg)] sm:text-3xl">
-        {value}
-      </div>
-      <div className="mt-1 text-xs tracking-wide text-[var(--color-muted)] uppercase">{label}</div>
-    </div>
+    <h2 className="mb-4 flex items-center gap-2.5 text-xl font-bold tracking-tight">
+      <span aria-hidden className="h-5 w-1 rounded-full bg-[var(--color-brand)]" />
+      {children}
+    </h2>
   );
 }
 
 export default async function HomePage() {
-  const [feed, stats, testimonials, products] = await Promise.all([
+  // Both ranges are computed server-side and handed to the panel, so switching
+  // between them is instant and the page stays static.
+  const [feed, recentStats, allStats, recentDrops, allDrops, testimonials] = await Promise.all([
     getPublicFeed(),
-    getPublicStats(),
+    getRangeStats("recent"),
+    getRangeStats("all"),
+    getRecentDrops("recent"),
+    getRecentDrops("all"),
     getApprovedTestimonials(),
-    getRecentProducts(),
   ]);
 
   return (
@@ -39,90 +41,40 @@ export default async function HomePage() {
       <SiteHeader />
 
       <main className="mx-auto max-w-5xl px-5">
-        {/* Hero */}
         <section className="py-16 sm:py-24">
-          <p className="text-sm font-medium text-[var(--color-accent)]">
-            Oklahoma-run · Since 2026
-          </p>
-          <h1 className="mt-3 max-w-2xl text-4xl font-bold tracking-tight text-balance sm:text-5xl">
-            We check out the cards you can&apos;t.
+          <h1 className="max-w-3xl text-4xl leading-[1.05] font-black tracking-tight text-balance text-white sm:text-6xl">
+            Automated checkout for{" "}
+            <span className="text-[var(--color-brand)]">high-demand collectibles</span>
           </h1>
-          <p className="mt-4 max-w-xl text-lg text-pretty text-[var(--color-muted)]">
-            Okie ACO runs automated checkout for hard-to-find trading cards. You sleep, we hit the
-            drop, you get a DM with exactly what you owe.
+          <p className="mt-5 max-w-xl text-lg text-pretty text-[var(--color-muted)]">
+            Okie ACO runs checkout bots for trading card products and other items that sell out in
+            seconds. When a drop goes live we check out for you, then send an itemized bill for what
+            you got.
           </p>
-
-          <div className="mt-8 flex flex-wrap items-center gap-3">
-            <a
-              href={DISCORD_INVITE}
-              className="rounded-lg bg-[var(--color-accent)] px-5 py-2.5 font-medium text-[var(--color-ink)] transition-opacity hover:opacity-90"
-            >
-              Join the Discord
-            </a>
-            <Link
-              href="/signin"
-              className="rounded-lg border border-[var(--color-edge)] px-5 py-2.5 font-medium text-[var(--color-fg)] transition-colors hover:bg-[var(--color-surface)]"
-            >
-              Member sign in
-            </Link>
-          </div>
         </section>
 
-        {/* Counters -- the actual social proof */}
-        <section className="flex divide-x divide-[var(--color-edge)] rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
-          <Stat value={count(stats.checkouts)} label="Checkouts" />
-          <Stat value={count(stats.units)} label="Items secured" />
-          <Stat value={count(stats.membersServed)} label="Members served" />
-        </section>
-        <p className="mt-2 text-center text-xs text-[var(--color-muted)]">
-          Last {stats.windowDays} days
-        </p>
+        <StatsPanel
+          recent={{ stats: recentStats, drops: recentDrops }}
+          all={{ stats: allStats, drops: allDrops }}
+        />
 
-        {/* Feed */}
         <section className="mt-16">
-          <div className="mb-4 flex items-baseline justify-between gap-4">
-            <h2 className="text-xl font-semibold tracking-tight">Recent checkouts</h2>
-            <span className="text-xs text-[var(--color-muted)]">
-              Delayed · members stay anonymous
-            </span>
-          </div>
+          <SectionHeading>Recent checkouts</SectionHeading>
           <CheckoutFeed checkouts={feed} />
         </section>
 
-        {/* What we hit */}
-        {products.length > 0 && (
-          <section className="mt-16">
-            <h2 className="mb-4 text-xl font-semibold tracking-tight">
-              What we&apos;ve been hitting
-            </h2>
-            <ul className="grid gap-3 sm:grid-cols-2">
-              {products.map((product) => (
-                <li
-                  key={product.id}
-                  className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-3.5"
-                >
-                  <p className="text-sm leading-snug font-medium">{product.label}</p>
-                  <p className="mt-1 text-xs text-[var(--color-muted)]">
-                    {product.source ? `${product.source} · ` : ""}
-                    {count(product.units)} {plural(product.units, "unit")} secured
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
+        <SupportedSites />
 
-        {/* Testimonials */}
         {testimonials.length > 0 && (
           <section className="mt-16">
-            <h2 className="mb-4 text-xl font-semibold tracking-tight">From the server</h2>
+            <SectionHeading>What members say</SectionHeading>
             <ul className="grid gap-3 sm:grid-cols-2">
               {testimonials.map((testimonial) => (
                 <li
                   key={testimonial.id}
                   className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-5"
                 >
-                  <p className="text-sm leading-relaxed text-pretty">
+                  <p className="text-sm leading-relaxed text-pretty text-[var(--color-fg)]">
                     &ldquo;{testimonial.body}&rdquo;
                   </p>
                   {testimonial.attribution && (
@@ -136,17 +88,13 @@ export default async function HomePage() {
           </section>
         )}
 
-        {/* Close */}
-        <section className="mt-20 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface-2)] px-6 py-10 text-center">
-          <h2 className="text-2xl font-semibold tracking-tight">Want in on the next drop?</h2>
-          <p className="mx-auto mt-2 max-w-md text-[var(--color-muted)]">
-            Membership runs through Discord. Fees are per item and you always see the math.
-          </p>
+        <section className="mt-20 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-6 py-10 text-center">
+          <h2 className="text-2xl font-bold tracking-tight text-white">Join Okie ACO</h2>
           <a
             href={DISCORD_INVITE}
-            className="mt-6 inline-block rounded-lg bg-[var(--color-accent)] px-5 py-2.5 font-medium text-[var(--color-ink)] transition-opacity hover:opacity-90"
+            className="mt-5 inline-block rounded-lg bg-[var(--color-brand)] px-6 py-3 font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
           >
-            Join the Discord
+            Discord invite
           </a>
         </section>
       </main>

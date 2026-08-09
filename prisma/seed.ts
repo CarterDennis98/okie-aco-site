@@ -1,37 +1,42 @@
 /**
  * Local development seed.
  *
- * Imports the bot's real PAS billing-run records so local data carries the actual
- * product names -- including the `é` and em-dash that surface UTF-8 and column-width
- * bugs early -- plus 66 real profiles and 147 real checkouts.
+ * Three real sources from the bot repo, none invented:
+ *
+ *   data/pas-sessions/*.json    billing runs -- fees, profile->user mappings, OG flags,
+ *                               and the bills themselves
+ *   data/checkouts-export.json  a wider window of raw checkouts so the drops UI has
+ *                               several weeks of history
+ *                               (node src/scripts/exportCheckouts.js <since>)
+ *   data/thumbnails.json        product art for rows that predate thumbnail capture
+ *                               (node src/scripts/exportThumbnails.js)
  *
  *   MIRROR_REPO_PATH=../okie-aco-mirror npx prisma db seed
  *
- * Idempotent: everything upserts on a natural key, so re-running is safe.
- *
- * Production data never comes from here. It arrives via /api/bot/checkouts.
+ * Idempotent: upserts on natural keys, so re-running is safe.
+ * Production data never comes from here -- it arrives via /api/bot/checkouts.
  */
-// Loads .env itself rather than relying on the Prisma CLI's process env reaching this
-// child process, so `tsx prisma/seed.ts` also works standalone.
 import "dotenv/config";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { DeliveryStatus, PasRunStatus, ProfileStatus } from "../src/generated/prisma/enums";
+import { findMapping, isIgnored, type MappingEntry } from "../src/lib/normalize";
 
 const MIRROR_REPO =
   process.env.MIRROR_REPO_PATH ?? path.join(process.cwd(), "..", "okie-aco-mirror");
 const SESSION_DIR = path.join(MIRROR_REPO, "data", "pas-sessions");
 const PROFILE_MAP = path.join(MIRROR_REPO, "data", "profileMap.json");
+const THUMBNAILS = path.join(MIRROR_REPO, "data", "thumbnails.json");
+const CHECKOUTS_EXPORT = path.join(MIRROR_REPO, "data", "checkouts-export.json");
 
 // The only real billing runs so far were dry runs -- every DM went to the operator.
 // The dashboard filters dry runs out of "unpaid fees", so seeding them truthfully
-// would leave the local UI with nothing to render. We promote them here, and ONLY
-// here, so there is realistic charge data to build against.
+// would leave the local UI with nothing to render. Promoted here, and ONLY here.
 const PROMOTE_DRY_RUNS = true;
 
-type SessionCheckout = {
+type RawCheckout = {
   messageId: string;
   channelId: string;
   createdTimestamp: number;
@@ -39,18 +44,17 @@ type SessionCheckout = {
   productRaw: string | null;
   productKey: string;
   productLabel: string;
-  unreadableProduct: boolean;
   profileRaw: string | null;
   profileKey: string | null;
   profileIndex: number | null;
   quantity: number;
   quantityAssumed: boolean;
   flags: string[];
+  thumbnailUrl?: string | null;
 };
 
 type SessionBill = {
   userId: string;
-  profileKeys: string[];
   lines: {
     productKey: string;
     label: string;
@@ -63,8 +67,6 @@ type SessionBill = {
   discountCents: number;
   totalCents: number;
   message: string | null;
-  skip: boolean;
-  skipReason: string | null;
 };
 
 type Session = {
@@ -73,20 +75,19 @@ type Session = {
   status: string;
   dryRun: boolean;
   window: { startMs: number; endMs: number; dropDateLabel: string };
-  checkouts: SessionCheckout[];
-  products: Record<
-    string,
-    { key: string; label: string; sites: string[]; unreadable: boolean; feeCents: number | null }
-  >;
-  profiles: Record<
-    string,
-    { key: string; rawNames: string[]; userId: string | null; resolution: string }
-  >;
+  checkouts: RawCheckout[];
+  products: Record<string, { key: string; label: string; feeCents: number | null }>;
+  profiles: Record<string, { key: string; userId: string | null }>;
   bills: Record<string, SessionBill>;
   delivery: { results: { userId: string; status: string; messageId?: string; at: number }[] };
 };
 
-const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
+// timezone=UTC for the same reason as src/db/client.ts: Prisma sends naive timestamps
+// and Postgres resolves them against the session timezone.
+const adapter = new PrismaPg({
+  connectionString: process.env.DATABASE_URL,
+  options: "-c timezone=UTC",
+});
 const prisma = new PrismaClient({ adapter });
 
 const DELIVERY_STATUS: Record<string, DeliveryStatus> = {
@@ -97,42 +98,63 @@ const DELIVERY_STATUS: Record<string, DeliveryStatus> = {
   error: DeliveryStatus.ERROR,
 };
 
+function readJson<T>(file: string, fallback: T): T {
+  if (!existsSync(file)) return fallback;
+  return JSON.parse(readFileSync(file, "utf8")) as T;
+}
+
 function loadSessions(): Session[] {
   if (!existsSync(SESSION_DIR)) {
     console.error(`No session directory at ${SESSION_DIR}.`);
     console.error("Set MIRROR_REPO_PATH to the okie-aco-mirror checkout.");
     process.exit(1);
   }
-  return (
-    readdirSync(SESSION_DIR)
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => JSON.parse(readFileSync(path.join(SESSION_DIR, f), "utf8")) as Session)
-      // Oldest first, so a later run's data wins on conflict.
-      .sort((a, b) => a.window.startMs - b.window.startMs)
-  );
-}
-
-function loadIgnoreList(): string[] {
-  if (!existsSync(PROFILE_MAP)) return [];
-  const data = JSON.parse(readFileSync(PROFILE_MAP, "utf8")) as { ignore?: string[] };
-  return data.ignore ?? [];
+  return readdirSync(SESSION_DIR)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => JSON.parse(readFileSync(path.join(SESSION_DIR, f), "utf8")) as Session)
+    .sort((a, b) => a.window.startMs - b.window.startMs);
 }
 
 async function main() {
   const sessions = loadSessions();
-  console.log(`Loaded ${sessions.length} session file(s) from ${SESSION_DIR}`);
+  const thumbnails = readJson<Record<string, string>>(THUMBNAILS, {});
+  const exported = readJson<{ checkouts: RawCheckout[] }>(CHECKOUTS_EXPORT, { checkouts: [] });
+  const profileMapFile = readJson<{ ignore?: string[]; map?: Record<string, MappingEntry> }>(
+    PROFILE_MAP,
+    {},
+  );
+  const ignore = (profileMapFile.ignore ?? []).map((n) => n.toLowerCase());
+  const mappings = profileMapFile.map ?? {};
 
-  // --- Discord members ---------------------------------------------------
-  // The session records carry user IDs but no usernames. For a local fixture we
-  // synthesize the username from the profile that resolved to that user.
+  console.log(`Sessions: ${sessions.length} · exported checkouts: ${exported.checkouts.length}`);
+
+  // --- Unified checkout list ---------------------------------------------
+  // Deduped by Discord message id, the same natural key ingest uses.
+  const byId = new Map<string, RawCheckout>();
+  for (const session of sessions) {
+    for (const c of session.checkouts) {
+      byId.set(c.messageId, { ...c, thumbnailUrl: thumbnails[c.messageId] ?? null });
+    }
+  }
+  for (const c of exported.checkouts) {
+    // Export wins: it carries a thumbnail inline.
+    byId.set(c.messageId, { ...byId.get(c.messageId), ...c });
+  }
+  const checkouts = [...byId.values()];
+
+  // --- Discord members ----------------------------------------------------
+  // Session records carry user IDs but no usernames; synthesize from the profile that
+  // resolved to that user. Only profiles seen in a billing run have a user at all --
+  // the rest stay unmapped, which is the real situation.
   const usernameByUserId = new Map<string, string>();
   const ogUserIds = new Set<string>();
+  const userIdByProfileKey = new Map<string, string>();
 
   for (const session of sessions) {
     for (const profile of Object.values(session.profiles)) {
-      if (profile.userId && !usernameByUserId.has(profile.userId)) {
-        usernameByUserId.set(profile.userId, profile.key);
-      }
+      if (!profile.userId) continue;
+      userIdByProfileKey.set(profile.key, profile.userId);
+      if (!usernameByUserId.has(profile.userId)) usernameByUserId.set(profile.userId, profile.key);
     }
     for (const bill of Object.values(session.bills)) {
       if (bill.isOg) ogUserIds.add(bill.userId);
@@ -141,6 +163,10 @@ async function main() {
     }
     if (!usernameByUserId.has(session.operatorId))
       usernameByUserId.set(session.operatorId, "okie-operator");
+  }
+  // Any user named by an explicit mapping must exist before profiles reference them.
+  for (const entry of Object.values(mappings)) {
+    if (!usernameByUserId.has(entry.userId)) usernameByUserId.set(entry.userId, "okie-operator");
   }
 
   for (const [discordUserId, username] of usernameByUserId) {
@@ -155,30 +181,48 @@ async function main() {
       update: { username, isOg: ogUserIds.has(discordUserId) },
     });
   }
-  console.log(`  members:  ${usernameByUserId.size} (${ogUserIds.size} OG)`);
+  console.log(`  members  : ${usernameByUserId.size} (${ogUserIds.size} OG)`);
 
-  // --- Items -------------------------------------------------------------
-  const itemIdByKey = new Map<string, string>();
+  // --- Items --------------------------------------------------------------
+  const feeByProductKey = new Map<string, number>();
   for (const session of sessions) {
-    for (const product of Object.values(session.products)) {
-      const item = await prisma.item.upsert({
-        where: { productKey: product.key },
-        create: {
-          productKey: product.key,
-          label: product.label,
-          source: product.sites[0] ?? null,
-          unreadable: product.unreadable,
-          currentFeeCents: product.feeCents,
-        },
-        update: { label: product.label, currentFeeCents: product.feeCents ?? undefined },
-      });
-      itemIdByKey.set(product.key, item.id);
+    for (const p of Object.values(session.products)) {
+      if (p.feeCents !== null) feeByProductKey.set(p.key, p.feeCents);
     }
   }
-  console.log(`  items:    ${itemIdByKey.size}`);
 
-  // --- Profiles ----------------------------------------------------------
-  const ignore = loadIgnoreList();
+  const itemSeed = new Map<string, { label: string; site: string | null; image: string | null }>();
+  for (const c of checkouts) {
+    const existing = itemSeed.get(c.productKey);
+    itemSeed.set(c.productKey, {
+      label: existing?.label ?? c.productLabel,
+      site: existing?.site ?? c.site,
+      image: existing?.image ?? c.thumbnailUrl ?? null,
+    });
+  }
+
+  const itemIdByKey = new Map<string, string>();
+  for (const [productKey, meta] of itemSeed) {
+    const item = await prisma.item.upsert({
+      where: { productKey },
+      create: {
+        productKey,
+        label: meta.label,
+        source: meta.site,
+        imageUrl: meta.image,
+        currentFeeCents: feeByProductKey.get(productKey) ?? null,
+      },
+      update: {
+        label: meta.label,
+        imageUrl: meta.image ?? undefined,
+        currentFeeCents: feeByProductKey.get(productKey) ?? undefined,
+      },
+    });
+    itemIdByKey.set(productKey, item.id);
+  }
+  console.log(`  items    : ${itemIdByKey.size}`);
+
+  // --- Profiles -----------------------------------------------------------
   for (const profileKey of ignore) {
     await prisma.profile.upsert({
       where: { profileKey },
@@ -187,68 +231,75 @@ async function main() {
     });
   }
 
-  let profileCount = 0;
-  for (const session of sessions) {
-    for (const profile of Object.values(session.profiles)) {
-      if (ignore.includes(profile.key)) continue;
-      const mapped = Boolean(profile.userId) && profile.resolution !== "ignored";
-      await prisma.profile.upsert({
-        where: { profileKey: profile.key },
-        create: {
-          profileKey: profile.key,
-          displayName: profile.rawNames[0] ?? profile.key,
-          discordUserId: mapped ? profile.userId : null,
-          status: mapped ? ProfileStatus.MAPPED : ProfileStatus.UNMAPPED,
-          mappedAt: mapped ? new Date() : null,
-          mappedBy: mapped ? `seed:${profile.resolution}` : null,
-        },
-        update: mapped ? { discordUserId: profile.userId, status: ProfileStatus.MAPPED } : {},
-      });
-      profileCount++;
-    }
+  const profileNames = new Map<string, string>();
+  for (const c of checkouts) {
+    if (!c.profileKey || isIgnored(c.profileKey, ignore)) continue;
+    if (!profileNames.has(c.profileKey))
+      profileNames.set(c.profileKey, c.profileRaw ?? c.profileKey);
   }
-  console.log(`  profiles: ${profileCount} (+${ignore.length} ignored)`);
 
-  // --- Checkouts ---------------------------------------------------------
-  // Deduped by discordMessageId; the two sessions cover the same window.
-  let checkoutCount = 0;
-  for (const session of sessions) {
-    for (const checkout of session.checkouts) {
-      const profileExists = checkout.profileKey && !ignore.includes(checkout.profileKey);
-      await prisma.checkout.upsert({
-        where: { discordMessageId: checkout.messageId },
-        create: {
-          discordMessageId: checkout.messageId,
-          discordChannelId: checkout.channelId,
-          // Historical rows predate order-ID capture; that's the cost of backfilling
-          // from the mirrored channel rather than the raw vendor embeds.
-          orderId: null,
-          sourceBot: "unknown",
-          occurredAt: new Date(checkout.createdTimestamp),
-          site: checkout.site,
-          productRaw: checkout.productRaw,
-          productKey: checkout.productKey,
-          itemId: itemIdByKey.get(checkout.productKey) ?? null,
-          profileRaw: checkout.profileRaw,
-          profileKey: profileExists ? checkout.profileKey : null,
-          profileIndex: checkout.profileIndex,
-          quantity: checkout.quantity,
-          quantityAssumed: checkout.quantityAssumed,
-          flags: checkout.flags,
-          rawEmbed: undefined,
-        },
-        update: {},
-      });
-      checkoutCount++;
-    }
+  let mapped = 0;
+  let unbilled = 0;
+  for (const [profileKey, displayName] of profileNames) {
+    // Explicit mapping (exact or family) wins over what a billing run inferred.
+    const explicit = findMapping(profileKey, mappings);
+    const userId = explicit?.userId ?? userIdByProfileKey.get(profileKey) ?? null;
+    const billable = explicit ? explicit.billable !== false : true;
+    if (userId) mapped++;
+    if (!billable) unbilled++;
+    await prisma.profile.upsert({
+      where: { profileKey },
+      create: {
+        profileKey,
+        displayName,
+        discordUserId: userId,
+        status: userId ? ProfileStatus.MAPPED : ProfileStatus.UNMAPPED,
+        billable,
+        mappedAt: userId ? new Date() : null,
+        mappedBy: userId ? (explicit ? `seed:${explicit.matchedBy}` : "seed:session") : null,
+      },
+      update: userId
+        ? { discordUserId: userId, status: ProfileStatus.MAPPED, billable }
+        : { billable },
+    });
   }
-  console.log(`  checkouts: ${checkoutCount}`);
+  console.log(
+    `  profiles : ${profileNames.size} (${mapped} mapped, ${profileNames.size - mapped} unmapped, ${unbilled} non-billable, ${ignore.length} ignored)`,
+  );
 
-  // --- Billing runs ------------------------------------------------------
+  // --- Checkouts ----------------------------------------------------------
+  // House profiles (pkc 1..30, walmart 87, ...) are the operator's own -- excluded
+  // from billing, the public feed and the stats, same as before but by family.
+  const billable = checkouts.filter((c) => !isIgnored(c.profileKey, ignore));
+  await prisma.checkout.createMany({
+    data: billable.map((c) => ({
+      discordMessageId: c.messageId,
+      discordChannelId: c.channelId,
+      // Mirrored embeds carry no order id -- only the raw vendor channels do.
+      orderId: null,
+      sourceBot: "mirror",
+      occurredAt: new Date(c.createdTimestamp),
+      site: c.site,
+      productRaw: c.productRaw,
+      productKey: c.productKey,
+      itemId: itemIdByKey.get(c.productKey) ?? null,
+      imageUrl: c.thumbnailUrl ?? null,
+      profileRaw: c.profileRaw,
+      profileKey: c.profileKey,
+      profileIndex: c.profileIndex,
+      quantity: c.quantity,
+      quantityAssumed: c.quantityAssumed,
+      flags: c.flags ?? [],
+    })),
+    skipDuplicates: true,
+  });
+  const withImages = billable.filter((c) => c.thumbnailUrl).length;
+  console.log(`  checkouts: ${billable.length} (${withImages} with images)`);
+
+  // --- Billing runs -------------------------------------------------------
   let billCount = 0;
   for (const session of sessions) {
     if (session.status !== "sent") continue;
-
     const deliveryByUser = new Map(session.delivery.results.map((r) => [r.userId, r]));
 
     const run = await prisma.pasRun.upsert({
@@ -297,9 +348,9 @@ async function main() {
       billCount++;
     }
   }
-  console.log(`  bills:    ${billCount}`);
+  console.log(`  bills    : ${billCount}`);
 
-  // --- Testimonials ------------------------------------------------------
+  // --- Testimonials -------------------------------------------------------
   const testimonials = [
     {
       body: "Been with Okie since the start. Hit every Series 3 restock I actually wanted.",
@@ -312,15 +363,15 @@ async function main() {
       sortOrder: 2,
     },
     {
-      body: "Checked out 4 First Partner boxes while I was asleep. Woke up to the DM.",
+      body: "Four First Partner boxes secured on a drop I would have missed entirely.",
       attribution: "Member",
       sortOrder: 3,
     },
   ];
-  for (const t of testimonials) {
-    const existing = await prisma.testimonial.findFirst({ where: { body: t.body } });
-    if (!existing) await prisma.testimonial.create({ data: { ...t, approved: true } });
-  }
+  await prisma.testimonial.deleteMany({ where: { source: "MANUAL" } });
+  await prisma.testimonial.createMany({
+    data: testimonials.map((t) => ({ ...t, approved: true })),
+  });
   console.log(`  testimonials: ${testimonials.length}`);
 }
 

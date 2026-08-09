@@ -1,19 +1,28 @@
 @import "tailwindcss";
 
 /*
- * Dark by default -- this sits next to a Discord server and that's the context
- * members arrive from. Single theme, no toggle: there's no user preference to honour
- * on a page most people see once before joining.
+ * Okie ACO brand palette.
+ *
+ * Contrast notes -- these drive where red is allowed:
+ *   brand #E30613 on ink #121212      = 3.84:1  -> large text (>=24px) and UI shapes only
+ *   brand #E30613 on surface #1F1F1F  = 3.38:1  -> same
+ *   white  #FFFFFF on brand #E30613   = 4.88:1  -> body text on a red button is fine
+ *   fg     #E5E5E5 on ink #121212     = 14.9:1
+ *   muted  #A6A6A6 on ink #121212     = 7.7:1
+ *
+ * So: red is for the logo, button fills, and small decorative marks. Never for
+ * small text. Body and secondary copy use the greys.
  */
 @theme {
-  --color-ink: #0a0b0f;
-  --color-surface: #12141c;
-  --color-surface-2: #1a1d28;
-  --color-edge: #262a38;
-  --color-fg: #e8eaf2;
-  --color-muted: #9298ad;
-  --color-accent: #2af598;
-  --color-accent-dim: #1d9e64;
+  --color-ink: #121212;
+  --color-surface: #1f1f1f;
+  --color-elevated: #2d2d2d;
+  --color-edge: #2d2d2d;
+  --color-fg: #e5e5e5;
+  --color-muted: #a6a6a6;
+  --color-brand: #e30613;
+  --color-brand-dark: #b3000d;
+  --color-on-brand: #ffffff;
 }
 
 html {
@@ -26,8 +35,16 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* The feed ticks over on a 60s revalidate; a subtle entrance keeps it feeling live
-   without animating on every scroll. */
+::selection {
+  background-color: var(--color-brand);
+  color: var(--color-on-brand);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   @keyframes rise {
     from {
@@ -41,5 +58,19 @@ body {
   }
   .animate-rise {
     animation: rise 0.35s ease-out both;
+  }
+
+  /* The live dot on the feed. Slow enough not to nag. */
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+  .animate-pulse-dot {
+    animation: pulse-dot 2.4s ease-in-out infinite;
   }
 }

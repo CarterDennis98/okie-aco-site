@@ -95,3 +95,59 @@ export function toAliasMap(rows: { aliasKey: string; label: string }[]): Record<
   for (const row of rows) map[row.aliasKey.toLowerCase()] = row.label;
   return map;
 }
+
+/**
+ * Does an ignore entry cover this profile key?
+ *
+ * Port of `isIgnored` in okie-aco-mirror/src/pas/profiles.js -- see the parity suite.
+ *
+ * An entry matches the key itself AND its whole numbered family, so one entry of
+ * "pkc" covers "pkc 1" through "pkc 30". House profiles are named after the retailer
+ * and numbered per account, and new numbers appear constantly, so an exact-match list
+ * goes stale as soon as another account is added.
+ *
+ * Only a trailing number separated by a space or hyphen counts as an index. Real
+ * member usernames often END in digits ("devin24", "thisisgold0220") with no
+ * separator, and those must never be swept into a family.
+ */
+const FAMILY_INDEX_RE = /^[\s-]+\d+$/;
+
+export function isIgnored(profileKey: string | null | undefined, ignoreList: string[]): boolean {
+  if (!profileKey) return false;
+  const key = String(profileKey).trim().toLowerCase();
+
+  return ignoreList.some((entry) => {
+    if (key === entry) return true;
+    if (!key.startsWith(entry)) return false;
+    return FAMILY_INDEX_RE.test(key.slice(entry.length));
+  });
+}
+
+export type MappingEntry = { userId: string; billable?: boolean; note?: string };
+
+/**
+ * Finds the mapping entry covering a profile key, exact first, then family.
+ * Port of `findMapping` in okie-aco-mirror/src/pas/profiles.js -- see the parity suite.
+ *
+ * Family entries let one command cover a numbered set: "pkc" owns pkc 1..30,
+ * "sahab walmart" owns sahab walmart 1..N. Prefix anchoring keeps families apart --
+ * "sahab walmart 3" does not start with "walmart", so it is never swallowed by the
+ * operator's own walmart family. Exact entries win over families.
+ */
+export function findMapping(
+  profileKey: string | null | undefined,
+  map: Record<string, MappingEntry>,
+): (MappingEntry & { matchedBy: string; family: boolean }) | null {
+  if (!profileKey) return null;
+  const key = String(profileKey).trim().toLowerCase();
+
+  if (map[key]) return { ...map[key], matchedBy: key, family: false };
+
+  for (const [entry, value] of Object.entries(map)) {
+    if (!key.startsWith(entry)) continue;
+    if (FAMILY_INDEX_RE.test(key.slice(entry.length))) {
+      return { ...value, matchedBy: entry, family: true };
+    }
+  }
+  return null;
+}

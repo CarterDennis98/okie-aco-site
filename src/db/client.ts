@@ -11,6 +11,17 @@ import { PrismaClient } from "@/generated/prisma/client";
 // comfortably under Cloud SQL's max_connections (~25 on db-f1-micro).
 const MAX_POOL = Number(process.env.DB_POOL_MAX ?? 3);
 
+/**
+ * Pin every session to UTC.
+ *
+ * Prisma sends timestamps as naive strings in UTC wall-clock form. Postgres then
+ * resolves them using the SESSION timezone -- so on a machine set to America/Chicago
+ * an instant of 07:05Z gets stored as 12:05Z, silently, with no error. Cloud Run
+ * defaults to UTC and a developer laptop usually doesn't, which is the worst version
+ * of this bug: correct in production, wrong locally, and invisible in both.
+ */
+const PG_OPTIONS = "-c timezone=UTC";
+
 function buildAdapter() {
   // On Cloud Run the Cloud SQL connector exposes a Unix socket rather than a host.
   const connectionName = process.env.CLOUD_SQL_CONNECTION_NAME;
@@ -22,6 +33,7 @@ function buildAdapter() {
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
       ssl: false, // never TLS over a Unix socket
+      options: PG_OPTIONS,
       max: MAX_POOL,
       // pg defaults to no connect timeout, unlike the v6 engine's 5s. Without this a
       // bad socket path hangs the request instead of failing.
@@ -32,6 +44,7 @@ function buildAdapter() {
 
   return new PrismaPg({
     connectionString: process.env.DATABASE_URL,
+    options: PG_OPTIONS,
     max: MAX_POOL,
     connectionTimeoutMillis: 5_000,
     idleTimeoutMillis: 30_000,

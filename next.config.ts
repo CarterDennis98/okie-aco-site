@@ -7,8 +7,12 @@ const nextConfig: NextConfig = {
 
   images: {
     remotePatterns: [
-      // Discord avatars, used for member display
-      { protocol: "https", hostname: "cdn.discordapp.com" },
+      // Covers member avatars (cdn.) and product thumbnails, which we store as
+      // Discord's proxy URL (images-ext-N. / media.) rather than the retailer's own.
+      // One entry then works for every retailer the bots ever check out from, instead
+      // of an allowlist that throws at runtime the first time a new store appears.
+      { protocol: "https", hostname: "**.discordapp.net" },
+      { protocol: "https", hostname: "**.discordapp.com" },
     ],
   },
 };

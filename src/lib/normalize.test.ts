@@ -12,7 +12,13 @@ import { createRequire } from "node:module";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { normalizeProduct, normalizeProfile, parseQuantity } from "./normalize";
+import {
+  findMapping,
+  isIgnored,
+  normalizeProduct,
+  normalizeProfile,
+  parseQuantity,
+} from "./normalize";
 import { money, ogDiscountCents, safeLabel } from "./money";
 
 const require = createRequire(import.meta.url);
@@ -21,10 +27,15 @@ const MIRROR_REPO =
   process.env.MIRROR_REPO_PATH ?? path.resolve(process.cwd(), "..", "okie-aco-mirror");
 const BOT_SCRAPE = path.join(MIRROR_REPO, "src", "pas", "scrape.js");
 const BOT_RENDER = path.join(MIRROR_REPO, "src", "pas", "render.js");
+const BOT_PROFILES = path.join(MIRROR_REPO, "src", "pas", "profiles.js");
 const SESSION_DIR = path.join(MIRROR_REPO, "data", "pas-sessions");
 
 const botAvailable = existsSync(BOT_SCRAPE) && existsSync(BOT_RENDER);
 
+type BotProfiles = {
+  isIgnored: (key: unknown, list: string[]) => boolean;
+  findMapping: (key: unknown, map: Record<string, unknown>) => unknown;
+};
 type BotScrape = {
   normalizeProfile: (raw: unknown) => unknown;
   normalizeProduct: (raw: unknown, aliases?: Record<string, string>) => unknown;
@@ -331,6 +342,81 @@ describe.skipIf(!botAvailable)("parity with okie-aco-mirror", () => {
           bot.normalizeProduct(shape),
         );
       }
+    }
+  });
+
+  it("isIgnored agrees -- house families ignored, member names with digits kept", () => {
+    const botProfiles = require(BOT_PROFILES) as BotProfiles;
+    const ignore = ["target", "pkc", "walmart", "best buy", "swft target"];
+    const keys = [
+      // house families, including the numbered members
+      "target",
+      "target 3",
+      "target - 7",
+      "target  12",
+      "pkc 1",
+      "pkc 26",
+      "walmart 87",
+      "best buy 4",
+      "swft target 2",
+      // real member usernames -- digits, but no separator
+      "devin24",
+      "thisisgold0220",
+      "kannonx",
+      "jayyr",
+      // near-misses that must NOT be swept into a family
+      "targetpractice",
+      "pkcollector",
+      "walmartguy",
+      "bestbuy 4",
+      "target x",
+      "targets 2",
+      "pkc9",
+      "",
+    ];
+    for (const key of keys) {
+      expect(isIgnored(key, ignore), `key: ${JSON.stringify(key)}`).toBe(
+        botProfiles.isIgnored(key, ignore),
+      );
+    }
+  });
+
+  it("findMapping agrees -- families, exact overrides, and cross-family isolation", () => {
+    const botProfiles = require(BOT_PROFILES) as BotProfiles;
+    const map = {
+      pkc: { userId: "OP", billable: false },
+      walmart: { userId: "OP", billable: false },
+      "swft target": { userId: "OP", billable: false },
+      "sahab walmart": { userId: "SAHAB", billable: true },
+      carter: { userId: "C" },
+      "pkc 7": { userId: "OTHER", billable: true },
+    };
+    const keys = [
+      // family matches
+      "pkc 1",
+      "pkc 30",
+      "walmart 87",
+      "swft target 2",
+      "sahab walmart 12",
+      // an exact entry must beat the family it sits inside
+      "pkc 7",
+      // the " - N" form still resolves to its base family
+      "carter - 2",
+      "carter",
+      // "sahab walmart 3" must NOT fall into the operator's "walmart" family
+      "sahab walmart 3",
+      // near-misses that must match nothing
+      "pkcollector",
+      "walmartguy",
+      "bestbuy 4",
+      "walmart x",
+      "devin24",
+      "",
+    ];
+    for (const key of keys) {
+      expect(findMapping(key, map), `key: ${JSON.stringify(key)}`).toEqual(
+        botProfiles.findMapping(key, map),
+      );
     }
   });
 

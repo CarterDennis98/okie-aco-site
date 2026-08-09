@@ -46,9 +46,35 @@ The seed imports real billing-run records from the bot repo (`MIRROR_REPO_PATH`,
 to `../okie-aco-mirror`), so local data carries the actual product names — including the
 `é` and em-dash that catch UTF-8 bugs — plus 147 checkouts and 61 members.
 
+Product thumbnails aren't in the archived session records, so the seed reads them from
+`data/thumbnails.json` in the bot repo. Regenerate that with `node src/scripts/exportThumbnails.js`
+over there — it reads the mirrored embeds back out of the success channel. Going forward,
+`parseCheckoutEmbed` returns `thumbnailUrl` and ingest stores it per checkout, so this is a
+one-time backfill for existing rows.
+
+**Every Postgres connection pins `timezone=UTC`** (`src/db/client.ts`, `prisma/seed.ts`).
+Prisma sends timestamps as naive UTC wall-clock strings and Postgres resolves them against
+the _session_ timezone — so on a machine set to `America/Chicago`, 07:05Z silently stored as
+12:05Z. Cloud Run defaults to UTC and a laptop usually doesn't, which makes this correct in
+production and wrong locally. `src/lib/timezone.test.ts` guards it.
+
 `docker-compose.yml` is a fallback if you ever want a guaranteed-clean instance:
 `npm run db:up` starts one on **5433**, since 5432 is taken by the native install. Point
 `DATABASE_URL` at it and everything else is unchanged.
+
+## Brand assets
+
+Drop the logo at **`public/okie-logo.png`** — transparent background, at least 400px tall so
+it stays crisp on retina. `src/components/brand.tsx` checks for the file at render time and
+falls back to a text wordmark until it exists, so a missing logo degrades rather than
+breaking. Delete `WordmarkFallback` once the real file is in.
+
+A favicon can go at `src/app/icon.png` (Next picks it up by convention, no config).
+
+Palette lives in `@theme` in `src/app/globals.css`. The contrast figures are recorded there
+because they constrain usage: **brand red on the dark background is 3.84:1**, which passes
+for large text and UI shapes but _fails_ AA for body copy. Red is for the logo, button
+fills, and accent marks — never small text. White on red is 4.88:1 and is fine.
 
 ## Notable constraints
 
