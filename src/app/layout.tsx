@@ -7,11 +7,11 @@ export const metadata: Metadata = {
     template: "%s · Okie ACO",
   },
   description:
-    "Automated checkout for hard-to-find trading cards. Oklahoma-run, membership through Discord.",
+    "Automated checkout for high-demand collectibles. You pay the retailer directly; we charge a small fee per item. Membership through Discord.",
   metadataBase: new URL("https://okie-aco.com"),
   openGraph: {
     title: "Okie ACO",
-    description: "We check out the cards you can't.",
+    description: "Automated checkout for high-demand collectibles.",
     siteName: "Okie ACO",
     type: "website",
   },

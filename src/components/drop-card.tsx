@@ -87,9 +87,11 @@ export function DropCard({ drop }: { drop: Drop }) {
                 />
               </div>
             </div>
-            {/* Aligned column of numbers -- where tabular-nums belongs */}
-            <span className="w-10 shrink-0 text-right text-sm font-semibold text-white tabular-nums">
+            {/* Aligned column of numbers -- where tabular-nums belongs. The unit sits
+                in muted text so the figure still reads first. */}
+            <span className="w-16 shrink-0 text-right text-sm font-semibold text-white tabular-nums">
               {count(item.units)}
+              <span className="ml-1 text-[10px] font-normal text-[var(--color-muted)]">qty</span>
             </span>
           </li>
         ))}

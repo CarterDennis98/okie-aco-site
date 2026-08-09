@@ -48,8 +48,8 @@ export default async function HomePage() {
           </h1>
           <p className="mt-5 max-w-xl text-lg text-pretty text-[var(--color-muted)]">
             Okie ACO runs checkout bots for trading card products and other items that sell out in
-            seconds. When a drop goes live we check out for you, then send an itemized bill for what
-            you got.
+            seconds. When a drop goes live we check out for you — you pay the retailer directly, and
+            we charge a small fee per item.
           </p>
         </section>
 
@@ -90,9 +90,12 @@ export default async function HomePage() {
 
         <section className="mt-20 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-6 py-10 text-center">
           <h2 className="text-2xl font-bold tracking-tight text-white">Join Okie ACO</h2>
+          <p className="mx-auto mt-2.5 max-w-sm text-[var(--color-muted)]">
+            Like what you see? Get set up before the next drop.
+          </p>
           <a
             href={DISCORD_INVITE}
-            className="mt-5 inline-block rounded-lg bg-[var(--color-brand)] px-6 py-3 font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
+            className="mt-6 inline-block rounded-lg bg-[var(--color-brand)] px-6 py-3 font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
           >
             Discord invite
           </a>
