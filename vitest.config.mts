@@ -9,6 +9,11 @@ export default defineConfig({
     setupFiles: ["dotenv/config"],
   },
   resolve: {
-    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // `server-only` throws unless resolved through Next's react-server condition.
+      // Modules under test import it correctly; this lets Node run them anyway.
+      "server-only": fileURLToPath(new URL("./tests/stubs/server-only.ts", import.meta.url)),
+    },
   },
 });

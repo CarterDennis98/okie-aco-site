@@ -2,6 +2,7 @@ import Image from "next/image";
 import type { PublicCheckout } from "@/db/queries/public";
 import { relativeTime } from "@/lib/format";
 import { siteStyle } from "@/lib/sites";
+import { FeedScroller } from "@/components/feed-scroller";
 
 /**
  * The public feed. Every row is anonymous by construction -- the query never selects a
@@ -54,12 +55,11 @@ export function CheckoutFeed({ checkouts }: { checkouts: PublicCheckout[] }) {
   return (
     // Scrollable rather than paginated: the feed is for browsing, and a fixed-height
     // pane keeps the page from running to tens of thousands of pixels at 250 rows.
-    <ul className="max-h-[32rem] divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
-      {checkouts.map((checkout, index) => (
+    <FeedScroller className="max-h-[32rem] divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
+      {checkouts.map((checkout) => (
         <li
           key={checkout.id}
-          className="animate-rise flex items-center gap-3.5 px-4 py-3 transition-colors hover:bg-[var(--color-elevated)]/40 sm:px-5"
-          style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
+          className="feed-row flex items-center gap-3.5 px-4 py-3 transition-colors hover:bg-[var(--color-elevated)]/40 sm:px-5"
         >
           <Thumb src={checkout.imageUrl} />
 
@@ -101,6 +101,6 @@ export function CheckoutFeed({ checkouts }: { checkouts: PublicCheckout[] }) {
           </div>
         </li>
       ))}
-    </ul>
+    </FeedScroller>
   );
 }

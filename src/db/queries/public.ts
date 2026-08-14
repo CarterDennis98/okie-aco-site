@@ -1,10 +1,7 @@
 import "server-only";
 
-import { existsSync } from "node:fs";
-import path from "node:path";
-
 import { prisma } from "@/db/client";
-import { siteStyle } from "@/lib/sites";
+import { resolveSiteLogo } from "@/lib/site-logo";
 
 /**
  * Queries backing the public, unauthenticated home page.
@@ -73,14 +70,6 @@ export type RangeStats = {
   topProducts: TopProduct[];
   byDay: DayBucket[];
 };
-
-/** Server-side existence check, so a missing logo degrades to a monogram. */
-function resolveSiteLogo(site: string | null): string | null {
-  if (!site) return null;
-  const { logo } = siteStyle(site);
-  if (!logo) return null;
-  return existsSync(path.join(process.cwd(), "public", logo.replace(/^\//, ""))) ? logo : null;
-}
 
 /** Excludes opted-out members. See getPublicFeed for why this is phrased as NOT(). */
 function visibilityFilter() {

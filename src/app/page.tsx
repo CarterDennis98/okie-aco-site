@@ -8,10 +8,22 @@ import {
   getRangeStats,
   getRecentDrops,
 } from "@/db/queries/public";
+import { currentViewer } from "@/lib/auth/guard";
 
-// ISR: the feed is delayed 30 minutes anyway, so a 60s window costs nothing in
-// freshness and means a scraper hits cache rather than Postgres.
-export const revalidate = 60;
+/**
+ * Rendered per request, not ISR.
+ *
+ * ISR would prerender this page during `next build` -- which happens inside the Docker
+ * build, where there is no database and must not be one. Giving CI a tunnel into Cloud
+ * SQL just to produce an image is a far worse trade than six indexed queries per
+ * request on a site serving a 66-person Discord.
+ *
+ * If traffic ever makes that untrue, the upgrade is `cacheComponents: true` plus
+ * `"use cache"` on the query functions, which caches the data without making the route
+ * a build-time artifact. Deliberately not done now: it changes rendering semantics
+ * app-wide.
+ */
+export const dynamic = "force-dynamic";
 
 const DISCORD_INVITE = process.env.DISCORD_INVITE_URL ?? "#";
 
@@ -27,18 +39,22 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 export default async function HomePage() {
   // Both ranges are computed server-side and handed to the panel, so switching
   // between them is instant and the page stays static.
-  const [feed, recentStats, allStats, recentDrops, allDrops, testimonials] = await Promise.all([
-    getPublicFeed(),
-    getRangeStats("recent"),
-    getRangeStats("all"),
-    getRecentDrops("recent"),
-    getRecentDrops("all"),
-    getApprovedTestimonials(),
-  ]);
+  const [feed, recentStats, allStats, recentDrops, allDrops, testimonials, viewer] =
+    await Promise.all([
+      getPublicFeed(),
+      getRangeStats("recent"),
+      getRangeStats("all"),
+      getRecentDrops("recent"),
+      getRecentDrops("all"),
+      getApprovedTestimonials(),
+      // Only flips the header between "Sign in" and "Dashboard". Costs nothing for a
+      // signed-out visitor -- with no session cookie this never reaches the database.
+      currentViewer(),
+    ]);
 
   return (
     <>
-      <SiteHeader />
+      <SiteHeader signedIn={viewer !== null} />
 
       <main className="mx-auto max-w-5xl px-5">
         <section className="py-16 sm:py-24">

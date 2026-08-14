@@ -1,0 +1,37 @@
+# Keep the build context small and the image free of anything host-specific.
+#
+# Two entries here are load-bearing rather than housekeeping:
+#   .env*        secrets must never be baked into a layer, and Next would otherwise
+#                read them at build time and inline NEXT_PUBLIC_* values from a
+#                developer's laptop into the production bundle.
+#   src/generated  the Prisma client is regenerated inside the builder. Copying a
+#                  host-generated copy risks shipping one built from a stale schema.
+
+node_modules
+.next
+out
+build
+
+.git
+.gitattributes
+.gitignore
+
+.env
+.env.*
+!.env.example
+
+src/generated
+*.tsbuildinfo
+coverage
+
+# Local-only tooling and docs. Nothing here affects the build.
+.claude
+.vscode
+.idea
+docker-compose.yml
+Dockerfile
+.dockerignore
+README.md
+AGENTS.md
+CLAUDE.md
+npm-debug.log*

@@ -46,11 +46,34 @@ The seed imports real billing-run records from the bot repo (`MIRROR_REPO_PATH`,
 to `../okie-aco-mirror`), so local data carries the actual product names — including the
 `é` and em-dash that catch UTF-8 bugs — plus 147 checkouts and 61 members.
 
-Product thumbnails aren't in the archived session records, so the seed reads them from
-`data/thumbnails.json` in the bot repo. Regenerate that with `node src/scripts/exportThumbnails.js`
-over there — it reads the mirrored embeds back out of the success channel. Going forward,
-`parseCheckoutEmbed` returns `thumbnailUrl` and ingest stores it per checkout, so this is a
-one-time backfill for existing rows.
+### Refreshing local data after a drop
+
+```bash
+node src/scripts/exportCheckouts.js 2026-04-01
+```
+
+in the bot repo, then `npm run db:seed` here. The bot repo's README covers this from the
+operator side, along with the other maintenance scripts — keep the two in step if either
+changes. Always export the **full range**, not just
+the new days: the script overwrites `checkouts-export.json` rather than appending, and
+that file is your restore point after `db:reset`. The seed itself is additive
+(`createMany({ skipDuplicates: true })` plus upserts), so re-running never duplicates.
+
+Charges only appear for runs whose session status is `sent` — the seed skips previews, so
+a dry-run drop shows its checkouts but no bill.
+
+**Product thumbnails need no separate step.** `parseCheckoutEmbed` returns `thumbnailUrl`,
+the export carries it inline, and the seed writes it to both `Checkout.imageUrl` (as
+observed) and `Item.imageUrl` (canonical, used for display with the checkout's own as
+fallback). `src/scripts/exportThumbnails.js` in the bot repo is a superseded stopgap: it
+only covered the archived `pas-sessions/*.json` windows, which predate thumbnail capture,
+and a full-range export now covers those too.
+
+Images are stored as Discord's **unsigned** external-proxy URLs
+(`images-ext-1.discordapp.net/external/<hash>/https/<original>`) — no `?ex=`/`&hm=` expiry
+parameters, so they don't rot after 24 hours the way signed attachment CDN links do. That
+form is also why `next.config.ts` needs only the two `**.discordapp.*` remote patterns to
+cover every retailer.
 
 **Every Postgres connection pins `timezone=UTC`** (`src/db/client.ts`, `prisma/seed.ts`).
 Prisma sends timestamps as naive UTC wall-clock strings and Postgres resolves them against
@@ -75,6 +98,57 @@ Palette lives in `@theme` in `src/app/globals.css`. The contrast figures are rec
 because they constrain usage: **brand red on the dark background is 3.84:1**, which passes
 for large text and UI shapes but _fails_ AA for body copy. Red is for the logo, button
 fills, and accent marks — never small text. White on red is 4.88:1 and is fine.
+
+## Auth
+
+Discord OAuth via Auth.js v5, database sessions, no email.
+
+**Discord Developer Portal setup** (same application as the bot):
+
+1. OAuth2 → copy the **Application ID** into `AUTH_DISCORD_ID` and the **OAuth2 client
+   secret** — not the bot token — into `AUTH_DISCORD_SECRET`.
+2. OAuth2 → Redirects → add both, on the one application:
+   - `http://localhost:3000/api/auth/callback/discord`
+   - `https://okie-aco.com/api/auth/callback/discord`
+
+Scopes are `identify guilds.members.read`, set explicitly in `src/lib/auth/index.ts`.
+The built-in provider defaults to `identify email`; the override is the only thing
+keeping an email address out of the database. `guilds.members.read` covers one guild —
+the broader `guilds` scope would expose every server a member is in.
+
+The 404 from `GET /users/@me/guilds/{id}/member` **is** the membership check. A non-404
+failure is treated as transient, never as "not a member", so a Discord outage can't
+lock out a paying member. That lookup also refreshes `DiscordMember` (roles, OG,
+avatar), which is why OG status is correct from the first login without waiting on the
+bot's role sync — and why `User.discordUserId`'s foreign key resolves at createUser time.
+
+The adapter is hand-written (`src/lib/auth/adapter.ts`) rather than
+`@auth/prisma-adapter`: that package is typed against `PrismaClient` from
+`@prisma/client`, requires a non-null `email`, and offers nowhere to set
+`discordUserId` at insert time. `src/lib/auth/adapter.test.ts` covers the lifecycle
+against a real database, including the assertion that **Discord access and refresh
+tokens are never persisted** — we never call Discord as the user, so holding a live
+credential would be pure liability.
+
+### Authorization
+
+The boundary is `src/lib/auth/guard.ts`, and it is called **inside every page, route
+handler, and server action** — never in a layout, never in `proxy.ts`. Layouts don't
+re-render on navigation and don't wrap Server Actions; Next's CVE-2025-29927 was a
+crafted header skipping middleware outright.
+
+- `requireMember()` redirects to `/signin`. `requireAdmin()` returns **404, not 403** —
+  a 403 confirms the admin routes exist.
+- **The session carries identity and nothing else.** `isOg` is re-read from the database
+  and `isAdmin` from `ADMIN_DISCORD_IDS` on every request, so a role change takes effect
+  immediately instead of when a cookie expires.
+- Member queries take `discordUserId` as a **required first argument**, sourced only
+  from the guard's return value. Resource lookups carry both predicates
+  (`where: { id, discordUserId }`) rather than fetch-then-compare, which is what makes a
+  guessed charge id indistinguishable from a nonexistent one.
+
+`src/db/queries/member.test.ts` covers that last rule directly. It has been
+mutation-checked: removing `discordUserId` from the `where` clause makes it fail.
 
 ## Notable constraints
 
@@ -109,7 +183,43 @@ the bundled docs in `node_modules/next/dist/docs/`; read them before writing fra
 - `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` **must be set and stable across instances.** It
   otherwise defaults to a per-build random value, and mutations fail across instances with
   "Failed to find Server Action".
-- ISR cache is per-instance local disk. The home page revalidates independently on each
-  container — acceptable at `max-instances=3`, but it means `revalidateTag` on one instance
-  does not invalidate the others.
+- Any ISR cache is per-instance local disk, so `revalidateTag` on one container does not
+  invalidate the others. Nothing uses ISR today (see below), but it constrains what can.
 - Set `deploymentId` for version-skew protection during rolling revisions.
+
+## Container
+
+```bash
+docker build -t okie-aco-site:dev .
+```
+
+```bash
+docker run --rm -p 8080:8080 -e DATABASE_URL="postgresql://okie:okie@host.docker.internal:5432/okie-aco" okie-aco-site:dev
+```
+
+`host.docker.internal` reaches the native Postgres from inside the container; on Cloud Run
+you set `CLOUD_SQL_CONNECTION_NAME` + `DB_*` instead and `src/db/client.ts` switches to the
+connector's Unix socket.
+
+**The build needs no database**, which is the reason `/` is `force-dynamic` rather than ISR.
+ISR would prerender the page during `next build` — inside the Docker build, where there is
+no Postgres and must not be one. Giving CI a tunnel into Cloud SQL just to produce an image
+is a much worse trade than six indexed queries per request for a 66-person Discord. The
+upgrade path, if traffic ever makes that false, is `cacheComponents: true` plus `"use cache"`
+on the query functions, which caches the data without making the route a build artifact.
+
+Two Dockerfile lines are load-bearing and look like boilerplate:
+
+- **`ENV HOSTNAME=0.0.0.0`** — without it Next's standalone server binds to localhost, the
+  Cloud Run health check never connects, and the deploy error says nothing about the cause.
+- **`COPY .next/static` and `COPY public`** — neither is traced into `.next/standalone`. Omit
+  them and you get a container that serves HTML with no CSS and no images.
+
+`prisma migrate deploy` is deliberately **not** run on boot. Three instances starting at once
+race the migration table, and a failed migration would take the site down rather than failing
+loudly in one place. Run it by hand through the Cloud SQL Auth Proxy.
+
+Base image is `node:24-slim`. The usual reason to avoid alpine was Prisma's Rust query engine
+and its musl target; Prisma 7 removed that engine, so alpine would now work. Slim stays for
+glibc and full ICU — `Intl.DateTimeFormat` with `America/Chicago` is on the drop cards, and
+the container otherwise runs UTC.
