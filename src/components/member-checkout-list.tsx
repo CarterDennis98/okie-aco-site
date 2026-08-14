@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { FeedScroller } from "@/components/feed-scroller";
 import type { MemberCheckout } from "@/db/queries/member";
 import { relativeTime } from "@/lib/format";
 import { siteStyle } from "@/lib/sites";
@@ -6,6 +7,9 @@ import { siteStyle } from "@/lib/sites";
 /**
  * The member's own checkouts. Unlike the public feed this is named and undelayed --
  * it's their data, so there is nothing to anonymize and no reason to withhold it.
+ *
+ * Shares the public feed's scroll pane so both lists behave identically, including the
+ * edge fades that signal there is more above or below.
  */
 export function MemberCheckoutList({ checkouts }: { checkouts: MemberCheckout[] }) {
   if (checkouts.length === 0) {
@@ -17,7 +21,7 @@ export function MemberCheckoutList({ checkouts }: { checkouts: MemberCheckout[] 
   }
 
   return (
-    <ul className="divide-y divide-[var(--color-edge)] overflow-hidden rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
+    <FeedScroller className="max-h-[32rem] divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
       {checkouts.map((checkout) => {
         const style = siteStyle(checkout.site);
         return (
@@ -80,6 +84,6 @@ export function MemberCheckoutList({ checkouts }: { checkouts: MemberCheckout[] 
           </li>
         );
       })}
-    </ul>
+    </FeedScroller>
   );
 }

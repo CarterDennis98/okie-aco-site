@@ -20,7 +20,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en">
-      <body className="min-h-dvh antialiased">{children}</body>
+      {/* Flex column + a growing <main> keeps the footer on the bottom edge when a page
+          doesn't fill the viewport, without pinning it on pages that do. See globals.css
+          for the main rule -- it's global so a new page can't forget it. */}
+      <body className="flex min-h-dvh flex-col antialiased">{children}</body>
     </html>
   );
 }

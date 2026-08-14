@@ -12,6 +12,10 @@
  *
  * So: red is for the logo, button fills, and small decorative marks. Never for
  * small text. Body and secondary copy use the greys.
+ *
+ * Warn is amber, deliberately NOT brand red: red already means "expired card", and a
+ * missing app password is a different kind of problem. Amber clears small text where
+ * red doesn't --  warn #FBBF24 on surface #1F1F1F = 9.9:1.
  */
 @theme {
   --color-ink: #121212;
@@ -23,6 +27,7 @@
   --color-brand: #e30613;
   --color-brand-dark: #b3000d;
   --color-on-brand: #ffffff;
+  --color-warn: #fbbf24;
 }
 
 html {
@@ -33,6 +38,22 @@ body {
   background-color: var(--color-ink);
   color: var(--color-fg);
   -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Sticky footer.
+ *
+ * Every page renders <SiteHeader/> <main/> <SiteFooter/> as siblings, so they are direct
+ * children of the flex-column body. Letting main absorb the slack pushes the footer to
+ * the bottom on short pages (sign-in, not-a-member, an empty dashboard) and changes
+ * nothing on long ones.
+ *
+ * Done here rather than as a `grow` class on each page's <main>: this way a page added
+ * later gets it for free instead of silently regressing the layout. `flex-basis: auto`
+ * and `flex-shrink: 0` matter -- the content keeps its natural height and only grows.
+ */
+body > main {
+  flex: 1 0 auto;
 }
 
 ::selection {

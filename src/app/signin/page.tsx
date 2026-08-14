@@ -17,7 +17,7 @@ export const metadata: Metadata = {
  */
 const ERRORS: Record<string, string> = {
   AccessDenied: "Discord sign-in was cancelled, or that account isn't in the server.",
-  Configuration: "Sign-in isn't configured correctly yet. Let the operator know.",
+  Configuration: "Sign-in isn't configured correctly yet. Let Okie staff know.",
   Verification: "That sign-in link has expired. Try again.",
 };
 

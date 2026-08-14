@@ -1,0 +1,340 @@
+"use client";
+
+import { useActionState, useState } from "react";
+import type { EmailCredentialSummary } from "@/db/queries/vault";
+import {
+  deleteEmailAlias,
+  deleteEmailCredential,
+  saveEmailAlias,
+  saveEmailCredential,
+  type ActionResult,
+} from "@/lib/vault/actions";
+
+/**
+ * Email app passwords, for reading checkout verification codes over IMAP.
+ *
+ * An app password is a provider-issued, revocable credential scoped to one application
+ * — not the member's real password. That distinction is the whole reason this is
+ * acceptable to ask for, so the copy says it plainly rather than burying it.
+ *
+ * The stored password is shown only through an explicit, audited reveal; the list itself
+ * carries the address and whether it last worked, never the value.
+ *
+ * FORWARDING is the second half of this section. Ten retailer accounts whose mail all
+ * lands in one Gmail need one app password between them, so an address can either hold a
+ * password of its own or point at the mailbox it forwards into. The list below shows
+ * both, because "why does that address have no password" is otherwise a mystery.
+ */
+
+const field =
+  "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
+
+function AppPasswordGuide() {
+  return (
+    <details className="group mt-3 rounded-lg border border-[var(--color-edge)] bg-[var(--color-surface)] p-4">
+      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-sm font-medium text-[var(--color-fg)]">
+        <span aria-hidden className="transition-transform group-open:rotate-90">
+          ›
+        </span>
+        How do I get an app password?
+      </summary>
+
+      {/* PLACEHOLDER — replace with the real per-provider walkthrough and screenshots.
+          Deliberately not invented: the exact menu path differs by provider and changes
+          often, and a confidently wrong instruction here wastes a member's drop night. */}
+      <div className="mt-3 flex flex-col gap-3 text-sm text-[var(--color-muted)]">
+        <p>
+          An app password is a one-off code your email provider generates for a single application.
+          It is <strong className="text-[var(--color-fg)]">not</strong> your real password, it only
+          works for mail access, and you can revoke it at any time without changing anything else
+          about your account.
+        </p>
+        <p>
+          Most providers require two-factor authentication to be switched on before they will issue
+          one. You&rsquo;ll find the option under your account&rsquo;s security settings, usually
+          named &ldquo;App passwords&rdquo;.
+        </p>
+        <p className="rounded-md border border-dashed border-[var(--color-edge)] px-3 py-2 text-xs">
+          Step-by-step guides for Gmail, iCloud, Yahoo, and Outlook are coming here. Until then, ask
+          in Discord and Okie staff will walk you through it.
+        </p>
+      </div>
+    </details>
+  );
+}
+
+/** Own component so its action state doesn't re-render the whole list. */
+function RemoveCredential({ id }: { id: string }) {
+  const [state, formAction, pending] = useActionState(
+    async (_previous: ActionResult | null, formData: FormData) => deleteEmailCredential(formData),
+    null,
+  );
+
+  return (
+    <form action={formAction}>
+      <input type="hidden" name="credentialId" value={id} />
+      <button
+        type="submit"
+        disabled={pending}
+        title={state && !state.ok ? state.error : undefined}
+        className="text-xs text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)] disabled:opacity-60"
+      >
+        Remove
+      </button>
+    </form>
+  );
+}
+
+function RemoveAlias({ id }: { id: string }) {
+  const [state, formAction, pending] = useActionState(
+    async (_previous: ActionResult | null, formData: FormData) => deleteEmailAlias(formData),
+    null,
+  );
+
+  return (
+    <form action={formAction} className="contents">
+      <input type="hidden" name="aliasId" value={id} />
+      <button
+        type="submit"
+        disabled={pending}
+        title={state && !state.ok ? state.error : "No longer forwards here"}
+        className="text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)] disabled:opacity-60"
+      >
+        ×
+      </button>
+    </form>
+  );
+}
+
+/**
+ * "This address forwards into one of my inboxes."
+ *
+ * A select that submits on change rather than a select plus a Save button: there is one
+ * field, and a member clearing up ten forwarded addresses should not click twenty times.
+ */
+function ForwardPicker({
+  email,
+  credentials,
+}: {
+  email: string;
+  credentials: EmailCredentialSummary[];
+}) {
+  const [state, formAction] = useActionState(
+    async (_previous: ActionResult | null, formData: FormData) => saveEmailAlias(formData),
+    null,
+  );
+
+  return (
+    <form action={formAction} className="flex items-center gap-2">
+      <input type="hidden" name="email" value={email} />
+      <select
+        name="credentialId"
+        defaultValue=""
+        aria-label={`Inbox that ${email} forwards to`}
+        onChange={(e) => e.currentTarget.form?.requestSubmit()}
+        className="max-w-52 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
+      >
+        <option value="" disabled>
+          Forwards to…
+        </option>
+        {credentials.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.email}
+          </option>
+        ))}
+      </select>
+      {state && !state.ok && (
+        <span className="text-[11px] text-[var(--color-warn)]">{state.error}</span>
+      )}
+    </form>
+  );
+}
+
+export function EmailCredentials({
+  credentials,
+  needingPassword,
+}: {
+  credentials: EmailCredentialSummary[];
+  needingPassword: string[];
+}) {
+  const [adding, setAdding] = useState<string | null>(null);
+
+  const [state, formAction, pending] = useActionState(
+    async (_previous: ActionResult | null, formData: FormData) => {
+      const result = await saveEmailCredential(formData);
+      if (result.ok) setAdding(null);
+      return result;
+    },
+    null,
+  );
+
+  return (
+    <section className="mt-12">
+      <h2 className="mb-2 flex items-center gap-2.5 text-xl font-bold tracking-tight">
+        <span aria-hidden className="h-5 w-1 rounded-full bg-[var(--color-brand)]" />
+        Email app passwords
+      </h2>
+      <p className="mb-4 max-w-2xl text-sm text-[var(--color-muted)]">
+        Retailers send a verification code to your email during checkout. With an app password
+        saved, we can read that code automatically instead of messaging you mid-drop.
+      </p>
+
+      {state && !state.ok && (
+        <p
+          role="alert"
+          className="mb-4 rounded-lg border border-[var(--color-brand)]/40 bg-[var(--color-brand)]/10 px-3 py-2 text-sm text-[var(--color-fg)]"
+        >
+          {state.error}
+        </p>
+      )}
+
+      {credentials.length > 0 && (
+        <ul className="divide-y divide-[var(--color-edge)] overflow-hidden rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
+          {credentials.map((credential) => (
+            <li key={credential.id} className="flex items-center gap-4 px-4 py-3 sm:px-5">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-[var(--color-fg)]">{credential.email}</p>
+                <p className="mt-0.5 text-xs text-[var(--color-muted)]">
+                  {credential.lastError
+                    ? `Last check failed — re-enter the app password`
+                    : credential.verifiedAt
+                      ? "Working"
+                      : "Saved, not yet checked"}
+                  {credential.aliases.length > 0 &&
+                    ` · covers ${credential.aliases.length} forwarded address${
+                      credential.aliases.length === 1 ? "" : "es"
+                    }`}
+                </p>
+                {credential.aliases.length > 0 && (
+                  <ul className="mt-1.5 flex flex-wrap gap-1.5">
+                    {credential.aliases.map((alias) => (
+                      <li
+                        key={alias.id}
+                        className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-elevated)] py-1 pr-1.5 pl-2 text-[11px] leading-none text-[var(--color-muted)]"
+                      >
+                        <span aria-hidden>↳</span>
+                        <span className="text-[var(--color-fg)]">{alias.email}</span>
+                        <RemoveAlias id={alias.id} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setAdding(credential.email)}
+                className="text-xs font-medium text-[var(--color-fg)] hover:text-white"
+              >
+                Replace
+              </button>
+              <RemoveCredential id={credential.id} />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {needingPassword.length > 0 && (
+        <div className="mt-4">
+          <p className="mb-2 text-xs text-[var(--color-muted)]">
+            <span className="text-[var(--color-fg)]">{needingPassword.length}</span> address
+            {needingPassword.length === 1 ? " has" : "es have"} nowhere to read a code from. Give
+            each one its own app password, or — if its mail lands in an inbox you have already added
+            — point it there instead.
+          </p>
+          {/* Scrolls rather than running the page long: a member can have dozens of these. */}
+          <ul className="max-h-64 divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
+            {needingPassword.map((email) => (
+              <li
+                key={email}
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 sm:px-5"
+              >
+                <span className="min-w-0 flex-1 truncate text-sm text-[var(--color-fg)]">
+                  {email}
+                </span>
+                {credentials.length > 0 && (
+                  <ForwardPicker email={email} credentials={credentials} />
+                )}
+                <button
+                  type="button"
+                  onClick={() => setAdding(email)}
+                  className="text-xs font-medium text-[var(--color-fg)] transition-colors hover:text-white"
+                >
+                  Add password
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {adding === null ? (
+        <button
+          type="button"
+          onClick={() => setAdding("")}
+          className="mt-4 rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50"
+        >
+          Add an app password
+        </button>
+      ) : (
+        <form
+          action={formAction}
+          className="mt-4 flex flex-wrap items-end gap-3 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-4"
+        >
+          <div className="min-w-56 flex-1">
+            <label
+              htmlFor="credEmail"
+              className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
+            >
+              Email address
+            </label>
+            <input
+              id="credEmail"
+              name="email"
+              type="email"
+              defaultValue={adding}
+              readOnly={adding !== ""}
+              required
+              autoComplete="off"
+              className={field}
+            />
+          </div>
+          <div className="min-w-56 flex-1">
+            <label
+              htmlFor="appPassword"
+              className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
+            >
+              App password
+            </label>
+            <input
+              id="appPassword"
+              name="appPassword"
+              type="password"
+              required
+              autoComplete="off"
+              placeholder="xxxx xxxx xxxx xxxx"
+              className={field}
+            />
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={pending}
+              className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60"
+            >
+              {pending ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdding(null)}
+              className="text-sm text-[var(--color-muted)] hover:text-[var(--color-fg)]"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      <AppPasswordGuide />
+    </section>
+  );
+}

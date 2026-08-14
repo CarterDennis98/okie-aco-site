@@ -41,19 +41,12 @@ export type MemberChargeSummary = {
   unitCount: number;
 };
 
-export type MemberProfile = {
-  profileKey: string;
-  displayName: string;
-  billable: boolean;
-};
-
 export type MemberDashboard = {
   unpaidTotalCents: number;
   unpaidCount: number;
   lifetimeCheckouts: number;
   lifetimeUnits: number;
   charges: MemberChargeSummary[];
-  profiles: MemberProfile[];
   recentCheckouts: MemberCheckout[];
 };
 
@@ -66,10 +59,18 @@ export type MemberDashboard = {
  */
 const REAL_RUNS = { run: { dryRun: false } } as const;
 
-const RECENT_CHECKOUT_LIMIT = 50;
+/**
+ * Matches the public feed's cap, and for the same reason: a scroll pane can hold this
+ * many rows without the page becoming tens of thousands of pixels tall.
+ *
+ * The dashboard states when it is showing a subset. A list that silently stops at its
+ * limit reads as "this is everything you have", which for the operator would mean 349
+ * checkouts presented as 50.
+ */
+const RECENT_CHECKOUT_LIMIT = 250;
 
 export async function getMemberDashboard(discordUserId: string): Promise<MemberDashboard> {
-  const [bills, profiles, checkoutTotals, recent] = await Promise.all([
+  const [bills, checkoutTotals, recent] = await Promise.all([
     prisma.pasBill.findMany({
       where: { discordUserId, ...REAL_RUNS },
       orderBy: { run: { windowStart: "desc" } },
@@ -83,12 +84,6 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
         run: { select: { dropLabel: true, windowStart: true } },
         lines: { select: { qty: true } },
       },
-    }),
-
-    prisma.profile.findMany({
-      where: { discordUserId },
-      orderBy: { profileKey: "asc" },
-      select: { profileKey: true, displayName: true, billable: true },
     }),
 
     prisma.checkout.aggregate({
@@ -135,7 +130,6 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
     lifetimeCheckouts: checkoutTotals._count._all,
     lifetimeUnits: checkoutTotals._sum.quantity ?? 0,
     charges,
-    profiles,
     recentCheckouts: recent.map((row) => ({
       id: row.id,
       occurredAt: row.occurredAt,
@@ -149,6 +143,15 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
   };
 }
 
+export type MemberChargeLine = {
+  id: string;
+  label: string;
+  qty: number;
+  feeCents: number;
+  subtotalCents: number;
+  imageUrl: string | null;
+};
+
 export type MemberChargeDetail = {
   id: string;
   dropLabel: string;
@@ -159,9 +162,9 @@ export type MemberChargeDetail = {
   totalCents: number;
   ogApplied: boolean;
   paidAt: Date | null;
-  /** The exact text the member received in Discord. */
-  dmText: string | null;
-  lines: { id: string; label: string; qty: number; feeCents: number; subtotalCents: number }[];
+  /** Retailers this charge's products came from, for the chips. Usually one. */
+  sites: { site: string; logo: string | null }[];
+  lines: MemberChargeLine[];
   payments: { id: string; amountCents: number; method: string | null; recordedAt: Date }[];
 };
 
@@ -189,11 +192,21 @@ export async function getMemberCharge(
       totalCents: true,
       ogApplied: true,
       paidAt: true,
-      dmText: true,
+      // dmText is deliberately NOT selected. The column still stores the exact message
+      // as the dispute record, but the member's own page doesn't paste it back at them.
       run: { select: { dropLabel: true, windowStart: true, windowEnd: true } },
       lines: {
         orderBy: { subtotalCents: "desc" },
-        select: { id: true, label: true, qty: true, feeCents: true, subtotalCents: true },
+        select: {
+          id: true,
+          label: true,
+          qty: true,
+          feeCents: true,
+          subtotalCents: true,
+          // Art and retailer come from the item; the LINE keeps its own label and fee,
+          // so a later rename or fee edit still can't alter what was charged.
+          item: { select: { imageUrl: true, source: true } },
+        },
       },
       payments: {
         orderBy: { recordedAt: "desc" },
@@ -202,6 +215,12 @@ export async function getMemberCharge(
     },
   });
   if (!bill) return null;
+
+  // Distinct retailers across the charge's products, in first-seen order. A drop that
+  // spanned two stores yields two chips; the common case is one.
+  const sites = [
+    ...new Set(bill.lines.map((line) => line.item?.source).filter((s): s is string => Boolean(s))),
+  ].map((site) => ({ site, logo: resolveSiteLogo(site) }));
 
   return {
     id: bill.id,
@@ -213,8 +232,15 @@ export async function getMemberCharge(
     totalCents: bill.totalCents,
     ogApplied: bill.ogApplied,
     paidAt: bill.paidAt,
-    dmText: bill.dmText,
-    lines: bill.lines,
+    sites,
+    lines: bill.lines.map((line) => ({
+      id: line.id,
+      label: line.label,
+      qty: line.qty,
+      feeCents: line.feeCents,
+      subtotalCents: line.subtotalCents,
+      imageUrl: line.item?.imageUrl ?? null,
+    })),
     payments: bill.payments,
   };
 }

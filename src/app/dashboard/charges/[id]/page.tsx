@@ -1,5 +1,7 @@
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { SiteChip } from "@/components/site-chip";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getMemberCharge } from "@/db/queries/member";
 import { count, plural } from "@/lib/format";
@@ -52,9 +54,12 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
         <header className="mt-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
           <div>
             <h1 className="text-3xl font-black tracking-tight text-white">{charge.dropLabel}</h1>
-            <p className="mt-1 text-sm text-[var(--color-muted)]">
-              {formatDate(charge.windowStart)}
-            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <p className="text-sm text-[var(--color-muted)]">{formatDate(charge.windowStart)}</p>
+              {charge.sites.map(({ site, logo }) => (
+                <SiteChip key={site} site={site} logo={logo} />
+              ))}
+            </div>
           </div>
           <span
             className={
@@ -71,17 +76,19 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
         <table className="mt-8 w-full text-sm">
           <caption className="sr-only">Itemized fees for {charge.dropLabel}</caption>
           <thead>
+            {/* Explicit widths on the numeric columns. Left to auto-layout they collapse
+                to their content and Qty ends up almost touching Fee. */}
             <tr className="border-b border-[var(--color-edge)] text-left text-[11px] tracking-[0.12em] text-[var(--color-muted)] uppercase">
               <th scope="col" className="py-2 font-medium">
                 Product
               </th>
-              <th scope="col" className="py-2 text-right font-medium">
+              <th scope="col" className="w-20 py-2 pl-6 text-right font-medium">
                 Qty
               </th>
-              <th scope="col" className="py-2 text-right font-medium">
+              <th scope="col" className="w-24 py-2 pl-6 text-right font-medium">
                 Fee
               </th>
-              <th scope="col" className="py-2 text-right font-medium">
+              <th scope="col" className="w-28 py-2 pl-6 text-right font-medium">
                 Subtotal
               </th>
             </tr>
@@ -89,12 +96,30 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
           <tbody className="divide-y divide-[var(--color-edge)]">
             {charge.lines.map((line) => (
               <tr key={line.id}>
-                <td className="py-3 pr-3 text-[var(--color-fg)]">{line.label}</td>
-                <td className="py-3 text-right tabular-nums">{count(line.qty)}</td>
-                <td className="py-3 text-right text-[var(--color-muted)] tabular-nums">
+                <td className="py-3 pr-3">
+                  <div className="flex items-center gap-3">
+                    {line.imageUrl ? (
+                      <Image
+                        src={line.imageUrl}
+                        alt=""
+                        width={36}
+                        height={36}
+                        className="size-9 shrink-0 rounded border border-[var(--color-edge)] bg-white object-contain"
+                      />
+                    ) : (
+                      <div
+                        aria-hidden
+                        className="size-9 shrink-0 rounded border border-[var(--color-edge)] bg-[var(--color-elevated)]"
+                      />
+                    )}
+                    <span className="text-[var(--color-fg)]">{line.label}</span>
+                  </div>
+                </td>
+                <td className="py-3 pl-6 text-right tabular-nums">{count(line.qty)}</td>
+                <td className="py-3 pl-6 text-right text-[var(--color-muted)] tabular-nums">
                   {money(line.feeCents)}
                 </td>
-                <td className="py-3 text-right font-medium text-white tabular-nums">
+                <td className="py-3 pl-6 text-right font-medium text-white tabular-nums">
                   {money(line.subtotalCents)}
                 </td>
               </tr>
@@ -109,8 +134,11 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
             </tr>
             {charge.discountCents > 0 && (
               <tr className="text-[var(--color-brand)]">
+                {/* Just "Discount" -- naming the OG role or its rate would leak what the
+                    perk is to anyone who screenshots a bill. The figure is still shown,
+                    because it is what they were actually charged. */}
                 <th scope="row" colSpan={3} className="py-2.5 text-right font-normal">
-                  OG discount {charge.ogApplied && "(50%)"}
+                  Discount
                 </th>
                 <td className="py-2.5 text-right tabular-nums">−{money(charge.discountCents)}</td>
               </tr>
@@ -143,23 +171,13 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
           </section>
         )}
 
-        {charge.dmText && (
-          <section className="mt-10">
-            <h2 className="text-sm font-bold tracking-tight text-white">
-              What we sent you on Discord
-            </h2>
-            <p className="mt-1 text-xs text-[var(--color-muted)]">
-              The exact message, kept so this page and your DMs can never disagree.
-            </p>
-            <pre className="mt-3 overflow-x-auto rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-4 text-xs leading-relaxed whitespace-pre-wrap text-[var(--color-fg)]">
-              {charge.dmText}
-            </pre>
-          </section>
-        )}
+        {/* The verbatim DM used to be pasted here. Removed -- the itemised table above
+            already says everything it did. PasBill.dmText is still stored, so the exact
+            message is available to the operator if a charge is ever disputed. */}
 
         <p className="mt-10 text-xs text-[var(--color-muted)]">
           {count(charge.lines.length)} {plural(charge.lines.length, "product")} on this charge.
-          Something look wrong? Message the operator on Discord.
+          Something look wrong? Message Okie staff on Discord.
         </p>
       </main>
 

@@ -43,3 +43,6 @@ next-env.d.ts
 
 # prisma generated client (build artifact, rebuilt by `prisma generate`)
 /src/generated/prisma
+
+# local operator data: owner maps, exports -- contains member emails and Discord ids
+/data/

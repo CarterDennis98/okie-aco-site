@@ -111,9 +111,13 @@ model DiscordMember {
   leftAt        DateTime? @map("left_at") @db.Timestamptz(3)
   syncedAt      DateTime  @default(now()) @map("synced_at") @db.Timestamptz(3)
 
-  user     User?
-  profiles Profile[]
-  pasBills PasBill[]
+  user             User?
+  profiles         Profile[]
+  pasBills         PasBill[]
+  vaultAccounts    VaultAccount[]
+  vaultProfiles    VaultProfile[]
+  emailCredentials EmailCredential[]
+  emailAliases     EmailAlias[]
 
   @@index([leftAt])
   @@map("discord_members")
@@ -422,6 +426,257 @@ model AdminAudit {
   @@index([at(sort: Desc)])
   @@index([entity, entityId])
   @@map("admin_audit")
+}
+
+// ---------------------------------------------------------------------------
+// Profile vault
+// ---------------------------------------------------------------------------
+// Retailer accounts and checkout profiles, owned and edited by members.
+//
+// SECRETS ARE WRITE-ONLY. Card number, CVV, and passwords live in `*_enc` columns as
+// AES-256-GCM envelopes (src/lib/vault/crypto.ts) and are never rendered in any UI --
+// not the member's, not the admin's. They leave the system only through an audited
+// export. Everything needed for display (brand, last 4, expiry) is stored in clear so
+// a page render never has to decrypt.
+//
+// Shapes below were verified against all 269 real profiles rather than assumed:
+//   - nameOnCard always equalled the shipping name  -> derived on export, no column
+//   - billing and shipping email were always equal  -> one email, held on the account
+//   - sameBillingAndShipping DISAGREED with the addresses on 4 profiles, so the flag
+//     is stored rather than computed
+//   - 18 CVVs and every expiry month/year need leading zeros -> all TEXT, never Int
+
+model VaultAccount {
+  id      String @id @default(uuid())
+  siteKey String @map("site_key")
+
+  // The retailer login. Also the profile's email: the 1:1 rule members asked for is
+  // enforced structurally by this unique plus VaultProfile.accountId being unique,
+  // rather than by a check that could drift.
+  email       String
+  passwordEnc String @map("password_enc")
+
+  discordUserId String  @map("discord_user_id")
+  active        Boolean @default(true)
+  note          String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  member  DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+  profile VaultProfile?
+
+  // An account may exist with no profile yet -- 11 do in the current export.
+  @@unique([siteKey, email])
+  @@index([discordUserId, siteKey])
+  @@map("vault_accounts")
+}
+
+model VaultProfile {
+  id      String @id @default(uuid())
+  siteKey String @map("site_key")
+
+  discordUserId String @map("discord_user_id")
+
+  // Canonical name, in the Shikari form ("shockereyes - 6"). NOT the AYCD form: 49 of
+  // the 68 MacBook AYCD names carry suffixes like "-!50" that nothing else uses.
+  name String
+
+  // Normalized base ("shockereyes") and index (6), matching the bot's normalizeProfile.
+  // Deliberately a plain column, not a foreign key: a vault profile can exist long
+  // before that profile has ever appeared in a checkout.
+  profileKey   String @map("profile_key")
+  profileIndex Int?   @map("profile_index")
+
+  // Per-site enable/disable, so a member can park a profile without deleting it.
+  active Boolean @default(true)
+
+  accountId String @unique @map("account_id")
+
+  firstName String  @map("first_name")
+  lastName  String  @map("last_name")
+  phone     String?
+
+  shipLine1      String  @map("ship_line1")
+  shipLine2      String? @map("ship_line2")
+  shipCity       String  @map("ship_city")
+  shipState      String  @map("ship_state")
+  shipPostalCode String  @map("ship_postal_code")
+  shipCountry    String  @default("US") @map("ship_country")
+
+  // False on 46 of 201 real profiles, and wrong-looking on 4 more -- always stored.
+  sameBillingAndShipping Boolean @default(true) @map("same_billing_and_shipping")
+
+  billFirstName  String? @map("bill_first_name")
+  billLastName   String? @map("bill_last_name")
+  billLine1      String? @map("bill_line1")
+  billLine2      String? @map("bill_line2")
+  billCity       String? @map("bill_city")
+  billState      String? @map("bill_state")
+  billPostalCode String? @map("bill_postal_code")
+  billCountry    String? @map("bill_country")
+
+  // Clear: enough to render "Visa ···· 3384, exp 11/30" without decrypting anything.
+  cardBrand    String @map("card_brand")
+  cardLast4    String @map("card_last4")
+  cardExpMonth String @map("card_exp_month")
+  cardExpYear  String @map("card_exp_year")
+
+  // Write-only. See the section header.
+  cardNumberEnc String @map("card_number_enc")
+  cardCvvEnc    String @map("card_cvv_enc")
+
+  onlyCheckoutOnce          Boolean @default(false) @map("only_checkout_once")
+  matchNameOnCardAndAddress Boolean @default(true) @map("match_name_on_card_and_address")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  updatedBy String?  @map("updated_by")
+
+  account VaultAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  member  DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+
+  @@unique([siteKey, name])
+  @@index([discordUserId, siteKey])
+  @@index([profileKey])
+  @@index([siteKey, active])
+  @@map("vault_profiles")
+}
+
+// App passwords for IMAP, so 2FA codes can be read without asking the member.
+model EmailCredential {
+  id            String @id @default(uuid())
+  discordUserId String @map("discord_user_id")
+
+  // Globally unique: an inbox belongs to exactly one person.
+  email          String @unique
+  appPasswordEnc String @map("app_password_enc")
+
+  // Derived from the domain on save; overridable for self-hosted mail.
+  imapHost String? @map("imap_host")
+  imapPort Int?    @map("imap_port")
+
+  verifiedAt DateTime? @map("verified_at") @db.Timestamptz(3)
+  lastError  String?   @map("last_error")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  member  DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+  aliases EmailAlias[]
+
+  @@index([discordUserId])
+  @@map("email_credentials")
+}
+
+// An address that needs no app password of its own because its mail lands in one that
+// has one. Ten retailer accounts forwarding into a single Gmail means one app password,
+// not ten -- the bot reads the verification code from wherever it actually arrives.
+//
+// Deliberately points at a CREDENTIAL, not at another address: an alias chain would need
+// cycle detection and could strand a mailbox behind a link that no longer has a password.
+// One hop, always terminating at a real mailbox.
+model EmailAlias {
+  id            String @id @default(uuid())
+  discordUserId String @map("discord_user_id")
+
+  // The retailer-facing address. Unique across the table AND checked against
+  // email_credentials.email on write: an address either holds a password or forwards,
+  // never both.
+  email        String @unique
+  credentialId String @map("credential_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  member     DiscordMember   @relation(fields: [discordUserId], references: [discordUserId])
+  // Removing the destination mailbox removes the claim that mail lands there. Leaving
+  // the alias pointing at nothing would read as "covered" when it no longer is.
+  credential EmailCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@index([discordUserId])
+  @@index([credentialId])
+  @@map("email_aliases")
+}
+
+enum VaultEntity {
+  VAULT_PROFILE
+  VAULT_ACCOUNT
+  EMAIL_CREDENTIAL
+  EMAIL_ALIAS
+
+  @@map("vault_entity")
+}
+
+enum VaultAction {
+  CREATE
+  UPDATE
+  DELETE
+  ACTIVATE
+  DEACTIVATE
+
+  @@map("vault_action")
+}
+
+// Append-only. Records WHICH FIELDS changed and never their values -- an audit log
+// holding card numbers would defeat the encryption it exists to police.
+model VaultChange {
+  id             String      @id @default(uuid())
+  actorDiscordId String      @map("actor_discord_id")
+  ownerDiscordId String      @map("owner_discord_id")
+  entity         VaultEntity
+  entityId       String      @map("entity_id")
+  action         VaultAction
+  siteKey        String?     @map("site_key")
+  label          String?
+  fields         String[]    @default([])
+
+  at         DateTime  @default(now()) @db.Timestamptz(3)
+  notifiedAt DateTime? @map("notified_at") @db.Timestamptz(3)
+
+  @@index([at(sort: Desc)])
+  @@index([ownerDiscordId])
+  @@index([notifiedAt])
+  @@map("vault_changes")
+}
+
+// Every export, because an export is the one operation that puts plaintext secrets on
+// disk. If credentials ever turn up somewhere they shouldn't, this is the trail.
+model VaultExport {
+  id              String  @id @default(uuid())
+  actorDiscordId  String  @map("actor_discord_id")
+  siteKey         String  @map("site_key")
+  format          String
+  scope           String
+  targetDiscordId String? @map("target_discord_id")
+  profileCount    Int     @map("profile_count")
+  accountCount    Int     @map("account_count")
+
+  at DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([at(sort: Desc)])
+  @@map("vault_exports")
+}
+
+// Every time a stored secret was put on someone's screen. Same reason VaultExport
+// exists: the only difference between a reveal and an export is that a reveal doesn't
+// touch disk -- a human still read the plaintext. Records WHICH field, never the value.
+model VaultReveal {
+  id             String      @id @default(uuid())
+  actorDiscordId String      @map("actor_discord_id")
+  ownerDiscordId String      @map("owner_discord_id")
+  entity         VaultEntity
+  entityId       String      @map("entity_id")
+  field          String
+  // True when the actor revealed someone else's secret, which is the case worth finding
+  // in this table later. Self-reveals are noise by comparison.
+  onBehalf       Boolean     @default(false) @map("on_behalf")
+
+  at DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([at(sort: Desc)])
+  @@index([ownerDiscordId])
+  @@map("vault_reveals")
 }
 
 // Lets the one-time history backfill resume after a crash instead of restarting.

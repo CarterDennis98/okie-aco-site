@@ -40,6 +40,17 @@ export type SiteStyle = {
    * It reads fine bare, so no tile.
    */
   needsLightBacking?: boolean;
+  /**
+   * How many of a member's profiles the main bot runs for this retailer.
+   *
+   * A SOFT cap, not a limit: profiles beyond it still work, they just run on a backup
+   * bot instance. Nothing blocks a member from adding more, so this only ever changes
+   * what the UI tells them and how an export is split. `undefined` means unlimited.
+   *
+   * Counted across ACTIVE profiles in name order -- a disabled profile isn't running,
+   * so it shouldn't hold a slot on the main bot.
+   */
+  profileSoftCap?: number;
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -49,6 +60,7 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     logo: "/target-logo.png",
     width: 5400,
     height: 5400,
+    profileSoftCap: 5,
   },
   walmart: {
     label: "Walmart",
@@ -63,6 +75,7 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     logo: "/pokemon-center-logo.png",
     width: 897,
     height: 900,
+    profileSoftCap: 10,
   },
   "best-buy": {
     label: "Best Buy",
@@ -93,16 +106,22 @@ export function supportedSites(): SiteStyle[] {
  */
 export function siteKey(site: string | null | undefined): string {
   if (!site) return "unknown";
-  return String(site)
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .replace(/\.(com|net|org)\b.*$/, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+(us|usa)$/, "")
-    .trim()
-    .replace(/\s+/g, "-");
+  return (
+    String(site)
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .replace(/\.(com|net|org)\b.*$/, "")
+      // Apostrophes are dropped, not treated as separators: "Sam's Club" has to reach
+      // "sams-club", and turning the apostrophe into a space yields "sam-s-club", which
+      // matches no entry and silently falls through to the unknown-retailer chip.
+      .replace(/['’]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+(us|usa)$/, "")
+      .trim()
+      .replace(/\s+/g, "-")
+  );
 }
 
 export function siteStyle(site: string | null | undefined): SiteStyle {

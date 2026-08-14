@@ -178,7 +178,18 @@ async function main() {
         isOg: ogUserIds.has(discordUserId),
         joinedAt: new Date("2026-04-01T05:00:00Z"),
       },
-      update: { username, isOg: ogUserIds.has(discordUserId) },
+      // CREATE ONLY -- deliberately a no-op update.
+      //
+      // Every field above is either synthesized (the username is a checkout profile
+      // key like "target 9", not a Discord handle) or better known to Discord (isOg
+      // comes from live roles, joinedAt from the guild member object). Signing in runs
+      // syncDiscordMember, which writes the real values; an `update` here would clobber
+      // them on the next re-seed and leave syncedAt still pointing at the sign-in, so
+      // the damage looks like it never happened.
+      //
+      // Cost: re-seeding won't refresh isOg for a member who has never signed in. Use
+      // `npm run db:reset && npm run db:seed` when you need that re-derived.
+      update: {},
     });
   }
   console.log(`  members  : ${usernameByUserId.size} (${ogUserIds.size} OG)`);
@@ -240,6 +251,10 @@ async function main() {
 
   let mapped = 0;
   let unbilled = 0;
+  // Who legitimately owes anything. Archived sessions predate the `billable` flag, so
+  // they contain bills the operator's own house profiles were charged before those
+  // profiles were marked non-billable. Replaying such a bill would invent a debt.
+  const billableUserIds = new Set<string>();
   for (const [profileKey, displayName] of profileNames) {
     // Explicit mapping (exact or family) wins over what a billing run inferred.
     const explicit = findMapping(profileKey, mappings);
@@ -247,6 +262,7 @@ async function main() {
     const billable = explicit ? explicit.billable !== false : true;
     if (userId) mapped++;
     if (!billable) unbilled++;
+    if (userId && billable) billableUserIds.add(userId);
     await prisma.profile.upsert({
       where: { profileKey },
       create: {
@@ -298,6 +314,7 @@ async function main() {
 
   // --- Billing runs -------------------------------------------------------
   let billCount = 0;
+  let staleBills = 0;
   for (const session of sessions) {
     if (session.status !== "sent") continue;
     const deliveryByUser = new Map(session.delivery.results.map((r) => [r.userId, r]));
@@ -318,6 +335,12 @@ async function main() {
     });
 
     for (const bill of Object.values(session.bills)) {
+      // Every profile this member owns is non-billable -- the charge is a replay
+      // artifact from before the flag existed, not a debt. See `billableUserIds`.
+      if (!billableUserIds.has(bill.userId)) {
+        staleBills++;
+        continue;
+      }
       const delivery = deliveryByUser.get(bill.userId);
       const lines = bill.lines.filter((line) => itemIdByKey.has(line.productKey));
 
@@ -348,7 +371,9 @@ async function main() {
       billCount++;
     }
   }
-  console.log(`  bills    : ${billCount}`);
+  console.log(
+    `  bills    : ${billCount}${staleBills ? ` (${staleBills} skipped -- non-billable profiles)` : ""}`,
+  );
 
   // --- Testimonials -------------------------------------------------------
   const testimonials = [
