@@ -37,6 +37,8 @@ export type MemberChargeSummary = {
   totalCents: number;
   ogApplied: boolean;
   paidAt: Date | null;
+  /** The member said they sent it. Not the same as the operator having seen it land. */
+  paidClaimedAt: Date | null;
   lineCount: number;
   unitCount: number;
 };
@@ -81,6 +83,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
         totalCents: true,
         ogApplied: true,
         paidAt: true,
+        paidClaimedAt: true,
         run: { select: { dropLabel: true, windowStart: true } },
         lines: { select: { qty: true } },
       },
@@ -118,6 +121,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
     totalCents: bill.totalCents,
     ogApplied: bill.ogApplied,
     paidAt: bill.paidAt,
+    paidClaimedAt: bill.paidClaimedAt,
     lineCount: bill.lines.length,
     unitCount: bill.lines.reduce((sum, line) => sum + line.qty, 0),
   }));
@@ -162,6 +166,9 @@ export type MemberChargeDetail = {
   totalCents: number;
   ogApplied: boolean;
   paidAt: Date | null;
+  paidClaimedAt: Date | null;
+  paidClaimedMethod: string | null;
+  paidClaimedNote: string | null;
   /** Retailers this charge's products came from, for the chips. Usually one. */
   sites: { site: string; logo: string | null }[];
   lines: MemberChargeLine[];
@@ -192,6 +199,9 @@ export async function getMemberCharge(
       totalCents: true,
       ogApplied: true,
       paidAt: true,
+      paidClaimedAt: true,
+      paidClaimedMethod: true,
+      paidClaimedNote: true,
       // dmText is deliberately NOT selected. The column still stores the exact message
       // as the dispute record, but the member's own page doesn't paste it back at them.
       run: { select: { dropLabel: true, windowStart: true, windowEnd: true } },
@@ -232,6 +242,9 @@ export async function getMemberCharge(
     totalCents: bill.totalCents,
     ogApplied: bill.ogApplied,
     paidAt: bill.paidAt,
+    paidClaimedAt: bill.paidClaimedAt,
+    paidClaimedMethod: bill.paidClaimedMethod,
+    paidClaimedNote: bill.paidClaimedNote,
     sites,
     lines: bill.lines.map((line) => ({
       id: line.id,

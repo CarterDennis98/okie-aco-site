@@ -333,8 +333,17 @@ model PasBill {
   // rather than a reconstruction, which is what settles a dispute months later.
   dmText         String?        @map("dm_text")
 
+  // Set only by the operator, and only once money has actually arrived.
   paidAt       DateTime? @map("paid_at") @db.Timestamptz(3)
   markedPaidBy String?   @map("marked_paid_by")
+
+  // The member's claim that they have sent payment. Deliberately a separate fact from
+  // paidAt: a claim is a message, a confirmation is a receipt, and only the operator can
+  // see money land. A member can clear their own claim -- that is a mis-click being
+  // corrected, not a payment being reversed.
+  paidClaimedAt     DateTime? @map("paid_claimed_at") @db.Timestamptz(3)
+  paidClaimedMethod String?   @map("paid_claimed_method")
+  paidClaimedNote   String?   @map("paid_claimed_note")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
@@ -345,6 +354,8 @@ model PasBill {
 
   @@unique([pasRunId, discordUserId])
   @@index([discordUserId, paidAt])
+  // Drives the admin queue: unconfirmed claims, oldest first.
+  @@index([paidAt, paidClaimedAt])
   @@map("pas_bills")
 }
 

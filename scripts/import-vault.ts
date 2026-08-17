@@ -473,7 +473,11 @@ async function main() {
       lastName: s.last_name,
       phone: s.phone_num || null,
       shipLine1: s.shipping_street,
-      shipLine2: s.shipping_street_2 || null,
+      // Shikari's export drops street_2 on one side or the other for 16 profiles whose
+      // AYCD export carries the apartment on BOTH -- their bug, not a member who ships to
+      // a different unit. Fall back rather than drop the line, or the parcel arrives at
+      // the building with no apartment on it and the card fails AVS on the billing side.
+      shipLine2: s.shipping_street_2 || r.aycd?.shippingAddress?.line2 || null,
       shipCity: s.shipping_city,
       shipState: s.shipping_state,
       shipPostalCode: s.shipping_zip_code,
@@ -482,7 +486,7 @@ async function main() {
       billFirstName: sameBilling ? null : s.billing_first_name || null,
       billLastName: sameBilling ? null : s.billing_last_name || null,
       billLine1: sameBilling ? null : s.billing_street || null,
-      billLine2: sameBilling ? null : s.billing_street_2 || null,
+      billLine2: sameBilling ? null : s.billing_street_2 || r.aycd?.billingAddress?.line2 || null,
       billCity: sameBilling ? null : s.billing_city || null,
       billState: sameBilling ? null : s.billing_state || null,
       billPostalCode: sameBilling ? null : s.billing_zip_code || null,

@@ -1,10 +1,12 @@
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ClaimPayment } from "@/components/billing/claim-payment";
 import { SiteChip } from "@/components/site-chip";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getMemberCharge } from "@/db/queries/member";
 import { count, plural } from "@/lib/format";
+import { methodLabel } from "@/lib/billing/methods";
 import { money } from "@/lib/money";
 import { requireMember } from "@/lib/auth/guard";
 
@@ -66,10 +68,12 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
               "rounded-full px-3 py-1 text-xs font-semibold tracking-wide uppercase " +
               (charge.paidAt
                 ? "bg-[var(--color-elevated)] text-[var(--color-muted)]"
-                : "bg-[var(--color-brand)] text-[var(--color-on-brand)]")
+                : charge.paidClaimedAt
+                  ? "bg-[var(--color-warn)]/15 text-[var(--color-warn)]"
+                  : "bg-[var(--color-brand)] text-[var(--color-on-brand)]")
             }
           >
-            {charge.paidAt ? "Paid" : "Unpaid"}
+            {charge.paidAt ? "Paid" : charge.paidClaimedAt ? "Sent" : "Unpaid"}
           </span>
         </header>
 
@@ -152,6 +156,14 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
           </tfoot>
         </table>
 
+        <ClaimPayment
+          billId={charge.id}
+          paidAt={charge.paidAt}
+          claimedAt={charge.paidClaimedAt}
+          claimedMethod={charge.paidClaimedMethod}
+          claimedNote={charge.paidClaimedNote}
+        />
+
         {charge.payments.length > 0 && (
           <section className="mt-10">
             <h2 className="text-sm font-bold tracking-tight text-white">Payments</h2>
@@ -160,7 +172,7 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
                 <li key={payment.id} className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm text-[var(--color-muted)]">
                     {formatDate(payment.recordedAt)}
-                    {payment.method && ` · ${payment.method}`}
+                    {payment.method && ` · ${methodLabel(payment.method)}`}
                   </span>
                   <span className="text-sm font-medium text-white tabular-nums">
                     {money(payment.amountCents)}

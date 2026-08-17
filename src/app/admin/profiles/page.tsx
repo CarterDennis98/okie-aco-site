@@ -66,12 +66,20 @@ export default async function AdminProfilesPage({
       <SiteHeader signedIn />
 
       <main className="mx-auto max-w-6xl px-5 py-10 sm:py-14">
-        <Link
-          href="/dashboard"
-          className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
-        >
-          ← Dashboard
-        </Link>
+        <div className="flex flex-wrap items-center gap-4">
+          <Link
+            href="/dashboard"
+            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+          >
+            ← Dashboard
+          </Link>
+          <Link
+            href="/admin/charges"
+            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+          >
+            Charges
+          </Link>
+        </div>
 
         <h1 className="mt-5 text-3xl font-black tracking-tight text-white">Profiles</h1>
         <p className="mt-2 text-sm text-[var(--color-muted)]">

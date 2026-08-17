@@ -86,12 +86,20 @@ export default async function DashboardPage() {
               Profiles
             </Link>
             {viewer.isAdmin && (
-              <Link
-                href="/admin/profiles"
-                className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
-              >
-                Admin
-              </Link>
+              <>
+                <Link
+                  href="/admin/charges"
+                  className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+                >
+                  Charges
+                </Link>
+                <Link
+                  href="/admin/profiles"
+                  className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+                >
+                  Admin
+                </Link>
+              </>
             )}
             <form action={signOutOfSite}>
               <button
@@ -175,8 +183,15 @@ export default async function DashboardPage() {
                       <p className="flex items-center gap-2 text-sm font-semibold text-white">
                         {charge.dropLabel}
                         {charge.paidAt ? (
-                          <span className="rounded-full bg-[var(--color-elevated)] px-2 py-0.5 text-[10px] font-medium tracking-wide text-[var(--color-muted)] uppercase">
+                          <span className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase">
                             Paid
+                          </span>
+                        ) : charge.paidClaimedAt ? (
+                          <span
+                            title="You marked this sent — waiting on confirmation"
+                            className="inline-flex items-center rounded-full bg-[var(--color-warn)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-warn)] uppercase"
+                          >
+                            Sent
                           </span>
                         ) : (
                           <span className="inline-flex items-center rounded-full bg-[var(--color-brand)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase">
