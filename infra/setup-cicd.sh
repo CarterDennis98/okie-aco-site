@@ -42,6 +42,8 @@ ZONE="${ZONE:-us-central1-a}"
 DEPLOYER_EMAIL="${DEPLOYER}@${PROJECT_ID}.iam.gserviceaccount.com"
 RUNTIME_EMAIL="${RUNTIME_SA}@${PROJECT_ID}.iam.gserviceaccount.com"
 BOT_EMAIL="${BOT_SA}@${PROJECT_ID}.iam.gserviceaccount.com"
+# Cloud Build runs as the default compute service account unless told otherwise.
+BUILD_EMAIL="${BUILD_EMAIL:-${PROJECT_NUMBER}-compute@developer.gserviceaccount.com}"
 POOL_PATH="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}"
 
 say() { printf '\n== %s ==\n' "$1"; }
@@ -143,6 +145,11 @@ account)
       --project="$PROJECT_ID"
   fi
 
+  say "enabling APIs the deploy path needs"
+  gcloud services enable cloudresourcemanager.googleapis.com \
+    --project="$PROJECT_ID" --quiet >/dev/null
+  echo "  cloudresourcemanager.googleapis.com"
+
   say "granting project roles"
   # Deliberately narrow. Notably absent: any Secret Manager admin role (CI never creates
   # or reads secret VALUES except the one DB URL granted per-secret below), and any
@@ -154,7 +161,9 @@ account)
     roles/cloudsql.client \
     roles/compute.osAdminLogin \
     roles/iap.tunnelResourceAccessor \
-    roles/compute.viewer; do
+    roles/compute.viewer \
+    roles/serviceusage.serviceUsageConsumer \
+    roles/storage.admin; do
     gcloud projects add-iam-policy-binding "$PROJECT_ID" \
       --member="serviceAccount:${DEPLOYER_EMAIL}" \
       --role="$role" \
@@ -163,12 +172,15 @@ account)
     echo "  $role"
   done
 
-  # Cloud Build stages source in a bucket it manages; the submitter needs to write there.
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${DEPLOYER_EMAIL}" \
-    --role="roles/storage.objectAdmin" \
-    --condition=None --quiet >/dev/null
-  echo "  roles/storage.objectAdmin (Cloud Build source staging)"
+  # The last two above are what `gcloud builds submit` actually needs, and neither is
+  # obvious from its error message -- it reports "forbidden from accessing the bucket
+  # [<project>_cloudbuild]" for both:
+  #
+  #   serviceUsageConsumer  grants serviceusage.services.use. Without it the Storage call
+  #                         cannot be attributed to this project and is refused.
+  #   storage.admin         PROJECT level, not bucket level. objectAdmin covers objects
+  #                         but not storage.buckets.get/list, which submit needs to find
+  #                         and validate the staging bucket.
 
   # Deploying a service that RUNS AS okie-run means acting as it. Scoped to those two
   # accounts rather than granted project-wide.
@@ -177,8 +189,16 @@ account)
   # service account also needs actAs on THAT account -- without it OS Login's policy check
   # denies the login and sshd reports the useless "Server refused our key", which looks
   # like a key problem and is actually an IAM one.
-  say "letting the deployer act as $RUNTIME_SA and $BOT_SA"
-  for target in "$RUNTIME_EMAIL" "$BOT_EMAIL"; do
+  # THREE accounts, and each is a workload that runs AS one of them:
+  #   okie-run   the Cloud Run service
+  #   okie-bot   the VM (SSH into a VM running as an SA needs actAs on that SA)
+  #   <n>-compute  what Cloud Build itself runs as -- submitting a build is "act as"
+  #
+  # Every one of these produced a different, unhelpful error when missing: "Server refused
+  # our key" for the VM, and "caller does not have permission to act as service account
+  # projects/.../107095928486223113574" for Cloud Build.
+  say "letting the deployer act as $RUNTIME_SA, $BOT_SA, and Cloud Build's runtime"
+  for target in "$RUNTIME_EMAIL" "$BOT_EMAIL" "$BUILD_EMAIL"; do
     gcloud iam service-accounts add-iam-policy-binding "$target" \
       --member="serviceAccount:${DEPLOYER_EMAIL}" \
       --role="roles/iam.serviceAccountUser" \
