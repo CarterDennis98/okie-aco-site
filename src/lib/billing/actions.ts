@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
 import { requireAdmin, requireMember } from "@/lib/auth/guard";
 import { isPaymentMethod, methodLabel } from "@/lib/billing/methods";
+import { notifyPaymentClaim } from "@/lib/billing/notify";
 
 /**
  * The paid workflow.
@@ -52,18 +53,30 @@ export async function claimBillPaid(form: FormData): Promise<BillingResult> {
 
   const bill = await prisma.pasBill.findFirst({
     where: { id: billId, discordUserId: viewer.discordUserId, run: { dryRun: false } },
-    select: { id: true, paidAt: true },
+    select: { id: true, paidAt: true, totalCents: true, run: { select: { dropLabel: true } } },
   });
   if (!bill) return { ok: false, error: "Not found." };
   if (bill.paidAt) return { ok: false, error: "This charge is already marked received." };
+
+  const claimNote = note(form, "note");
 
   await prisma.pasBill.update({
     where: { id: bill.id },
     data: {
       paidClaimedAt: new Date(),
       paidClaimedMethod: method,
-      paidClaimedNote: note(form, "note"),
+      paidClaimedNote: claimNote,
     },
+  });
+
+  // After the write, and never allowed to fail it: the claim is what the admin queue
+  // reads, the ping is only how the operator hears about it sooner.
+  await notifyPaymentClaim({
+    memberName: viewer.displayName,
+    amountCents: bill.totalCents,
+    dropLabel: bill.run.dropLabel,
+    method: methodLabel(method),
+    note: claimNote,
   });
 
   revalidatePath("/dashboard");

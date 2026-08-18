@@ -1,0 +1,41 @@
+# What `gcloud builds submit` may upload.
+#
+# This is a DIFFERENT gate from .dockerignore and it runs earlier. gcloud tars the
+# working directory and puts it in a Cloud Storage bucket before Docker sees any of it,
+# so a file excluded from the image by .dockerignore can still end up sitting in GCS.
+# Anything secret has to be listed in BOTH.
+#
+# Without this file gcloud invents one from .gitignore, which happens to cover .env
+# today -- but relying on an implicit fallback to keep credentials out of a bucket is
+# not a control, it is a coincidence.
+
+# --- must never be uploaded -------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# Operator data: owner maps carrying member emails and Discord ids, plus any
+# credential exports or database dumps left in the working directory.
+data/
+*.dump
+okie-local.dump
+
+# --- pointless to upload ----------------------------------------------------
+.git
+.gitignore
+.gitattributes
+
+node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+
+# Regenerated inside the builder from prisma/schema.prisma.
+src/generated
+
+.claude
+.vscode
+.idea
+npm-debug.log*
