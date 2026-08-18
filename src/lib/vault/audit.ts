@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
+import { siteStyle } from "@/lib/sites";
 
 /**
  * Change recording and operator notification.
@@ -35,6 +36,48 @@ export type ChangeRecord = {
   /** Column names that changed. Never their values. */
   fields?: string[];
 };
+
+/**
+ * The profiles a bulk change touched, grouped by retailer, as a fenced block.
+ *
+ * "disabled 20 profiles" tells the operator something happened but not what, and the
+ * whole point of the notification is being able to tell at a glance whether it looks
+ * deliberate. Names and retailers only -- the rule at the top of this file still holds.
+ *
+ * CAPPED, because Discord rejects a message over 2000 characters and a member tidying up
+ * can select a hundred rows. A truncated list plus a count is useful; a rejected webhook
+ * is not, and it would leave `notifiedAt` null and look like an outage.
+ */
+const MAX_LISTED = 40;
+
+export function detailBlock(changes: ChangeRecord[]): string {
+  const bySite = new Map<string, string[]>();
+  for (const change of changes) {
+    const site = change.siteKey ? siteStyle(change.siteKey).label : "Other";
+    const names = bySite.get(site) ?? [];
+    if (change.label) names.push(change.label);
+    bySite.set(site, names);
+  }
+
+  const lines: string[] = [];
+  let listed = 0;
+  let omitted = 0;
+
+  for (const [site, names] of [...bySite].sort()) {
+    lines.push(`${site} (${names.length})`);
+    for (const name of names.sort()) {
+      if (listed < MAX_LISTED) {
+        lines.push(`  ${name}`);
+        listed++;
+      } else {
+        omitted++;
+      }
+    }
+  }
+  if (omitted) lines.push(`  ... and ${omitted} more`);
+
+  return `\n\`\`\`text\n${lines.join("\n")}\n\`\`\``;
+}
 
 const ACTION_VERB: Record<VaultAction, string> = {
   CREATE: "added",
@@ -161,7 +204,7 @@ export async function recordBulkChange(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        content: `**${actorName}** ${summary}`,
+        content: `**${actorName}** ${summary}${detailBlock(changes)}`,
         allowed_mentions: { parse: [] },
       }),
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
