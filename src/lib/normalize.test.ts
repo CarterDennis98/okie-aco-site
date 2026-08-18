@@ -166,9 +166,18 @@ describe("safeLabel", () => {
 // Parity against the bot's real implementation
 // ---------------------------------------------------------------------------
 
+// `describe.skipIf` skips RUNNING the tests, but Vitest still executes this callback to
+// collect them -- so a bare require() in here throws before the skip can help, in any
+// checkout without the bot repo beside it. That is every CI run, and it failed the whole
+// file rather than skipping it. Loaded through a guard instead; when the bot is absent
+// the suite never runs, so the placeholder is never touched.
+function loadBot<T>(modulePath: string): T {
+  return botAvailable ? (require(modulePath) as T) : ({} as T);
+}
+
 describe.skipIf(!botAvailable)("parity with okie-aco-mirror", () => {
-  const bot = require(BOT_SCRAPE) as BotScrape;
-  const botRender = require(BOT_RENDER) as BotRender;
+  const bot = loadBot<BotScrape>(BOT_SCRAPE);
+  const botRender = loadBot<BotRender>(BOT_RENDER);
 
   /** Every distinct product and profile string in the real billing records. */
   function realStrings() {
