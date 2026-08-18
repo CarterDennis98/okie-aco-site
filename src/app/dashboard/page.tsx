@@ -156,10 +156,8 @@ export default async function DashboardPage() {
             )
           ) : (
             // Something on the right in the settled state too, so the box doesn't read
-            // as lopsided the one time there's no call to action.
-            // Green, not grey: settled up is the good outcome and the one moment this
-            // page has nothing to ask of the member, so it should read as a result
-            // rather than as an absence.
+            // as lopsided the one time there's no call to action -- and green rather
+            // than grey, because settled up is the good outcome, not an absence.
             <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-good)]/40 bg-[var(--color-good)]/15 px-4 py-2 text-sm font-semibold text-[var(--color-good)]">
               <svg
                 viewBox="0 0 24 24"
