@@ -1,0 +1,13 @@
+Member success photos go in this directory.
+
+  - Any .jpg / .jpeg / .png / .webp / .avif is picked up automatically; there is no list
+    to update and no database row to add.
+  - Files render in FILENAME order, so prefix them: 01-, 02-, 03-.
+  - The name after that prefix becomes the alt text, so make it descriptive:
+    02-prismatic-evolutions-cases.jpg reads as "Member haul - prismatic evolutions cases".
+  - Crop roughly square and compress before committing. They are served from the container
+    image, so every megabyte here is a megabyte in every deploy.
+  - Nothing renders at all when this directory holds no images, so the page is never left
+    with an empty heading.
+
+See src/components/member-success.tsx.

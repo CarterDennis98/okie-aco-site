@@ -1,9 +1,9 @@
 import { CheckoutFeed } from "@/components/checkout-feed";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { StatsPanel } from "@/components/stats-panel";
+import { MemberSuccess } from "@/components/member-success";
 import { SupportedSites } from "@/components/supported-sites";
 import {
-  getApprovedTestimonials,
   getPublicFeed,
   getRangeStats,
   getRecentDrops,
@@ -39,14 +39,13 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 export default async function HomePage() {
   // Both ranges are computed server-side and handed to the panel, so switching
   // between them is instant and the page stays static.
-  const [feed, recentStats, allStats, recentDrops, allDrops, testimonials, viewer] =
+  const [feed, recentStats, allStats, recentDrops, allDrops, viewer] =
     await Promise.all([
       getPublicFeed(),
       getRangeStats("recent"),
       getRangeStats("all"),
       getRecentDrops("recent"),
       getRecentDrops("all"),
-      getApprovedTestimonials(),
       // Only flips the header between "Sign in" and "Dashboard". Costs nothing for a
       // signed-out visitor -- with no session cookie this never reaches the database.
       currentViewer(),
@@ -81,28 +80,10 @@ export default async function HomePage() {
 
         <SupportedSites />
 
-        {testimonials.length > 0 && (
-          <section className="mt-16">
-            <SectionHeading>What members say</SectionHeading>
-            <ul className="grid gap-3 sm:grid-cols-2">
-              {testimonials.map((testimonial) => (
-                <li
-                  key={testimonial.id}
-                  className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-5"
-                >
-                  <p className="text-sm leading-relaxed text-pretty text-[var(--color-fg)]">
-                    &ldquo;{testimonial.body}&rdquo;
-                  </p>
-                  {testimonial.attribution && (
-                    <p className="mt-3 text-xs text-[var(--color-muted)]">
-                      — {testimonial.attribution}
-                    </p>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
+        {/* Photos rather than quotes. The Testimonial table and its admin screen are left
+            in place -- nothing is deleted, so text quotes can come back alongside these
+            without rebuilding anything. */}
+        <MemberSuccess />
 
         <section className="mt-20 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-6 py-10 text-center">
           <h2 className="text-2xl font-bold tracking-tight text-white">Join Okie ACO</h2>
