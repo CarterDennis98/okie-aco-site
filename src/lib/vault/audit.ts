@@ -116,6 +116,68 @@ export async function recordChange(change: ChangeRecord, actorName: string): Pro
 }
 
 /**
+ * Record many changes at once, and notify ONCE.
+ *
+ * A bulk import is still N changes and gets N rows -- the audit trail has to be able to
+ * answer "when did this profile appear" per profile. But it is one action by one person,
+ * and posting fifteen webhook lines for one upload trains the operator to ignore the
+ * channel, which costs more than it gains.
+ *
+ * Never throws, for the same reason as recordChange: the writes it describes have
+ * already succeeded.
+ */
+export async function recordBulkChange(
+  changes: ChangeRecord[],
+  actorName: string,
+  summary: string,
+): Promise<void> {
+  if (changes.length === 0) return;
+
+  let ids: string[] = [];
+  try {
+    // createMany doesn't return rows, so the ids are generated here to stamp later.
+    const rows = changes.map((change) => ({
+      id: crypto.randomUUID(),
+      actorDiscordId: change.actorDiscordId,
+      ownerDiscordId: change.ownerDiscordId,
+      entity: change.entity,
+      entityId: change.entityId,
+      action: change.action,
+      siteKey: change.siteKey ?? null,
+      label: change.label ?? null,
+      fields: change.fields ?? [],
+    }));
+    await prisma.vaultChange.createMany({ data: rows });
+    ids = rows.map((r) => r.id);
+  } catch (error) {
+    console.error("vault: failed to record bulk changes", error);
+    return;
+  }
+
+  if (!WEBHOOK_URL) return;
+
+  try {
+    const response = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        content: `**${actorName}** ${summary}`,
+        allowed_mentions: { parse: [] },
+      }),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`webhook returned ${response.status}`);
+
+    await prisma.vaultChange.updateMany({
+      where: { id: { in: ids } },
+      data: { notifiedAt: new Date() },
+    });
+  } catch (error) {
+    console.error("vault: changes recorded but not notified", error);
+  }
+}
+
+/**
  * Which fields differ, for the audit trail.
  *
  * Compares only the keys present in `next`, so a partial update doesn't report every

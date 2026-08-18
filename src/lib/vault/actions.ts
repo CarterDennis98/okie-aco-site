@@ -5,9 +5,14 @@ import { prisma } from "@/db/client";
 import { getMemberProfile, type VaultProfileDetail } from "@/db/queries/vault";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
-import { changedFields, recordChange } from "@/lib/vault/audit";
+import { changedFields, recordBulkChange, recordChange } from "@/lib/vault/audit";
 import { detectBrand, last4, normalizePan } from "@/lib/vault/card";
 import { encrypt } from "@/lib/vault/crypto";
+import {
+  isSupportedEmail,
+  providerForEmail,
+  unsupportedMessage,
+} from "@/lib/vault/email-providers";
 import { revealCredential, type RevealResult } from "@/lib/vault/reveal";
 import {
   bool,
@@ -303,23 +308,42 @@ export async function setProfileActive(form: FormData): Promise<ActionResult> {
   return { ok: true };
 }
 
-export async function deleteProfile(form: FormData): Promise<ActionResult> {
-  const viewer = await requireMember();
-  const profileId = text(form, "profileId");
+// ---------------------------------------------------------------------------
+// Email app passwords
+// ---------------------------------------------------------------------------
 
-  const profile = await prisma.vaultProfile.findFirst({
-    where: { id: profileId, discordUserId: viewer.discordUserId },
+/** Sensible IMAP defaults so a member never has to know what a host is. */
+/**
+ * Remove several profiles at once.
+ *
+ * Ownership comes from the guard and the
+ * query carries both predicates, so a member cannot delete another's row by adding an id
+ * to the form. Ids that aren't theirs are silently absent from the result rather than
+ * erroring -- the count that comes back says how many actually went.
+ *
+ * One notification for one action. Fifty separate webhook lines for a member tidying up
+ * would train the operator to ignore the channel.
+ */
+export async function deleteProfiles(form: FormData): Promise<ActionResult & { removed?: number }> {
+  const viewer = await requireMember();
+  const ids = form.getAll("profileId").map(String).filter(Boolean);
+  if (ids.length === 0) return { ok: false, error: "Nothing selected." };
+
+  const profiles = await prisma.vaultProfile.findMany({
+    where: { id: { in: ids }, discordUserId: viewer.discordUserId },
     select: { id: true, name: true, siteKey: true, accountId: true },
   });
-  if (!profile) return { ok: false, error: "Profile not found." };
+  if (profiles.length === 0) return { ok: false, error: "Not found." };
 
-  // The account goes with it: one account serves exactly one profile, so leaving it
-  // behind would strand a login nobody can see or reach.
-  await prisma.vaultProfile.delete({ where: { id: profile.id } });
-  await prisma.vaultAccount.delete({ where: { id: profile.accountId } });
+  // The accounts go with them: one account serves exactly one profile, so leaving them
+  // behind would strand logins nobody can see or reach.
+  await prisma.$transaction([
+    prisma.vaultProfile.deleteMany({ where: { id: { in: profiles.map((p) => p.id) } } }),
+    prisma.vaultAccount.deleteMany({ where: { id: { in: profiles.map((p) => p.accountId) } } }),
+  ]);
 
-  await recordChange(
-    {
+  await recordBulkChange(
+    profiles.map((profile) => ({
       actorDiscordId: viewer.discordUserId,
       ownerDiscordId: viewer.discordUserId,
       entity: VaultEntity.VAULT_PROFILE,
@@ -327,30 +351,14 @@ export async function deleteProfile(form: FormData): Promise<ActionResult> {
       action: VaultAction.DELETE,
       siteKey: profile.siteKey,
       label: profile.name,
-    },
+    })),
     viewer.displayName,
+    `removed ${profiles.length} profile${profiles.length === 1 ? "" : "s"}`,
   );
 
   revalidatePath("/dashboard/profiles");
-  return { ok: true };
+  return { ok: true, removed: profiles.length };
 }
-
-// ---------------------------------------------------------------------------
-// Email app passwords
-// ---------------------------------------------------------------------------
-
-/** Sensible IMAP defaults so a member never has to know what a host is. */
-const IMAP_HOSTS: Record<string, { host: string; port: number }> = {
-  "gmail.com": { host: "imap.gmail.com", port: 993 },
-  "googlemail.com": { host: "imap.gmail.com", port: 993 },
-  "icloud.com": { host: "imap.mail.me.com", port: 993 },
-  "me.com": { host: "imap.mail.me.com", port: 993 },
-  "yahoo.com": { host: "imap.mail.yahoo.com", port: 993 },
-  "outlook.com": { host: "outlook.office365.com", port: 993 },
-  "hotmail.com": { host: "outlook.office365.com", port: 993 },
-  "live.com": { host: "outlook.office365.com", port: 993 },
-  "aol.com": { host: "imap.aol.com", port: 993 },
-};
 
 export async function saveEmailCredential(form: FormData): Promise<ActionResult> {
   const viewer = await requireMember();
@@ -360,8 +368,10 @@ export async function saveEmailCredential(form: FormData): Promise<ActionResult>
   if (!EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid email address." };
   if (!appPassword) return { ok: false, error: "Enter the app password." };
 
-  const domain = email.split("@")[1] ?? "";
-  const imap = IMAP_HOSTS[domain] ?? null;
+  // A closed provider list: an app password on an untested provider is a credential
+  // that silently never works, discovered mid-drop. See email-providers.ts.
+  if (!isSupportedEmail(email)) return { ok: false, error: unsupportedMessage(email) };
+  const imap = providerForEmail(email);
 
   const existing = await prisma.emailCredential.findUnique({
     where: { email },
@@ -384,8 +394,8 @@ export async function saveEmailCredential(form: FormData): Promise<ActionResult>
       email,
       discordUserId: viewer.discordUserId,
       appPasswordEnc,
-      imapHost: imap?.host ?? null,
-      imapPort: imap?.port ?? null,
+      imapHost: imap?.imapHost ?? null,
+      imapPort: imap?.imapPort ?? null,
     },
     // A new password invalidates whatever the last verification said.
     update: { appPasswordEnc, verifiedAt: null, lastError: null },

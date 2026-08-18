@@ -27,6 +27,7 @@ type RevealResult = { ok: true; value: string; email: string } | { ok: false; er
 export function RevealAppPassword({
   email,
   mailbox,
+  usesEmailCodes = true,
   action,
   compact = false,
 }: {
@@ -38,6 +39,12 @@ export function RevealAppPassword({
    * password either way -- that is the one that opens the inbox holding the code.
    */
   mailbox: string | null;
+  /**
+   * False when the retailer never emails a verification code -- Pokémon Center checks
+   * out as a guest. Renders nothing at all: a "no app password" warning there is telling
+   * the member to fix something that was never broken.
+   */
+  usesEmailCodes?: boolean;
   action: (form: FormData) => Promise<RevealResult>;
   compact?: boolean;
 }) {
@@ -62,6 +69,8 @@ export function RevealAppPassword({
       if (timer.current) clearTimeout(timer.current);
     };
   }, [value]);
+
+  if (!usesEmailCodes) return null;
 
   if (mailbox === null) {
     return (

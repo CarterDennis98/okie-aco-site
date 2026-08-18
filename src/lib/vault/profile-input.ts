@@ -95,7 +95,6 @@ export function profileFieldsFromForm(form: FormData) {
     cardExpMonth: month,
     cardExpYear: year,
     matchNameOnCardAndAddress: bool(form, "matchNameOnCardAndAddress"),
-    onlyCheckoutOnce: bool(form, "onlyCheckoutOnce"),
   };
 }
 

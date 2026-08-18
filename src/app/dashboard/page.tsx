@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { MemberCheckoutList } from "@/components/member-checkout-list";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
+import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { getMemberDashboard } from "@/db/queries/member";
 import { getEmailsNeedingAppPassword, getMemberProfiles } from "@/db/queries/vault";
 import { count, plural } from "@/lib/format";
@@ -29,10 +30,12 @@ export default async function DashboardPage() {
   // The guard lives in the page, not the layout, and its return value is the ONLY
   // source of the id below. Nothing here reads an id from the URL.
   const viewer = await requireMember();
-  const [data, profileGroups, needingAppPassword] = await Promise.all([
+  const [data, profileGroups, needingAppPassword, pendingConfirmation] = await Promise.all([
     getMemberDashboard(viewer.discordUserId),
     getMemberProfiles(viewer.discordUserId),
     getEmailsNeedingAppPassword(viewer.discordUserId),
+    // Only the operator sees the badge, and only they pay for the query.
+    viewer.isAdmin ? getPendingConfirmationCount() : Promise.resolve(0),
   ]);
 
   const allProfiles = profileGroups.flatMap((g) => g.profiles);
@@ -89,9 +92,19 @@ export default async function DashboardPage() {
               <>
                 <Link
                   href="/admin/charges"
-                  className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+                  className="relative rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
                 >
                   Charges
+                  {pendingConfirmation > 0 && (
+                    <span
+                      // Announced rather than left as a bare number: a badge reading "3"
+                      // next to "Charges" means nothing to a screen reader on its own.
+                      aria-label={`${pendingConfirmation} awaiting confirmation`}
+                      className="absolute -top-0.5 -right-0.5 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-[var(--color-warn)] px-1 text-[10px] font-bold text-[var(--color-ink)] tabular-nums"
+                    >
+                      {pendingConfirmation > 99 ? "99+" : pendingConfirmation}
+                    </span>
+                  )}
                 </Link>
                 <Link
                   href="/admin/profiles"
@@ -144,7 +157,10 @@ export default async function DashboardPage() {
           ) : (
             // Something on the right in the settled state too, so the box doesn't read
             // as lopsided the one time there's no call to action.
-            <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-edge)] bg-[var(--color-elevated)] px-4 py-2 text-sm font-medium text-[var(--color-muted)]">
+            // Green, not grey: settled up is the good outcome and the one moment this
+            // page has nothing to ask of the member, so it should read as a result
+            // rather than as an absence.
+            <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-good)]/40 bg-[var(--color-good)]/15 px-4 py-2 text-sm font-semibold text-[var(--color-good)]">
               <svg
                 viewBox="0 0 24 24"
                 className="size-4"

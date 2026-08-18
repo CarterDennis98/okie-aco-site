@@ -31,9 +31,14 @@ const PROFILE_MAP = path.join(MIRROR_REPO, "data", "profileMap.json");
 const THUMBNAILS = path.join(MIRROR_REPO, "data", "thumbnails.json");
 const CHECKOUTS_EXPORT = path.join(MIRROR_REPO, "data", "checkouts-export.json");
 
-// The only real billing runs so far were dry runs -- every DM went to the operator.
-// The dashboard filters dry runs out of "unpaid fees", so seeding them truthfully
-// would leave the local UI with nothing to render. Promoted here, and ONLY here.
+// Several early billing runs were dry runs -- every DM went to the operator. The
+// dashboard filters dry runs out of "unpaid fees", so seeding them truthfully would
+// leave the local UI with nothing to render. Promoted here, and ONLY here.
+//
+// A dry run is promoted ONLY when no real run exists for the same drop. Once the
+// operator started doing a preview and then the real thing -- first on 8/14/2026 -- both
+// sessions were "sent", both were promoted, and every member on that drop was billed
+// twice. A preview is not a billing event when the real one happened.
 const PROMOTE_DRY_RUNS = true;
 
 type RawCheckout = {
@@ -315,8 +320,18 @@ async function main() {
   // --- Billing runs -------------------------------------------------------
   let billCount = 0;
   let staleBills = 0;
+  let supersededRuns = 0;
+  // Drops that have a real sent run. Their dry-run previews are not billing events.
+  const dropsWithRealRuns = new Set(
+    sessions.filter((s) => s.status === "sent" && !s.dryRun).map((s) => s.window.dropDateLabel),
+  );
+
   for (const session of sessions) {
     if (session.status !== "sent") continue;
+    if (session.dryRun && dropsWithRealRuns.has(session.window.dropDateLabel)) {
+      supersededRuns++;
+      continue;
+    }
     const deliveryByUser = new Map(session.delivery.results.map((r) => [r.userId, r]));
 
     const run = await prisma.pasRun.upsert({
@@ -372,7 +387,9 @@ async function main() {
     }
   }
   console.log(
-    `  bills    : ${billCount}${staleBills ? ` (${staleBills} skipped -- non-billable profiles)` : ""}`,
+    `  bills    : ${billCount}` +
+      `${staleBills ? ` · ${staleBills} skipped (non-billable profiles)` : ""}` +
+      `${supersededRuns ? ` · ${supersededRuns} dry run(s) superseded by a real run` : ""}`,
   );
 
   // --- Testimonials -------------------------------------------------------

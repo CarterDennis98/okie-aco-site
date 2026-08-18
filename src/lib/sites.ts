@@ -51,6 +51,19 @@ export type SiteStyle = {
    * so it shouldn't hold a slot on the main bot.
    */
   profileSoftCap?: number;
+
+  /**
+   * Whether checking out here involves an emailed verification code.
+   *
+   * Pokémon Center checks out as a guest -- there is no login, so no code is ever sent
+   * and an app password would do nothing. Flagging those profiles as "missing" one told
+   * members to go and fix something that isn't broken.
+   *
+   * Defaults to true: a new retailer almost certainly mails a code, and being nagged
+   * about a password you don't need is a smaller failure than silently not asking for
+   * one you do.
+   */
+  usesEmailCodes?: boolean;
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -76,6 +89,8 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     width: 897,
     height: 900,
     profileSoftCap: 10,
+    // Guest checkout: no login, so no verification code to read.
+    usesEmailCodes: false,
   },
   "best-buy": {
     label: "Best Buy",

@@ -5,7 +5,7 @@ import Image from "next/image";
 import type { VaultProfileDetail, VaultProfileSummary } from "@/db/queries/vault";
 import { siteStyle } from "@/lib/sites";
 import {
-  deleteProfile,
+  deleteProfiles,
   loadProfileForEdit,
   revealOwnAppPassword,
   setProfileActive,
@@ -56,63 +56,56 @@ function Toggle({ profile }: { profile: VaultProfileSummary }) {
   );
 }
 
-function DeleteButton({ profile }: { profile: VaultProfileSummary }) {
-  const [confirming, setConfirming] = useState(false);
-  const [state, formAction, pending] = useActionState(
-    async (_previous: ActionResult | null, formData: FormData) => deleteProfile(formData),
-    null,
-  );
-
-  if (!confirming) {
-    return (
-      <button
-        type="button"
-        onClick={() => setConfirming(true)}
-        className="text-xs text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)]"
-      >
-        Remove
-      </button>
-    );
-  }
-
-  return (
-    <form action={formAction} className="flex items-center gap-2">
-      <input type="hidden" name="profileId" value={profile.id} />
-      {/* Deleting takes the retailer login with it, so say so before the click. */}
-      <span className="text-xs text-[var(--color-muted)]">
-        {state && !state.ok ? state.error : "Delete profile and login?"}
-      </span>
-      <button
-        type="submit"
-        disabled={pending}
-        className="text-xs font-semibold text-[var(--color-brand)] disabled:opacity-60"
-      >
-        Yes
-      </button>
-      <button
-        type="button"
-        onClick={() => setConfirming(false)}
-        className="text-xs text-[var(--color-muted)]"
-      >
-        No
-      </button>
-    </form>
-  );
-}
+/**
+ * How many profile rows are visible before the list starts scrolling.
+ *
+ * Also clamped to a share of the viewport below, because a row count alone produced a
+ * box taller than the screen -- you scrolled the page for two screens before the list's
+ * own scrollbar even engaged, which defeats the point of capping it.
+ */
+const VISIBLE_ROWS = 10;
+/**
+ * Approximate rendered height of one row, in rem: two text lines, the reveal control,
+ * and the row padding. Only ever sizes the scroll box, so being a little out shows 24
+ * or 26 rows rather than breaking anything.
+ */
+const ROW_REM = 5.75;
+/** Upper bound as a share of the window, so the scroll always starts on screen. */
+const VIEWPORT_SHARE = "55vh";
 
 function ProfileRow({
   profile,
   onEdit,
   onBackup,
+  selected,
+  onSelect,
 }: {
   profile: VaultProfileSummary;
   onEdit: (id: string) => void;
   /** Sits past the retailer's soft cap, so it runs on the backup bot. */
   onBackup: boolean;
+  selected: boolean;
+  onSelect: (checked: boolean) => void;
 }) {
   return (
-    <li className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3.5 sm:px-5">
-      <Toggle profile={profile} />
+    <li
+      className={
+        "flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3.5 sm:px-5 " +
+        (selected ? "bg-[var(--color-brand)]/5" : "")
+      }
+    >
+      {/* Both controls sit in one fixed-height box so the checkbox and the toggle share a
+          centre line, rather than each centring inside its own differently-sized cell. */}
+      <span className="flex h-5 shrink-0 items-center gap-3">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => onSelect(e.currentTarget.checked)}
+          aria-label={`Select ${profile.name}`}
+          className="size-4 accent-[var(--color-brand)]"
+        />
+        <Toggle profile={profile} />
+      </span>
 
       <div className="min-w-0 flex-1">
         <p className="flex items-center gap-2 text-sm font-semibold text-white">
@@ -140,22 +133,114 @@ function ProfileRow({
         <RevealAppPassword
           email={profile.email}
           mailbox={profile.mailbox}
+          usesEmailCodes={siteStyle(profile.siteKey).usesEmailCodes !== false}
           action={revealOwnAppPassword}
           compact
         />
       </div>
 
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => onEdit(profile.id)}
-          className="text-xs font-medium text-[var(--color-fg)] transition-colors hover:text-white"
-        >
-          Edit
-        </button>
-        <DeleteButton profile={profile} />
-      </div>
+      {/* Removal is deliberately only via the checkbox + "Remove selected" above. One
+          stray click next to a toggle used to delete a profile and its retailer login
+          with a single confirm; making it a two-step selection is the point. */}
+      <button
+        type="button"
+        onClick={() => onEdit(profile.id)}
+        className="self-center text-xs font-medium text-[var(--color-fg)] transition-colors hover:text-white"
+      >
+        Edit
+      </button>
     </li>
+  );
+}
+
+/**
+ * Select-all plus the bulk remove.
+ *
+ * Deliberately two clicks even when many rows are selected: removing forty profiles takes
+ * their retailer logins with them and there is no undo, so the count is spelled out in
+ * the confirmation rather than hidden behind a generic "Are you sure?".
+ */
+function BulkBar({
+  profiles,
+  selected,
+  onToggleAll,
+  onCleared,
+}: {
+  profiles: VaultProfileSummary[];
+  selected: Set<string>;
+  onToggleAll: (checked: boolean) => void;
+  onCleared: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [state, formAction, pending] = useActionState(
+    async (_previous: ActionResult | null, formData: FormData) => {
+      const result = await deleteProfiles(formData);
+      if (result.ok) {
+        setConfirming(false);
+        onCleared();
+      }
+      return result;
+    },
+    null,
+  );
+
+  const count = selected.size;
+  const allSelected = count > 0 && count === profiles.length;
+
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
+      <label className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+        <input
+          type="checkbox"
+          checked={allSelected}
+          ref={(el) => {
+            // Partial selection reads as neither on nor off.
+            if (el) el.indeterminate = count > 0 && !allSelected;
+          }}
+          onChange={(e) => onToggleAll(e.currentTarget.checked)}
+          className="size-4 accent-[var(--color-brand)]"
+        />
+        Select all
+      </label>
+
+      {count > 0 && <span className="text-xs text-[var(--color-fg)]">{count} selected</span>}
+
+      {count > 0 &&
+        (confirming ? (
+          <form action={formAction} className="flex flex-wrap items-center gap-2">
+            {[...selected].map((id) => (
+              <input key={id} type="hidden" name="profileId" value={id} />
+            ))}
+            <span className="text-xs text-[var(--color-muted)]">
+              {state && !state.ok
+                ? state.error
+                : `Delete ${count} profile${count === 1 ? "" : "s"} and their logins?`}
+            </span>
+            <button
+              type="submit"
+              disabled={pending}
+              className="text-xs font-semibold text-[var(--color-brand)] disabled:opacity-60"
+            >
+              {pending ? "Removing…" : "Yes, remove"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="text-xs text-[var(--color-muted)]"
+            >
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            className="rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)]"
+          >
+            Remove selected
+          </button>
+        ))}
+    </div>
   );
 }
 
@@ -173,6 +258,7 @@ export function ProfileManager({
   const [editing, setEditing] = useState<VaultProfileDetail | null>(null);
   const [adding, setAdding] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const style = siteStyle(siteKey);
   const activeCount = profiles.filter((p) => p.active).length;
 
@@ -268,16 +354,52 @@ export function ProfileManager({
           No profiles for {style.label} yet.
         </p>
       ) : (
-        <ul className="divide-y divide-[var(--color-edge)] overflow-hidden rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
-          {profiles.map((profile) => (
-            <ProfileRow
-              key={profile.id}
-              profile={loading === profile.id ? { ...profile, name: `${profile.name}…` } : profile}
-              onEdit={onEdit}
-              onBackup={backupIds.has(profile.id)}
-            />
-          ))}
-        </ul>
+        <>
+          <BulkBar
+            profiles={profiles}
+            selected={selected}
+            onToggleAll={(checked) =>
+              setSelected(checked ? new Set(profiles.map((p) => p.id)) : new Set())
+            }
+            onCleared={() => setSelected(new Set())}
+          />
+          {/* Scrolls past VISIBLE_ROWS rather than running the page long: a member with
+              700 Walmart profiles would otherwise make every section below this one
+              unreachable. */}
+          <ul
+            className={
+              "divide-y divide-[var(--color-edge)] rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] " +
+              (profiles.length > VISIBLE_ROWS
+                ? "overflow-y-auto overscroll-contain"
+                : "overflow-hidden")
+            }
+            style={
+              profiles.length > VISIBLE_ROWS
+                ? { maxHeight: `min(${VISIBLE_ROWS * ROW_REM}rem, ${VIEWPORT_SHARE})` }
+                : undefined
+            }
+          >
+            {profiles.map((profile) => (
+              <ProfileRow
+                key={profile.id}
+                profile={
+                  loading === profile.id ? { ...profile, name: `${profile.name}…` } : profile
+                }
+                onEdit={onEdit}
+                onBackup={backupIds.has(profile.id)}
+                selected={selected.has(profile.id)}
+                onSelect={(checked) =>
+                  setSelected((prev) => {
+                    const next = new Set(prev);
+                    if (checked) next.add(profile.id);
+                    else next.delete(profile.id);
+                    return next;
+                  })
+                }
+              />
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );

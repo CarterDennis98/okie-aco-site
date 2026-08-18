@@ -43,10 +43,11 @@ async function main() {
   for (const row of rows) {
     const pan = decrypt(row.cardNumberEnc, { entity: "vault_profile", field: "card_number" });
     const cvv = decrypt(row.cardCvvEnc, { entity: "vault_profile", field: "card_cvv" });
-    const password = decrypt(row.account.passwordEnc, {
-      entity: "vault_account",
-      field: "password",
-    });
+    // Null is legitimate on a guest-checkout retailer; only a stored-but-empty value
+    // is a problem worth counting.
+    const password = row.account.passwordEnc
+      ? decrypt(row.account.passwordEnc, { entity: "vault_account", field: "password" })
+      : null;
 
     if (last4(pan) !== row.cardLast4) {
       panMismatch++;
@@ -59,7 +60,7 @@ async function main() {
     if (!isLuhnValid(pan)) luhnFail++;
     if (!cvv) cvvEmpty++;
     else if (!isValidCvv(cvv, detectBrand(pan))) cvvWrongLength++;
-    if (!password) pwEmpty++;
+    if (password !== null && !password) pwEmpty++;
   }
 
   console.log(`Decrypted ${rows.length} profiles and their accounts.\n`);

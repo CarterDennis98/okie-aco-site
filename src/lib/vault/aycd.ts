@@ -83,6 +83,28 @@ export function countryName(code: string): string {
   return String(code ?? "").toUpperCase() === "US" ? "United States" : code;
 }
 
+// The inverses, for reading an export back in. Built from the same table so the two
+// directions cannot drift: a round trip has to land on the code the rest of the system
+// stores, or the database ends up holding "Oklahoma" on some rows and "OK" on others.
+const STATE_CODES: Record<string, string> = Object.fromEntries(
+  Object.entries(STATE_NAMES).map(([code, name]) => [name.toUpperCase(), code]),
+);
+
+/** "Oklahoma" -> "OK". Already-coded input and anything unrecognised passes through. */
+export function stateCode(value: string): string {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return trimmed;
+  const upper = trimmed.toUpperCase();
+  if (STATE_NAMES[upper]) return upper;
+  return STATE_CODES[upper] ?? trimmed;
+}
+
+/** "United States" -> "US". Anything else passes through. */
+export function countryCode(value: string): string {
+  const trimmed = String(value ?? "").trim();
+  return trimmed.toUpperCase() === "UNITED STATES" ? "US" : trimmed;
+}
+
 export type AycdAddress = {
   name: string;
   email: string;

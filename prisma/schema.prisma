@@ -464,8 +464,13 @@ model VaultAccount {
   // The retailer login. Also the profile's email: the 1:1 rule members asked for is
   // enforced structurally by this unique plus VaultProfile.accountId being unique,
   // rather than by a check that could drift.
-  email       String
-  passwordEnc String @map("password_enc")
+  email String
+
+  // Nullable: some retailers need no login at all. Pokémon Center checks out as a guest
+  // against the email on the profile, so an account row there exists to carry the
+  // address and hold the 1:1 link, not a password. Null means "no login", never
+  // "password unknown" -- a site that needs one and lacks it shows as missing in admin.
+  passwordEnc String? @map("password_enc")
 
   discordUserId String  @map("discord_user_id")
   active        Boolean @default(true)

@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { EmailCredentialSummary } from "@/db/queries/vault";
+import { EMAIL_PROVIDERS } from "@/lib/vault/email-providers";
 import {
   deleteEmailAlias,
   deleteEmailCredential,
@@ -32,16 +33,13 @@ const field =
 function AppPasswordGuide() {
   return (
     <details className="group mt-3 rounded-lg border border-[var(--color-edge)] bg-[var(--color-surface)] p-4">
-      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-sm font-medium text-[var(--color-fg)]">
+      <summary className="inline-flex list-none items-center gap-1.5 text-sm font-medium text-[var(--color-fg)]">
         <span aria-hidden className="transition-transform group-open:rotate-90">
           ›
         </span>
         How do I get an app password?
       </summary>
 
-      {/* PLACEHOLDER — replace with the real per-provider walkthrough and screenshots.
-          Deliberately not invented: the exact menu path differs by provider and changes
-          often, and a confidently wrong instruction here wastes a member's drop night. */}
       <div className="mt-3 flex flex-col gap-3 text-sm text-[var(--color-muted)]">
         <p>
           An app password is a one-off code your email provider generates for a single application.
@@ -49,21 +47,40 @@ function AppPasswordGuide() {
           works for mail access, and you can revoke it at any time without changing anything else
           about your account.
         </p>
-        <p>
-          Most providers require two-factor authentication to be switched on before they will issue
-          one. You&rsquo;ll find the option under your account&rsquo;s security settings, usually
-          named &ldquo;App passwords&rdquo;.
-        </p>
-        <p className="rounded-md border border-dashed border-[var(--color-edge)] px-3 py-2 text-xs">
-          Step-by-step guides for Gmail, iCloud, Yahoo, and Outlook are coming here. Until then, ask
-          in Discord and Okie staff will walk you through it.
+        <ul className="flex flex-col gap-2">
+          {EMAIL_PROVIDERS.map((provider) => (
+            <li
+              key={provider.key}
+              className="rounded-md border border-[var(--color-edge)] px-3 py-2"
+            >
+              <a
+                href={provider.setupUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-[var(--color-fg)] underline decoration-[var(--color-edge)] underline-offset-2 transition-colors hover:decoration-[var(--color-brand)]"
+              >
+                {provider.label} app passwords ↗
+              </a>
+              <p className="mt-0.5 text-xs">
+                {provider.domains.join(", ")}
+                {provider.caveat && (
+                  <span className="ml-1 text-[var(--color-warn)]">· {provider.caveat}</span>
+                )}
+              </p>
+            </li>
+          ))}
+        </ul>
+
+        <p className="text-xs">
+          Using a work address or your own domain? We can&rsquo;t read those directly. Set it to
+          forward into one of the inboxes above, add that inbox here, then point the address at it
+          with &ldquo;Forwards to&rdquo;.
         </p>
       </div>
     </details>
   );
 }
 
-/** Own component so its action state doesn't re-render the whole list. */
 function RemoveCredential({ id }: { id: string }) {
   const [state, formAction, pending] = useActionState(
     async (_previous: ActionResult | null, formData: FormData) => deleteEmailCredential(formData),
@@ -71,7 +88,10 @@ function RemoveCredential({ id }: { id: string }) {
   );
 
   return (
-    <form action={formAction}>
+    // `contents` so the button itself is the flex child. Wrapped in a form element it
+    // formed its own block box and sat on a different line from the plain button beside
+    // it, which is what made "Replace" and "Remove" look misaligned.
+    <form action={formAction} className="contents">
       <input type="hidden" name="credentialId" value={id} />
       <button
         type="submit"
@@ -150,6 +170,49 @@ function ForwardPicker({
   );
 }
 
+/**
+ * The addresses forwarding into one mailbox.
+ *
+ * Capped at VISIBLE_ALIASES because a member who routes twenty retailer accounts through
+ * one Gmail turned this row into a wall of chips taller than the rest of the section.
+ * The rest are one click away rather than hidden.
+ */
+const VISIBLE_ALIASES = 5;
+
+function AliasChips({ aliases }: { aliases: { id: string; email: string }[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (aliases.length === 0) return null;
+
+  const shown = expanded ? aliases : aliases.slice(0, VISIBLE_ALIASES);
+  const hidden = aliases.length - shown.length;
+
+  return (
+    <ul className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      {shown.map((alias) => (
+        <li
+          key={alias.id}
+          className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-elevated)] py-1 pr-1.5 pl-2 text-[11px] leading-none text-[var(--color-muted)]"
+        >
+          <span aria-hidden>↳</span>
+          <span className="text-[var(--color-fg)]">{alias.email}</span>
+          <RemoveAlias id={alias.id} />
+        </li>
+      ))}
+      {(hidden > 0 || expanded) && (
+        <li>
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="rounded-full px-2 py-1 text-[11px] leading-none font-medium text-[var(--color-muted)] underline underline-offset-2 transition-colors hover:text-[var(--color-fg)]"
+          >
+            {expanded ? "Show fewer" : `Show ${hidden} more`}
+          </button>
+        </li>
+      )}
+    </ul>
+  );
+}
+
 export function EmailCredentials({
   credentials,
   needingPassword,
@@ -175,8 +238,8 @@ export function EmailCredentials({
         Email app passwords
       </h2>
       <p className="mb-4 max-w-2xl text-sm text-[var(--color-muted)]">
-        Retailers send a verification code to your email during checkout. With an app password
-        saved, we can read that code automatically instead of messaging you mid-drop.
+        Retailers send a verification code to your email during login. With an app password saved,
+        we can read that code automatically instead of messaging you mid-drop.
       </p>
 
       {state && !state.ok && (
@@ -191,7 +254,7 @@ export function EmailCredentials({
       {credentials.length > 0 && (
         <ul className="divide-y divide-[var(--color-edge)] overflow-hidden rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
           {credentials.map((credential) => (
-            <li key={credential.id} className="flex items-center gap-4 px-4 py-3 sm:px-5">
+            <li key={credential.id} className="flex items-start gap-4 px-4 py-3 sm:px-5">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-[var(--color-fg)]">{credential.email}</p>
                 <p className="mt-0.5 text-xs text-[var(--color-muted)]">
@@ -205,29 +268,20 @@ export function EmailCredentials({
                       credential.aliases.length === 1 ? "" : "es"
                     }`}
                 </p>
-                {credential.aliases.length > 0 && (
-                  <ul className="mt-1.5 flex flex-wrap gap-1.5">
-                    {credential.aliases.map((alias) => (
-                      <li
-                        key={alias.id}
-                        className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-elevated)] py-1 pr-1.5 pl-2 text-[11px] leading-none text-[var(--color-muted)]"
-                      >
-                        <span aria-hidden>↳</span>
-                        <span className="text-[var(--color-fg)]">{alias.email}</span>
-                        <RemoveAlias id={alias.id} />
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <AliasChips aliases={credential.aliases} />
               </div>
-              <button
-                type="button"
-                onClick={() => setAdding(credential.email)}
-                className="text-xs font-medium text-[var(--color-fg)] hover:text-white"
-              >
-                Replace
-              </button>
-              <RemoveCredential id={credential.id} />
+              {/* One row, fixed height, matching the email line above it -- so both
+                  controls share a baseline no matter how many chips are below. */}
+              <span className="flex h-5 shrink-0 items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => setAdding(credential.email)}
+                  className="text-xs font-medium text-[var(--color-fg)] transition-colors hover:text-white"
+                >
+                  Replace
+                </button>
+                <RemoveCredential id={credential.id} />
+              </span>
             </li>
           ))}
         </ul>

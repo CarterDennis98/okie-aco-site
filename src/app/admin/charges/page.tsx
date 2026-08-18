@@ -2,8 +2,10 @@ import Link from "next/link";
 import { ConfirmPayment, ReopenBill } from "@/components/billing/confirm-payment";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
+  PAGE_SIZE,
   getAdminChargeTotals,
   getAdminCharges,
+  getDropDates,
   type ChargeFilter,
 } from "@/db/queries/admin-charges";
 import { requireAdmin } from "@/lib/auth/guard";
@@ -34,6 +36,9 @@ const FILTERS: { key: ChargeFilter; label: string }[] = [
 ];
 
 const cell = "px-3 py-2.5 text-left align-middle";
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const field =
+  "rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-1.5 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
 
 function formatDate(date: Date): string {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -42,15 +47,44 @@ function formatDate(date: Date): string {
 export default async function AdminChargesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string }>;
+  searchParams: Promise<{
+    filter?: string;
+    q?: string;
+    from?: string;
+    to?: string;
+    page?: string;
+  }>;
 }) {
   const viewer = await requireAdmin();
-  const { filter: raw } = await searchParams;
-  const filter: ChargeFilter = FILTERS.some((f) => f.key === raw)
-    ? (raw as ChargeFilter)
+  const params = await searchParams;
+  const filter: ChargeFilter = FILTERS.some((f) => f.key === params.filter)
+    ? (params.filter as ChargeFilter)
     : "claimed";
 
-  const [rows, totals] = await Promise.all([getAdminCharges(filter), getAdminChargeTotals()]);
+  const search = params.q?.trim() || undefined;
+  const from = ISO_DATE.test(params.from ?? "") ? params.from : undefined;
+  const to = ISO_DATE.test(params.to ?? "") ? params.to : undefined;
+  const page = Math.max(1, Number.parseInt(params.page ?? "1", 10) || 1);
+
+  const [result, totals, drops] = await Promise.all([
+    getAdminCharges({ filter, search, from, to, page }),
+    getAdminChargeTotals(),
+    getDropDates(),
+  ]);
+  const rows = result.rows;
+
+  // Carried onto the filter tabs and the pager so one control never silently clears
+  // another.
+  const carry = (over: Record<string, string | number | undefined>) => {
+    const next = new URLSearchParams();
+    const merged = { filter, q: search, from, to, page, ...over };
+    for (const [key, value] of Object.entries(merged)) {
+      if (value === undefined || value === "" || (key === "page" && value === 1)) continue;
+      next.set(key, String(value));
+    }
+    const qs = next.toString();
+    return qs ? `/admin/charges?${qs}` : "/admin/charges";
+  };
 
   return (
     <>
@@ -103,7 +137,7 @@ export default async function AdminChargesPage({
           {FILTERS.map((f) => (
             <Link
               key={f.key}
-              href={`/admin/charges?filter=${f.key}`}
+              href={carry({ filter: f.key, page: 1 })}
               className={
                 "rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors " +
                 (f.key === filter
@@ -118,6 +152,81 @@ export default async function AdminChargesPage({
             </Link>
           ))}
         </div>
+
+        {/* A GET form: the resulting view is a URL, so a filtered list can be linked,
+            bookmarked, and reloaded. `filter` rides along as a hidden field so searching
+            doesn't silently drop you back to the default tab. */}
+        <form method="get" action="/admin/charges" className="mt-4 flex flex-wrap items-end gap-3">
+          <input type="hidden" name="filter" value={filter} />
+          <div>
+            <label htmlFor="q" className="mb-1 block text-xs font-medium text-[var(--color-muted)]">
+              Member
+            </label>
+            <input
+              id="q"
+              name="q"
+              defaultValue={search ?? ""}
+              placeholder="username"
+              className={`${field} w-48`}
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="from"
+              className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
+            >
+              Drops from
+            </label>
+            <input id="from" name="from" type="date" defaultValue={from ?? ""} className={field} />
+          </div>
+          <div>
+            <label
+              htmlFor="to"
+              className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
+            >
+              to
+            </label>
+            <input id="to" name="to" type="date" defaultValue={to ?? ""} className={field} />
+          </div>
+          <button
+            type="submit"
+            className="rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50"
+          >
+            Apply
+          </button>
+          {(search || from || to) && (
+            <Link
+              href={carry({ q: undefined, from: undefined, to: undefined, page: 1 })}
+              className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            >
+              Clear
+            </Link>
+          )}
+          {drops.length > 0 && (
+            <span className="ml-auto text-xs text-[var(--color-muted)]">
+              Latest drop{" "}
+              <Link
+                href={carry({
+                  from: drops[0].date.toISOString().slice(0, 10),
+                  to: drops[0].date.toISOString().slice(0, 10),
+                  page: 1,
+                })}
+                className="underline underline-offset-2 hover:text-[var(--color-fg)]"
+              >
+                {drops[0].label}
+              </Link>
+            </span>
+          )}
+        </form>
+
+        <p className="mt-4 text-xs text-[var(--color-muted)]">
+          {result.total === 0
+            ? "No charges match."
+            : `${count(result.total)} ${plural(result.total, "charge")} · ${money(result.totalCents)}` +
+              (result.pageCount > 1
+                ? ` · showing ${(result.page - 1) * PAGE_SIZE + 1}–${Math.min(result.page * PAGE_SIZE, result.total)}`
+                : "")}
+        </p>
 
         {rows.length === 0 ? (
           <p className="mt-6 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-5 py-12 text-center text-sm text-[var(--color-muted)]">
@@ -195,6 +304,38 @@ export default async function AdminChargesPage({
               </tbody>
             </table>
           </div>
+        )}
+
+        {result.pageCount > 1 && (
+          <nav className="mt-4 flex items-center justify-between" aria-label="Pagination">
+            <Link
+              href={carry({ page: Math.max(1, result.page - 1) })}
+              aria-disabled={result.page === 1}
+              className={
+                "rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium transition-colors " +
+                (result.page === 1
+                  ? "pointer-events-none text-[var(--color-muted)]/40"
+                  : "text-[var(--color-fg)] hover:border-[var(--color-brand)]/50")
+              }
+            >
+              ← Newer
+            </Link>
+            <span className="text-xs text-[var(--color-muted)]">
+              Page {result.page} of {result.pageCount}
+            </span>
+            <Link
+              href={carry({ page: Math.min(result.pageCount, result.page + 1) })}
+              aria-disabled={result.page === result.pageCount}
+              className={
+                "rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium transition-colors " +
+                (result.page === result.pageCount
+                  ? "pointer-events-none text-[var(--color-muted)]/40"
+                  : "text-[var(--color-fg)] hover:border-[var(--color-brand)]/50")
+              }
+            >
+              Older →
+            </Link>
+          </nav>
         )}
       </main>
 

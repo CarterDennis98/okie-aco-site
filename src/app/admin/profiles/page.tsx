@@ -6,6 +6,7 @@ import {
   getMembersForSite,
   getSitesWithProfiles,
 } from "@/db/queries/admin-vault";
+import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { requireAdmin } from "@/lib/auth/guard";
 import { siteStyle } from "@/lib/sites";
 import { revealAppPasswordForAdmin } from "@/lib/vault/admin-actions";
@@ -36,7 +37,10 @@ export default async function AdminProfilesPage({
   const viewer = await requireAdmin();
   const { site, member } = await searchParams;
 
-  const sites = await getSitesWithProfiles();
+  const [sites, pending] = await Promise.all([
+    getSitesWithProfiles(),
+    getPendingConfirmationCount(),
+  ]);
   if (sites.length === 0) {
     return (
       <>
@@ -75,9 +79,17 @@ export default async function AdminProfilesPage({
           </Link>
           <Link
             href="/admin/charges"
-            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            className="relative text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
           >
             Charges
+            {pending > 0 && (
+              <span
+                aria-label={`${pending} awaiting confirmation`}
+                className="absolute -top-2 -right-3 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-[var(--color-warn)] px-1 text-[10px] font-bold text-[var(--color-ink)] tabular-nums"
+              >
+                {pending > 99 ? "99+" : pending}
+              </span>
+            )}
           </Link>
         </div>
 
@@ -125,6 +137,7 @@ export default async function AdminProfilesPage({
             <ExportLink href={`${exportBase}&bot=all`} label="Profiles (AYCD)" />
           )}
           <ExportLink href={`${exportBase}&format=accounts`} label="Accounts (user:pass)" />
+          <ExportLink href={`${exportBase}&format=imap`} label="App passwords (IMAP)" />
           <span className="text-xs text-[var(--color-muted)]">Active profiles only.</span>
         </div>
 
@@ -188,6 +201,10 @@ export default async function AdminProfilesPage({
                       href={`${exportBase}&member=${selectedMember.discordUserId}&format=accounts`}
                       label="Export accounts"
                     />
+                    <ExportLink
+                      href={`${exportBase}&member=${selectedMember.discordUserId}&format=imap`}
+                      label="Export app passwords"
+                    />
                   </div>
                 </div>
 
@@ -218,6 +235,7 @@ export default async function AdminProfilesPage({
                               <RevealAppPassword
                                 email={p.email}
                                 mailbox={p.mailbox}
+                                usesEmailCodes={style.usesEmailCodes !== false}
                                 action={revealAppPasswordForAdmin}
                               />
                             </span>

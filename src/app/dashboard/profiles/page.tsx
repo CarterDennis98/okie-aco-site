@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { EmailCredentials } from "@/components/vault/email-credentials";
-import { ProfileManager } from "@/components/vault/profile-manager";
+import { ImportProfiles } from "@/components/vault/import-profiles";
+import { SiteSwitcher } from "@/components/vault/site-switcher";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
   getEmailsNeedingAppPassword,
@@ -80,17 +81,16 @@ export default async function ProfilesPage() {
           .
         </p>
 
-        {siteKeys.map((siteKey) => (
-          <ProfileManager
-            key={siteKey}
-            siteKey={siteKey}
-            siteLogo={resolveSiteLogo(siteKey)}
-            profiles={bySite.get(siteKey) ?? []}
-            nextName={nextNames.get(siteKey) ?? ""}
-          />
-        ))}
+        <SiteSwitcher
+          siteKeys={siteKeys}
+          profilesBySite={Object.fromEntries(siteKeys.map((k) => [k, bySite.get(k) ?? []]))}
+          nextNames={Object.fromEntries(siteKeys.map((k) => [k, nextNames.get(k) ?? ""]))}
+          logos={Object.fromEntries(siteKeys.map((k) => [k, resolveSiteLogo(k)]))}
+        />
 
         <EmailCredentials credentials={credentials} needingPassword={needingPassword} />
+
+        <ImportProfiles siteKeys={siteKeys} />
       </main>
 
       <SiteFooter />

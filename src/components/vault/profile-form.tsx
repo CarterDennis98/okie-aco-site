@@ -304,6 +304,9 @@ export function ProfileForm({
           />
         </div>
 
+        {/* `onlyCheckoutOnce` is deliberately not offered here. The column stays, because
+            the AYCD export and import round-trip it and imported profiles carry a real
+            value, but it is the operator's call rather than a per-member setting. */}
         <div className="mt-4 flex flex-col gap-2">
           <label className="flex items-center gap-2.5 text-sm text-[var(--color-fg)]">
             <input
@@ -313,15 +316,6 @@ export function ProfileForm({
               className="size-4 accent-[var(--color-brand)]"
             />
             Name on the card matches the billing name
-          </label>
-          <label className="flex items-center gap-2.5 text-sm text-[var(--color-fg)]">
-            <input
-              type="checkbox"
-              name="onlyCheckoutOnce"
-              defaultChecked={profile?.onlyCheckoutOnce ?? false}
-              className="size-4 accent-[var(--color-brand)]"
-            />
-            Only use this profile once per drop
           </label>
         </div>
       </fieldset>

@@ -16,6 +16,10 @@
  * Warn is amber, deliberately NOT brand red: red already means "expired card", and a
  * missing app password is a different kind of problem. Amber clears small text where
  * red doesn't --  warn #FBBF24 on surface #1F1F1F = 9.9:1.
+ *
+ * Good is the same green the bot's mirrored embeds use for a successful checkout, so
+ * "settled" reads the same on the site as it does in Discord.
+ *   good #2AF598 on surface #1F1F1F = 11.5:1
  */
 @theme {
   --color-ink: #121212;
@@ -28,10 +32,29 @@
   --color-brand-dark: #b3000d;
   --color-on-brand: #ffffff;
   --color-warn: #fbbf24;
+  --color-good: #2af598;
 }
 
 html {
   color-scheme: dark;
+}
+
+/*
+ * Tailwind v4 dropped the preflight rule that gave buttons a pointer cursor, so every
+ * button on the site was showing the default arrow and reading as inert. Anything that
+ * responds to a click says so.
+ *
+ * Disabled controls are excluded: a pointer on a control that will not respond is a
+ * worse lie than no pointer at all.
+ */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+summary,
+select:not(:disabled),
+label:has(> input[type="checkbox"]:not(:disabled)),
+input[type="checkbox"]:not(:disabled),
+input[type="file"]:not(:disabled) {
+  cursor: pointer;
 }
 
 body {

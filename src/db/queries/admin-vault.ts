@@ -74,12 +74,16 @@ export async function getMembersForSite(siteKey: string): Promise<AdminMemberRow
       onBackup: cap === undefined ? 0 : Math.max(0, active.length - cap),
       expiredCards: list.filter((p) => isExpired(p.cardExpMonth, p.cardExpYear)).length,
       // Counts addresses with nowhere to read a code from. An address that forwards into
-      // a mailbox with a password is covered, so it is not missing one.
-      missingAppPasswords: new Set(
-        list
-          .map((p) => p.account.email.toLowerCase())
-          .filter((e) => mailboxFor(coverage, e) === null),
-      ).size,
+      // a mailbox with a password is covered, so it is not missing one -- and a retailer
+      // that never sends a code has nothing to miss.
+      missingAppPasswords:
+        siteStyle(siteKey).usesEmailCodes === false
+          ? 0
+          : new Set(
+              list
+                .map((p) => p.account.email.toLowerCase())
+                .filter((e) => mailboxFor(coverage, e) === null),
+            ).size,
     });
   }
 

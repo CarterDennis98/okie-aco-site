@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
+import { siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
 import { isExpired, maskedLabel } from "@/lib/vault/card";
 import { nextProfileName, profileBaseFor } from "@/lib/vault/profile-input";
@@ -250,14 +251,16 @@ export async function getEmailsNeedingAppPassword(discordUserId: string): Promis
   const [accounts, coverage] = await Promise.all([
     prisma.vaultAccount.findMany({
       where: { discordUserId, active: true },
-      select: { email: true },
+      select: { email: true, siteKey: true },
     }),
     loadMailboxCoverage(discordUserId),
   ]);
 
-  // A forwarded address is covered, so it is not "needing" anything.
+  // A forwarded address is covered, so it is not "needing" anything -- and neither is an
+  // address on a retailer that never emails a code (Pokémon Center checks out as a guest).
   const have = coverage.destination;
-  return [...new Set(accounts.map((a) => a.email.toLowerCase()))]
+  const relevant = accounts.filter((a) => siteStyle(a.siteKey).usesEmailCodes !== false);
+  return [...new Set(relevant.map((a) => a.email.toLowerCase()))]
     .filter((e) => !have.has(e))
     .sort();
 }
