@@ -80,6 +80,21 @@ export type SiteStyle = {
    * vault -- that is the same moment the chip should appear.
    */
   selfServe?: boolean;
+
+  /**
+   * Whether checking out here needs a retailer login at all.
+   *
+   * Pokémon Center checks out as a GUEST: there is no account, so there is no password
+   * to store and asking for one invents a credential that does not exist. The account
+   * row still exists for those profiles -- it carries the email and holds the 1:1 link
+   * -- it just has a null `passwordEnc`, which the schema documents as "no login" rather
+   * than "password unknown".
+   *
+   * Defaults to true, matching `usesEmailCodes`: a new retailer almost certainly has
+   * logins, and being asked for a password you have is a smaller failure than being
+   * unable to save a profile because the form demands one you don't.
+   */
+  usesAccounts?: boolean;
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -107,7 +122,8 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     width: 897,
     height: 900,
     profileSoftCap: 10,
-    // Guest checkout: no login, so no verification code to read.
+    // Guest checkout: no account, so no password and no verification code to read.
+    usesAccounts: false,
     usesEmailCodes: false,
     selfServe: true,
   },
@@ -141,6 +157,16 @@ export function supportedSites(): SiteStyle[] {
  * bringing one online is a single edit next to its label instead of a second list
  * somewhere else that quietly falls out of step.
  */
+/**
+ * Whether this retailer has logins, and therefore passwords.
+ *
+ * Read by BOTH the profile form and the save action. The action is the one that
+ * matters -- the form only decides what to render, and a crafted POST doesn't care.
+ */
+export function siteUsesAccounts(site: string | null | undefined): boolean {
+  return siteStyle(site).usesAccounts !== false;
+}
+
 export function selfServeSiteKeys(): string[] {
   return Object.entries(SITES)
     .filter(([, value]) => value.selfServe)

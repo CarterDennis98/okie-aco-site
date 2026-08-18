@@ -16,6 +16,7 @@ import {
   onTint,
   selfServeSiteKeys,
   supportedSites,
+  siteUsesAccounts,
 } from "@/lib/sites";
 
 describe("siteKey", () => {
@@ -92,5 +93,30 @@ describe("selfServeSiteKeys", () => {
   it("only names retailers that actually exist in the registry", () => {
     const known = new Set(supportedSites().map((s) => s.key));
     for (const key of selfServeSiteKeys()) expect(known).toContain(key);
+  });
+});
+
+describe("siteUsesAccounts", () => {
+  /**
+   * Pokemon Center checks out as a guest. The form required an account password anyway,
+   * so a member could not save a PKC profile at all without inventing a credential that
+   * does not exist -- and all 312 imported PKC accounts correctly store none.
+   */
+  it("is false for guest checkout", () => {
+    expect(siteUsesAccounts("pokemon-center")).toBe(false);
+  });
+
+  it("is true for retailers with real logins", () => {
+    expect(siteUsesAccounts("target")).toBe(true);
+    expect(siteUsesAccounts("walmart")).toBe(true);
+  });
+
+  it("defaults to true for an unknown retailer", () => {
+    // Better to ask for a password that isn't needed than to silently skip one that is.
+    expect(siteUsesAccounts("some-new-store")).toBe(true);
+  });
+
+  it("accepts the raw vendor spelling, not just the key", () => {
+    expect(siteUsesAccounts("Pokemon Center US")).toBe(false);
   });
 });

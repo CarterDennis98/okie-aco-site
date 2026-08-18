@@ -5,6 +5,7 @@ import { prisma } from "@/db/client";
 import { getMemberProfile, type VaultProfileDetail } from "@/db/queries/vault";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
+import { siteUsesAccounts } from "@/lib/sites";
 import { changedFields, recordBulkChange, recordChange } from "@/lib/vault/audit";
 import { detectBrand, last4, normalizePan } from "@/lib/vault/card";
 import { encrypt } from "@/lib/vault/crypto";
@@ -104,8 +105,22 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
 
   const pan = normalizePan(text(form, "cardNumber"));
   const cvv = text(form, "cardCvv");
-  const password = text(form, "accountPassword");
   const fields = profileFieldsFromForm(form);
+
+  // Guest-checkout retailers have no login, so a password is not just optional here --
+  // it is meaningless, and anything submitted for one is discarded rather than stored
+  // against an account that cannot use it. `passwordEnc` stays null, which the schema
+  // defines as "no login" rather than "password unknown".
+  const usesAccounts = siteUsesAccounts(siteKey);
+  const password = usesAccounts ? text(form, "accountPassword") : "";
+
+  // Checked BEFORE the account is created. This used to sit after the upsert, so a
+  // create with no password left an orphan vault_account holding an encrypted empty
+  // string -- and because the upsert's `update` is empty, retrying with a real password
+  // would never replace it.
+  if (!profileId && usesAccounts && !password) {
+    return { ok: false, error: "Enter the retailer account password." };
+  }
 
   // Secrets are only ever written when supplied. Absent means unchanged.
   const cardSecrets = pan
@@ -126,7 +141,9 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           siteKey,
           email,
           discordUserId: viewer.discordUserId,
-          passwordEnc: encrypt(password, { entity: "vault_account", field: "password" }),
+          passwordEnc: password
+            ? encrypt(password, { entity: "vault_account", field: "password" })
+            : null,
         },
         // An existing account must belong to this member, or the email is taken.
         update: {},
@@ -140,8 +157,6 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         // One account, one profile -- the rule the schema enforces.
         return { ok: false, error: "That email already has a profile. Edit it instead." };
       }
-      if (!password) return { ok: false, error: "Enter the retailer account password." };
-
       // The name is GENERATED, never taken from the form. Members don't get to pick or
       // change it: the name is what ties a checkout back to a profile, and a free-text
       // rename would let history point at the wrong card and address.

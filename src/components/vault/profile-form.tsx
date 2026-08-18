@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import type { VaultProfileDetail } from "@/db/queries/vault";
 import { detectBrand, expectedCvvLength } from "@/lib/vault/card";
 import { saveProfile, type ActionResult } from "@/lib/vault/actions";
+import { siteUsesAccounts } from "@/lib/sites";
 
 /**
  * Add / edit form for one checkout profile.
@@ -77,6 +78,10 @@ export function ProfileForm({
   onDone?: () => void;
 }) {
   const isEdit = Boolean(profile);
+  // Guest-checkout retailers have no login. The email stays -- it's where the order
+  // confirmation goes -- but asking for a password invents a credential that does not
+  // exist, and made the profile unsaveable because the field was required.
+  const usesAccounts = siteUsesAccounts(siteKey);
   const [sameBilling, setSameBilling] = useState(profile?.sameBillingAndShipping ?? true);
   const [cardBrand, setCardBrand] = useState(profile?.cardBrand ?? "Unknown");
 
@@ -123,25 +128,31 @@ export function ProfileForm({
 
       <fieldset className="rounded-lg border border-[var(--color-edge)] p-4">
         <legend className="px-1 text-xs font-semibold tracking-wide text-[var(--color-muted)] uppercase">
-          Retailer account
+          {usesAccounts ? "Retailer account" : "Checkout email"}
         </legend>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field
             name="email"
-            label="Account email"
+            label={usesAccounts ? "Account email" : "Email"}
             type="email"
             defaultValue={profile?.email}
             required
-            hint="Must be unique — one account per profile."
+            hint={
+              usesAccounts
+                ? "Must be unique — one account per profile."
+                : "Must be unique — one per profile. Checkout is as a guest, so there's no password."
+            }
           />
-          <Field
-            name="accountPassword"
-            label="Account password"
-            type="password"
-            placeholder={isEdit ? "•••••••• (unchanged)" : ""}
-            required={!isEdit}
-            hint={isEdit ? "Leave blank to keep the current password." : undefined}
-          />
+          {usesAccounts && (
+            <Field
+              name="accountPassword"
+              label="Account password"
+              type="password"
+              placeholder={isEdit ? "•••••••• (unchanged)" : ""}
+              required={!isEdit}
+              hint={isEdit ? "Leave blank to keep the current password." : undefined}
+            />
+          )}
         </div>
       </fieldset>
 
