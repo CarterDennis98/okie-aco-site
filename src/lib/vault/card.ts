@@ -133,3 +133,30 @@ export function isExpired(month: string, year: string, now: Date = new Date()): 
   // Cards are valid through the LAST day of their expiry month.
   return y < now.getUTCFullYear() || (y === now.getUTCFullYear() && m < now.getUTCMonth() + 1);
 }
+
+/**
+ * A stand-in for "is this the same card", used only to WARN -- never to block.
+ *
+ * Card numbers are AES-GCM envelopes with a random IV, so two profiles holding the
+ * identical PAN have entirely different ciphertext: equality cannot be tested without
+ * decrypting. The alternatives were decrypting every card on every page load, or adding a
+ * keyed fingerprint column plus a migration and a backfill of 1,287 rows. Both are a lot
+ * to carry for an advisory note.
+ *
+ * So this compares what is already stored in plain columns: brand, last four, and expiry.
+ * Two DIFFERENT cards collide only by sharing all four, which needs the same issuer, the
+ * same final four digits, and the same month AND year. The cost of that rare collision is
+ * one member seeing a note they can ignore -- cheaper than holding plaintext card numbers
+ * in memory to render a list.
+ */
+export function cardSignature(card: {
+  cardBrand: string;
+  cardLast4: string;
+  cardExpMonth: string;
+  cardExpYear: string;
+}): string | null {
+  if (!card.cardLast4) return null;
+  return [card.cardBrand, card.cardLast4, card.cardExpMonth, card.cardExpYear]
+    .join("|")
+    .toLowerCase();
+}

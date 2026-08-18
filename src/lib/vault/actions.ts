@@ -147,15 +147,19 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         },
         // An existing account must belong to this member, or the email is taken.
         update: {},
-        select: { id: true, discordUserId: true, profile: { select: { id: true } } },
+        select: { id: true, discordUserId: true, profile: { select: { id: true, name: true } } },
       });
 
       if (account.discordUserId !== viewer.discordUserId) {
         return { ok: false, error: "That account email is already in use." };
       }
       if (account.profile) {
-        // One account, one profile -- the rule the schema enforces.
-        return { ok: false, error: "That email already has a profile. Edit it instead." };
+        // One account, one profile -- the rule the schema enforces. Named, so the member
+        // can go straight to the profile holding the address instead of hunting for it.
+        return {
+          ok: false,
+          error: `${account.profile.name} already uses that email on this retailer. Each profile needs its own.`,
+        };
       }
       // The name is GENERATED, never taken from the form. Members don't get to pick or
       // change it: the name is what ties a checkout back to a profile, and a free-text
@@ -215,6 +219,27 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         },
       });
       if (!existing) return { ok: false, error: "Profile not found." };
+
+      // One email per retailer, checked BEFORE the write. The (siteKey, email) unique
+      // index already makes this impossible, but reaching it throws a constraint error
+      // that surfaces as the generic "couldn't save that" -- which does not tell the
+      // member the address is the problem, or which profile already holds it.
+      if (email !== existing.account.email) {
+        const taken = await prisma.vaultAccount.findUnique({
+          where: { siteKey_email: { siteKey, email } },
+          select: { discordUserId: true, profile: { select: { name: true } } },
+        });
+        if (taken) {
+          const mine = taken.discordUserId === viewer.discordUserId;
+          return {
+            ok: false,
+            error:
+              mine && taken.profile
+                ? `${taken.profile.name} already uses that email on this retailer. Each profile needs its own.`
+                : "That account email is already in use.",
+          };
+        }
+      }
 
       const changed = changedFields(existing as Record<string, unknown>, fields);
       if (pan) changed.push("card");

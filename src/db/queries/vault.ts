@@ -3,7 +3,7 @@ import "server-only";
 import { prisma } from "@/db/client";
 import { siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
-import { isExpired, maskedLabel } from "@/lib/vault/card";
+import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
 import { nextProfileName, profileBaseFor } from "@/lib/vault/profile-input";
 
 /**
@@ -34,6 +34,12 @@ export type VaultProfileSummary = {
   cardExpYear: string;
   cardLabel: string;
   cardExpired: boolean;
+  /**
+   * Other profiles of theirs ON THE SAME RETAILER that appear to use this same card.
+   * Advisory: retailers are more likely to fail orders that reuse a card, so the member
+   * is told rather than stopped. Empty for all but the duplicates themselves.
+   */
+  sharesCardWith: string[];
   shipCity: string;
   shipState: string;
   sameBillingAndShipping: boolean;
@@ -113,6 +119,9 @@ type SummaryRow = {
 
 function toSummary(row: SummaryRow, coverage?: MailboxCoverage): VaultProfileSummary {
   return {
+    // Filled in per retailer by whoever assembles the groups; a lone profile shares
+    // nothing with anyone.
+    sharesCardWith: [],
     id: row.id,
     siteKey: row.siteKey,
     name: row.name,
@@ -157,11 +166,35 @@ export async function getMemberProfiles(
   }
 
   const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
-  for (const list of bySite.values()) list.sort((a, b) => collator.compare(a.name, b.name));
+  for (const list of bySite.values()) {
+    list.sort((a, b) => collator.compare(a.name, b.name));
+    markSharedCards(list);
+  }
 
   return [...bySite.entries()]
     .map(([siteKey, profiles]) => ({ siteKey, profiles }))
     .sort((a, b) => a.siteKey.localeCompare(b.siteKey));
+}
+
+/**
+ * Flag profiles on one retailer that look like they share a card.
+ *
+ * Per retailer on purpose: the same card on Target and on Walmart is normal and not worth
+ * mentioning. Two profiles on the SAME retailer paying with one card is what raises the
+ * chance of a decline.
+ */
+function markSharedCards(list: VaultProfileSummary[]): void {
+  const bySignature = new Map<string, string[]>();
+  for (const profile of list) {
+    const signature = cardSignature(profile);
+    if (!signature) continue;
+    bySignature.set(signature, [...(bySignature.get(signature) ?? []), profile.name]);
+  }
+  for (const profile of list) {
+    const signature = cardSignature(profile);
+    const sharing = signature ? (bySignature.get(signature) ?? []) : [];
+    profile.sharesCardWith = sharing.filter((name) => name !== profile.name);
+  }
 }
 
 /** One profile, in full, for the edit form. Null when it isn't theirs. */

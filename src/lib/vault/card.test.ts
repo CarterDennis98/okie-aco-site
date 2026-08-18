@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  cardSignature,
   detectBrand,
   expectedCvvLength,
   isExpired,
@@ -157,5 +158,28 @@ describe("isExpired", () => {
 describe("maskedLabel", () => {
   it("renders what the UI shows instead of a number", () => {
     expect(maskedLabel("Visa", "3384")).toBe("Visa ···· 3384");
+  });
+});
+
+describe("cardSignature", () => {
+  const card = { cardBrand: "Visa", cardLast4: "4242", cardExpMonth: "09", cardExpYear: "2030" };
+
+  it("matches the same card entered twice", () => {
+    expect(cardSignature(card)).toBe(cardSignature({ ...card }));
+  });
+
+  it("separates cards differing in any one part", () => {
+    expect(cardSignature(card)).not.toBe(cardSignature({ ...card, cardLast4: "1111" }));
+    expect(cardSignature(card)).not.toBe(cardSignature({ ...card, cardExpMonth: "10" }));
+    expect(cardSignature(card)).not.toBe(cardSignature({ ...card, cardExpYear: "2031" }));
+    expect(cardSignature(card)).not.toBe(cardSignature({ ...card, cardBrand: "Mastercard" }));
+  });
+
+  it("ignores brand casing, which the importers and the form spell differently", () => {
+    expect(cardSignature({ ...card, cardBrand: "VISA" })).toBe(cardSignature(card));
+  });
+
+  it("is null when there is no card, so profiles without one never group together", () => {
+    expect(cardSignature({ ...card, cardLast4: "" })).toBeNull();
   });
 });

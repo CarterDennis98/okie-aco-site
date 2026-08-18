@@ -23,6 +23,12 @@ import { RevealAppPassword } from "@/components/vault/reveal-app-password";
  * large payload of addresses to the browser to render a list that shows five columns.
  */
 
+/** "A", "A and B", "A, B and C" -- a list a person reads, not an array dumped on screen. */
+function listNames(names: string[]): string {
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 function Toggle({ profile }: { profile: VaultProfileSummary }) {
   // useActionState rather than a bare form action: these return an ActionResult, and a
   // failure ("profile not found" after it was removed in another tab) should say so
@@ -124,6 +130,17 @@ function ProfileRow({
               className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase"
             >
               Backup bot
+            </span>
+          )}
+          {/* A chip rather than a sentence per row: on real data almost half the Walmart
+              profiles share a card, and a paragraph on each would drown the list. The
+              explanation sits once above the list; the siblings are named here. */}
+          {profile.sharesCardWith.length > 0 && (
+            <span
+              title={`Same card as ${listNames(profile.sharesCardWith)}`}
+              className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase"
+            >
+              Shared card
             </span>
           )}
         </p>
@@ -318,6 +335,7 @@ export function ProfileManager({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const style = siteStyle(siteKey);
   const activeCount = profiles.filter((p) => p.active).length;
+  const sharedCardCount = profiles.filter((p) => p.sharesCardWith.length > 0).length;
 
   // Soft cap: the first N ACTIVE profiles run on the main bot, the rest on a backup.
   // Disabled profiles aren't running, so they don't hold a slot -- which means toggling
@@ -420,6 +438,18 @@ export function ProfileManager({
             }
             onCleared={() => setSelected(new Set())}
           />
+          {/* Said once for the retailer, not once per row. The chips mark which profiles;
+              this says why it matters, which is the part a member acts on. */}
+          {sharedCardCount > 0 && (
+            <p className="mb-2 px-1 text-xs text-[var(--color-muted)]">
+              <span aria-hidden>⚠ </span>
+              {sharedCardCount} of these profiles share a card with another {style.label}{" "}
+              profile. Reusing a card number across profiles on one retailer can increase the
+              chance that orders fail — hover a{" "}
+              <span className="font-medium text-[var(--color-fg)]">Shared card</span> chip to
+              see which.
+            </p>
+          )}
           {/* Scrolls past VISIBLE_ROWS rather than running the page long: a member with
               700 Walmart profiles would otherwise make every section below this one
               unreachable. */}
