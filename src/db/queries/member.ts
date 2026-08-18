@@ -35,10 +35,14 @@ export type MemberChargeSummary = {
   subtotalCents: number;
   discountCents: number;
   totalCents: number;
+  /** Recorded as received so far. Less than the total means part-paid, not paid. */
+  paidCents: number;
   ogApplied: boolean;
   paidAt: Date | null;
   /** The member said they sent it. Not the same as the operator having seen it land. */
   paidClaimedAt: Date | null;
+  /** How much they said they sent, when it was less than the whole balance. */
+  paidClaimedCents: number | null;
   lineCount: number;
   unitCount: number;
 };
@@ -83,7 +87,9 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
         totalCents: true,
         ogApplied: true,
         paidAt: true,
+        paidCents: true,
         paidClaimedAt: true,
+        paidClaimedCents: true,
         run: { select: { dropLabel: true, windowStart: true } },
         lines: { select: { qty: true } },
       },
@@ -120,16 +126,25 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
     discountCents: bill.discountCents,
     totalCents: bill.totalCents,
     ogApplied: bill.ogApplied,
+    paidCents: bill.paidCents,
     paidAt: bill.paidAt,
     paidClaimedAt: bill.paidClaimedAt,
+    paidClaimedCents: bill.paidClaimedCents,
     lineCount: bill.lines.length,
     unitCount: bill.lines.reduce((sum, line) => sum + line.qty, 0),
   }));
 
+  // paidAt is still the test for "does this owe anything", by the invariant in the
+  // schema -- it is stamped exactly when paid_cents covers the bill.
   const unpaid = charges.filter((charge) => charge.paidAt === null);
 
   return {
-    unpaidTotalCents: unpaid.reduce((sum, charge) => sum + charge.totalCents, 0),
+    // What is LEFT, not the original totals: a member who has paid half of a $42 charge
+    // owes $21, and showing $42 would be asking for money already received.
+    unpaidTotalCents: unpaid.reduce(
+      (sum, charge) => sum + Math.max(0, charge.totalCents - charge.paidCents),
+      0,
+    ),
     unpaidCount: unpaid.length,
     lifetimeCheckouts: checkoutTotals._count._all,
     lifetimeUnits: checkoutTotals._sum.quantity ?? 0,
@@ -165,8 +180,11 @@ export type MemberChargeDetail = {
   discountCents: number;
   totalCents: number;
   ogApplied: boolean;
+  /** Recorded as received so far. Less than the total means part-paid, not paid. */
+  paidCents: number;
   paidAt: Date | null;
   paidClaimedAt: Date | null;
+  paidClaimedCents: number | null;
   paidClaimedMethod: string | null;
   paidClaimedNote: string | null;
   /** Retailers this charge's products came from, for the chips. Usually one. */
@@ -199,7 +217,9 @@ export async function getMemberCharge(
       totalCents: true,
       ogApplied: true,
       paidAt: true,
+      paidCents: true,
       paidClaimedAt: true,
+      paidClaimedCents: true,
       paidClaimedMethod: true,
       paidClaimedNote: true,
       // dmText is deliberately NOT selected. The column still stores the exact message
@@ -241,8 +261,10 @@ export async function getMemberCharge(
     discountCents: bill.discountCents,
     totalCents: bill.totalCents,
     ogApplied: bill.ogApplied,
+    paidCents: bill.paidCents,
     paidAt: bill.paidAt,
     paidClaimedAt: bill.paidClaimedAt,
+    paidClaimedCents: bill.paidClaimedCents,
     paidClaimedMethod: bill.paidClaimedMethod,
     paidClaimedNote: bill.paidClaimedNote,
     sites,

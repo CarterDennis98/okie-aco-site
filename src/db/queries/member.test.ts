@@ -117,6 +117,39 @@ describe.skipIf(!canConnect)("member queries", () => {
     expect(dashboard.charges.map((c) => c.id)).toEqual([aliceChargeId]);
   });
 
+  it("counts a part-paid charge at what is LEFT, not at its total", async () => {
+    // $6 of Alice's $16 arrives. paid_at stays null, by the invariant in the schema: the
+    // bill is not settled, so it still owes -- but it owes $10, not $16.
+    await prisma.pasBill.update({
+      where: { id: aliceChargeId },
+      data: { paidCents: 600 },
+    });
+
+    const dashboard = await getMemberDashboard(ALICE);
+    expect(dashboard.unpaidTotalCents).toBe(1000);
+    // Still counted as an outstanding charge -- part-paid is not paid.
+    expect(dashboard.unpaidCount).toBe(1);
+    expect(dashboard.charges[0].paidCents).toBe(600);
+
+    await prisma.pasBill.update({ where: { id: aliceChargeId }, data: { paidCents: 0 } });
+  });
+
+  it("drops a charge off the balance once it is settled in full", async () => {
+    await prisma.pasBill.update({
+      where: { id: aliceChargeId },
+      data: { paidCents: 1600, paidAt: new Date() },
+    });
+
+    const dashboard = await getMemberDashboard(ALICE);
+    expect(dashboard.unpaidTotalCents).toBe(0);
+    expect(dashboard.unpaidCount).toBe(0);
+
+    await prisma.pasBill.update({
+      where: { id: aliceChargeId },
+      data: { paidCents: 0, paidAt: null },
+    });
+  });
+
   it("scopes the dashboard to one member", async () => {
     const dashboard = await getMemberDashboard(BOB);
     expect(dashboard.unpaidTotalCents).toBe(800);

@@ -44,8 +44,12 @@ export type AdminChargeRow = {
   dropLabel: string;
   windowStart: Date;
   totalCents: number;
+  /** Recorded as received so far. Below the total on an unpaid row means part-paid. */
+  paidCents: number;
   paidAt: Date | null;
   paidClaimedAt: Date | null;
+  /** What they said they sent, when less than the whole balance. */
+  paidClaimedCents: number | null;
   paidClaimedMethod: string | null;
   paidClaimedNote: string | null;
   markedPaidBy: string | null;
@@ -159,8 +163,10 @@ export async function getAdminCharges(query: ChargeQuery): Promise<AdminChargePa
         id: true,
         discordUserId: true,
         totalCents: true,
+        paidCents: true,
         paidAt: true,
         paidClaimedAt: true,
+        paidClaimedCents: true,
         paidClaimedMethod: true,
         paidClaimedNote: true,
         markedPaidBy: true,
@@ -183,8 +189,10 @@ export async function getAdminCharges(query: ChargeQuery): Promise<AdminChargePa
       dropLabel: b.run.dropLabel,
       windowStart: b.run.windowStart,
       totalCents: b.totalCents,
+      paidCents: b.paidCents,
       paidAt: b.paidAt,
       paidClaimedAt: b.paidClaimedAt,
+      paidClaimedCents: b.paidClaimedCents,
       paidClaimedMethod: b.paidClaimedMethod,
       paidClaimedNote: b.paidClaimedNote,
       markedPaidBy: b.markedPaidBy,
@@ -202,12 +210,14 @@ export async function getAdminChargeTotals(): Promise<AdminChargeTotals> {
     prisma.pasBill.aggregate({
       where: { ...REAL_RUNS, paidAt: null, paidClaimedAt: { not: null } },
       _count: { _all: true },
-      _sum: { totalCents: true },
+      // Both columns, because what the operator is owed is the DIFFERENCE. Summing each
+      // and subtracting is the same as summing the differences, and stays one aggregate.
+      _sum: { totalCents: true, paidCents: true },
     }),
     prisma.pasBill.aggregate({
       where: { ...REAL_RUNS, paidAt: null },
       _count: { _all: true },
-      _sum: { totalCents: true },
+      _sum: { totalCents: true, paidCents: true },
     }),
     prisma.pasBill.aggregate({
       where: { ...REAL_RUNS, paidAt: { not: null } },
@@ -216,12 +226,19 @@ export async function getAdminChargeTotals(): Promise<AdminChargeTotals> {
     }),
   ]);
 
+  // What is STILL OWED on the two unsettled buckets, not what was originally billed:
+  // a member who has paid half of $42 is $21 outstanding, and reporting $42 would have
+  // the operator chasing money already in hand.
+  const stillOwed = (a: { _sum: { totalCents: number | null; paidCents: number | null } }) =>
+    Math.max(0, (a._sum.totalCents ?? 0) - (a._sum.paidCents ?? 0));
+
   return {
     claimedCount: claimed._count._all,
-    claimedCents: claimed._sum.totalCents ?? 0,
+    claimedCents: stillOwed(claimed),
     outstandingCount: outstanding._count._all,
-    outstandingCents: outstanding._sum.totalCents ?? 0,
+    outstandingCents: stillOwed(outstanding),
     paidCount: paid._count._all,
+    // Settled bills: what actually came in, which by the invariant is the full total.
     paidCents: paid._sum.totalCents ?? 0,
   };
 }

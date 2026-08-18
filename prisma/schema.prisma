@@ -333,7 +333,23 @@ model PasBill {
   // rather than a reconstruction, which is what settles a dispute months later.
   dmText         String?        @map("dm_text")
 
-  // Set only by the operator, and only once money has actually arrived.
+  // How much has actually arrived, kept in step with the `payments` rows in the same
+  // transaction that writes them. Denormalized on purpose: "what is still owed" is
+  // `total_cents - paid_cents`, and deriving it from a sum over payments would make every
+  // balance query an aggregate and take the indexes below with it.
+  //
+  // `payments` remains the source of truth. This is a running total of it, and
+  // scripts/verify-payments.ts asserts the two never drift.
+  paidCents Int @default(0) @map("paid_cents")
+
+  // Set only by the operator, and only once the bill is settled IN FULL.
+  //
+  // THE INVARIANT: paid_at IS NOT NULL  <=>  paid_cents >= total_cents.
+  //
+  // That is what lets a part-paid bill stay "unpaid" everywhere without rewriting a
+  // single filter -- `paidAt: null` still means "still owes something", so the queries,
+  // the sorts, and both indexes below keep working untouched. Only the AMOUNTS had to
+  // learn about partial payment.
   paidAt       DateTime? @map("paid_at") @db.Timestamptz(3)
   markedPaidBy String?   @map("marked_paid_by")
 
@@ -344,6 +360,9 @@ model PasBill {
   paidClaimedAt     DateTime? @map("paid_claimed_at") @db.Timestamptz(3)
   paidClaimedMethod String?   @map("paid_claimed_method")
   paidClaimedNote   String?   @map("paid_claimed_note")
+  // How much they say they sent. Null means the whole remaining balance, which is what
+  // every claim made before partial payments existed meant.
+  paidClaimedCents  Int?      @map("paid_claimed_cents")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 

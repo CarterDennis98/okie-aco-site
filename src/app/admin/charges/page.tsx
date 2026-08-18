@@ -291,12 +291,35 @@ export default async function AdminChargesPage({
                       <span className="font-semibold text-white tabular-nums">
                         {money(row.totalCents)}
                       </span>
+                      {/* Part-paid: what is still owed is the number the operator is
+                          chasing, so it goes under the total rather than replacing it. */}
+                      {!row.paidAt && row.paidCents > 0 && (
+                        <span className="block text-xs text-[var(--color-muted)] tabular-nums">
+                          {money(row.totalCents - row.paidCents)} left
+                        </span>
+                      )}
                     </td>
                     <td className={`${cell} text-right`}>
                       {row.paidAt ? (
                         <ReopenBill billId={row.id} />
                       ) : (
-                        <ConfirmPayment billId={row.id} claimedMethod={row.paidClaimedMethod} />
+                        <>
+                          <ConfirmPayment
+                            billId={row.id}
+                            totalCents={row.totalCents}
+                            paidCents={row.paidCents}
+                            claimedCents={row.paidClaimedCents}
+                            claimedMethod={row.paidClaimedMethod}
+                          />
+                          {/* Reversing is offered on a part-paid row too: a payment
+                              entered against the wrong charge needs undoing whether or
+                              not it happened to settle the bill. */}
+                          {row.paidCents > 0 && (
+                            <div className="mt-1">
+                              <ReopenBill billId={row.id} />
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
                   </tr>

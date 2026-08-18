@@ -58,6 +58,7 @@ async function main() {
     select: {
       id: true,
       totalCents: true,
+      paidCents: true,
       discordUserId: true,
       member: { select: { username: true } },
       run: { select: { dropLabel: true } },
@@ -65,7 +66,11 @@ async function main() {
     orderBy: { createdAt: "asc" },
   });
 
-  const total = bills.reduce((sum, b) => sum + b.totalCents, 0);
+  // What is LEFT on each bill, not the original total. A part-paid charge must be
+  // topped up, not paid twice -- and `payments` has to keep summing to `paid_cents`.
+  const owed = (b: { totalCents: number; paidCents: number }) =>
+    Math.max(0, b.totalCents - b.paidCents);
+  const total = bills.reduce((sum, b) => sum + owed(b), 0);
   const byMember = new Map<string, number>();
   for (const b of bills) byMember.set(b.discordUserId, (byMember.get(b.discordUserId) ?? 0) + 1);
 
@@ -96,17 +101,21 @@ async function main() {
     prisma.payment.createMany({
       data: bills.map((b) => ({
         pasBillId: b.id,
-        amountCents: b.totalCents,
+        amountCents: owed(b),
         method: METHOD,
         note: "Settled before the site went live",
         recordedBy: operator,
         recordedAt: at,
       })),
     }),
-    prisma.pasBill.updateMany({
-      where: { id: { in: bills.map((b) => b.id) } },
-      data: { paidAt: at, markedPaidBy: operator },
-    }),
+    // paid_cents set to the total, matching the receipts written above: settling means
+    // the bill is now fully covered, which is exactly when paid_at may be stamped.
+    ...bills.map((b) =>
+      prisma.pasBill.update({
+        where: { id: b.id },
+        data: { paidAt: at, markedPaidBy: operator, paidCents: b.totalCents },
+      }),
+    ),
     // One audit row, not 85: this was one decision by one person. The per-bill receipts
     // are the `payments` rows.
     prisma.adminAudit.create({

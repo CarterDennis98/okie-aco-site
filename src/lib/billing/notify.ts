@@ -21,7 +21,10 @@ const TIMEOUT_MS = 5_000;
 
 export type PaymentClaim = {
   memberName: string;
+  /** What they say they sent, which may be less than the whole balance. */
   amountCents: number;
+  /** What was outstanding before this claim, so a part payment reads as a part payment. */
+  outstandingCents: number;
   dropLabel: string;
   method: string;
   note: string | null;

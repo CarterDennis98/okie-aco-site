@@ -200,6 +200,16 @@ export default async function DashboardPage() {
                           <span className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase">
                             Paid
                           </span>
+                        ) : charge.paidCents > 0 ? (
+                          // Part-paid outranks the sent claim: money actually received is
+                          // a firmer fact than a claim about money, and it is what changes
+                          // the number they owe.
+                          <span
+                            title={`${money(charge.paidCents)} of ${money(charge.totalCents)} received`}
+                            className="inline-flex items-center rounded-full bg-[var(--color-warn)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-warn)] uppercase"
+                          >
+                            Part paid
+                          </span>
                         ) : charge.paidClaimedAt ? (
                           <span
                             title="You marked this sent — waiting on confirmation"
@@ -224,7 +234,14 @@ export default async function DashboardPage() {
                     </div>
                     <div className="flex items-center gap-2.5">
                       <span className="text-lg font-bold text-white tabular-nums">
-                        {money(charge.totalCents)}
+                        {/* What is LEFT once something has been received. The full total
+                            is on the charge page; the number here is the one that answers
+                            "what do I still owe". */}
+                        {money(
+                          charge.paidAt
+                            ? charge.totalCents
+                            : charge.totalCents - charge.paidCents,
+                        )}
                       </span>
                       {/* The row's only standing "this opens something" cue -- a hover
                           background alone says nothing until you're already on it. Muted

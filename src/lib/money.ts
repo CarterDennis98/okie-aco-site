@@ -42,3 +42,20 @@ export function safeLabel(label: string): string {
     .replace(/[\r\n]+/g, " ")
     .trim();
 }
+
+/**
+ * Read a typed dollar amount as cents. Null when it isn't a usable number.
+ *
+ * Accepts what people actually type into a money field -- "12", "12.5", "$12.50", "1,250"
+ * -- and rejects everything else rather than guessing. Rounds at the end because
+ * `12.34 * 100` is 1233.9999999999998 in binary floating point, and a cent lost to that
+ * would put a bill a cent short of settled forever.
+ */
+export function parseCents(raw: string): number | null {
+  const cleaned = raw.replace(/[$,\s]/g, "");
+  if (!cleaned) return null;
+  if (!/^\d*\.?\d{0,2}$/.test(cleaned)) return null;
+  const dollars = Number(cleaned);
+  if (!Number.isFinite(dollars) || dollars < 0) return null;
+  return Math.round(dollars * 100);
+}

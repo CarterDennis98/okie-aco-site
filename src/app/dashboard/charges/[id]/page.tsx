@@ -158,8 +158,11 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
 
         <ClaimPayment
           billId={charge.id}
+          totalCents={charge.totalCents}
+          paidCents={charge.paidCents}
           paidAt={charge.paidAt}
           claimedAt={charge.paidClaimedAt}
+          claimedCents={charge.paidClaimedCents}
           claimedMethod={charge.paidClaimedMethod}
           claimedNote={charge.paidClaimedNote}
         />

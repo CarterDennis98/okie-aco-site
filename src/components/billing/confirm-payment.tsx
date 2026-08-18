@@ -10,15 +10,26 @@ import { PAYMENT_METHODS } from "@/lib/billing/methods";
  * Confirming is one click when the member already said how they sent it -- the method
  * carries over -- with the select there only to correct them. Reversing asks first,
  * because it moves a charge back onto someone's balance.
+ *
+ * The amount is prefilled with whatever is still outstanding, so the common case stays a
+ * single click. Typing less records a PART payment: the charge keeps the remainder and
+ * stays on the member's balance.
  */
 
 export function ConfirmPayment({
   billId,
+  totalCents,
+  paidCents,
+  claimedCents,
   claimedMethod,
 }: {
   billId: string;
+  totalCents: number;
+  paidCents: number;
+  claimedCents: number | null;
   claimedMethod: string | null;
 }) {
+  const remaining = Math.max(0, totalCents - paidCents);
   const [state, formAction, pending] = useActionState(
     async (_previous: BillingResult | null, formData: FormData) => confirmBillPaid(formData),
     null,
@@ -27,6 +38,16 @@ export function ConfirmPayment({
   return (
     <form action={formAction} className="flex flex-wrap items-center justify-end gap-2">
       <input type="hidden" name="billId" value={billId} />
+      {/* Defaults to what the member SAID they sent when that was less than the balance,
+          otherwise to the whole remainder -- so the operator is agreeing with the claim
+          in front of them rather than retyping it. */}
+      <input
+        name="amount"
+        inputMode="decimal"
+        defaultValue={((claimedCents ?? remaining) / 100).toFixed(2)}
+        aria-label="Amount received"
+        className="w-20 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
+      />
       <select
         name="method"
         defaultValue={claimedMethod ?? ""}

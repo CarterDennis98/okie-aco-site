@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import { claimBillPaid, unclaimBillPaid, type BillingResult } from "@/lib/billing/actions";
 import { PAYMENT_METHODS, methodLabel } from "@/lib/billing/methods";
+import { money } from "@/lib/money";
 
 /**
  * "I've sent this" — the member's half of the paid workflow.
@@ -19,17 +20,27 @@ const field =
 
 export function ClaimPayment({
   billId,
+  totalCents,
+  paidCents,
   paidAt,
   claimedAt,
+  claimedCents,
   claimedMethod,
   claimedNote,
 }: {
   billId: string;
+  totalCents: number;
+  paidCents: number;
   paidAt: Date | null;
   claimedAt: Date | null;
+  claimedCents: number | null;
   claimedMethod: string | null;
   claimedNote: string | null;
 }) {
+  // What is actually left. Everything below talks about this rather than the bill total,
+  // so a member who has already part-paid is asked for the remainder, not the whole thing
+  // again.
+  const remaining = Math.max(0, totalCents - paidCents);
   const [open, setOpen] = useState(false);
 
   const [claimState, claimAction, claiming] = useActionState(
@@ -58,13 +69,22 @@ export function ClaimPayment({
     );
   }
 
+  const partPaid =
+    paidCents > 0 ? (
+      <p className="mt-1 text-xs text-[var(--color-muted)]">
+        {money(paidCents)} of {money(totalCents)} received so far — {money(remaining)} still
+        outstanding.
+      </p>
+    ) : null;
+
   if (claimedAt) {
     return (
       <div className="mt-6 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-5 py-4">
         <p className="text-sm font-semibold text-white">Waiting on confirmation</p>
+        {partPaid}
         <p className="mt-1 text-xs text-[var(--color-muted)]">
-          You marked this sent on {claimedAt.toLocaleDateString("en-US")} via{" "}
-          {methodLabel(claimedMethod)}
+          You marked {claimedCents === null ? "this" : money(claimedCents)} sent on{" "}
+          {claimedAt.toLocaleDateString("en-US")} via {methodLabel(claimedMethod)}
           {claimedNote ? ` — “${claimedNote}”` : ""}. It stays listed as unpaid until the payment is
           confirmed on our end.
         </p>
@@ -88,6 +108,7 @@ export function ClaimPayment({
   return (
     <div className="mt-6 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-5 py-4">
       <p className="text-sm font-semibold text-white">Already sent this?</p>
+      {partPaid}
       <p className="mt-1 text-xs text-[var(--color-muted)]">
         Let us know and we&rsquo;ll confirm it against the account. This doesn&rsquo;t clear the
         balance on its own — the charge stays unpaid until the payment is confirmed.
@@ -104,6 +125,27 @@ export function ClaimPayment({
       ) : (
         <form action={claimAction} className="mt-3 flex flex-wrap items-end gap-3">
           <input type="hidden" name="billId" value={billId} />
+          <div>
+            <label
+              htmlFor="amount"
+              className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
+            >
+              How much?
+            </label>
+            {/* Prefilled with the whole remaining balance, which is what almost everyone
+                sends. Editing it down is how a part payment gets claimed. */}
+            <input
+              id="amount"
+              name="amount"
+              inputMode="decimal"
+              defaultValue={(remaining / 100).toFixed(2)}
+              className={`${field} w-28`}
+              aria-describedby="amount-hint"
+            />
+            <span id="amount-hint" className="sr-only">
+              Leave as is if you sent the full amount
+            </span>
+          </div>
           <div>
             <label
               htmlFor="method"
