@@ -35,3 +35,7 @@ README.md
 AGENTS.md
 CLAUDE.md
 npm-debug.log*
+
+# Credentials the GitHub auth action writes into the workspace. `builds submit`
+# uploads the whole directory, so without this the file goes to Cloud Build.
+gha-creds-*.json

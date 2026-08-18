@@ -46,3 +46,6 @@ next-env.d.ts
 
 # local operator data: owner maps, exports -- contains member emails and Discord ids
 /data/
+
+# Credentials written into the workspace by google-github-actions/auth.
+gha-creds-*.json
