@@ -11,13 +11,17 @@ import {
 } from "@/db/queries/vault";
 import { requireMember } from "@/lib/auth/guard";
 import { resolveSiteLogo } from "@/lib/site-logo";
+import { selfServeSiteKeys } from "@/lib/sites";
 
 // One member's checkout credentials. Never cached, never a build artifact.
 export const dynamic = "force-dynamic";
 
-// Retailers a member can add a profile for even when they have none yet. Target only
-// for now -- the others come online as the bots start using stored profiles for them.
-const OPEN_SITES = ["target"];
+// Retailers a member can add a profile for even when they have none yet. Declared on
+// each retailer in `sites.ts` as `selfServe`, because this list living here is what let
+// it fall behind: Walmart and Pokémon Center had been in use for weeks while this still
+// read ["target"], so a member with no Walmart profile had no Walmart chip and therefore
+// no way to create one.
+const OPEN_SITES = selfServeSiteKeys();
 
 export default async function ProfilesPage() {
   const viewer = await requireMember();

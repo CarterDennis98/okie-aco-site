@@ -9,7 +9,14 @@
  * `src/pas/sites.js` in the bot repo is a port of this and must stay in step.
  */
 import { describe, expect, it } from "vitest";
-import { siteKey, siteMonogram, siteStyle, onTint } from "@/lib/sites";
+import {
+  siteKey,
+  siteMonogram,
+  siteStyle,
+  onTint,
+  selfServeSiteKeys,
+  supportedSites,
+} from "@/lib/sites";
 
 describe("siteKey", () => {
   it("matches the plain retailer names the bots report", () => {
@@ -64,5 +71,26 @@ describe("onTint", () => {
     expect(onTint("#0071CE")).toBe("#FFFFFF"); // Walmart blue
     expect(onTint("#FFCB05")).toBe("#121212"); // Pokemon Center yellow
     expect(onTint("#FFE000")).toBe("#121212"); // Best Buy yellow
+  });
+});
+
+describe("selfServeSiteKeys", () => {
+  /**
+   * The bug this pins: the profiles page built its retailer picker from the retailers a
+   * member already had, plus a hardcoded ["target"]. Walmart and Pokemon Center went
+   * live and that list was never updated, so a member with no Walmart profile saw no
+   * Walmart chip -- and the chip is the only way to add one.
+   */
+  it("offers the retailers whose bots read stored profiles", () => {
+    expect(selfServeSiteKeys().sort()).toEqual(["pokemon-center", "target", "walmart"]);
+  });
+
+  it("never goes empty, which would strand every member with no profiles", () => {
+    expect(selfServeSiteKeys().length).toBeGreaterThan(0);
+  });
+
+  it("only names retailers that actually exist in the registry", () => {
+    const known = new Set(supportedSites().map((s) => s.key));
+    for (const key of selfServeSiteKeys()) expect(known).toContain(key);
   });
 });

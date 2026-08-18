@@ -64,6 +64,22 @@ export type SiteStyle = {
    * one you do.
    */
   usesEmailCodes?: boolean;
+
+  /**
+   * Whether a member can add their FIRST profile here on their own.
+   *
+   * The retailer picker is built from the retailers a member already has profiles on.
+   * That alone is circular -- with no Walmart profile there is no Walmart chip, and no
+   * chip means no way to create one. So every retailer flagged here is offered whether
+   * or not they have anything on it yet.
+   *
+   * Deliberately NOT every retailer in this table. `supportedSites()` is the public
+   * "we check out here" list, which runs ahead of what the bots actually load stored
+   * profiles for; offering one of those would invite a member to type card details that
+   * nothing reads yet. Turn this on for a retailer when its bot genuinely consumes the
+   * vault -- that is the same moment the chip should appear.
+   */
+  selfServe?: boolean;
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -74,6 +90,7 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     width: 5400,
     height: 5400,
     profileSoftCap: 5,
+    selfServe: true,
   },
   walmart: {
     label: "Walmart",
@@ -81,6 +98,7 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     logo: "/walmart-logo.png",
     width: 3840,
     height: 2160,
+    selfServe: true,
   },
   "pokemon-center": {
     label: "Pokémon Center",
@@ -91,6 +109,7 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     profileSoftCap: 10,
     // Guest checkout: no login, so no verification code to read.
     usesEmailCodes: false,
+    selfServe: true,
   },
   "best-buy": {
     label: "Best Buy",
@@ -112,6 +131,20 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
 /** Every retailer we can check out on, for the supported-sites section. */
 export function supportedSites(): SiteStyle[] {
   return Object.entries(SITES).map(([key, value]) => ({ key, ...value }));
+}
+
+/**
+ * Retailers to offer a member who has no profile there yet.
+ *
+ * Read by the profiles page so the retailer picker is never limited to what a member
+ * already owns. Declared on the retailer itself rather than listed in the page, so
+ * bringing one online is a single edit next to its label instead of a second list
+ * somewhere else that quietly falls out of step.
+ */
+export function selfServeSiteKeys(): string[] {
+  return Object.entries(SITES)
+    .filter(([, value]) => value.selfServe)
+    .map(([key]) => key);
 }
 
 /**

@@ -29,7 +29,22 @@ export function SiteSwitcher({
   nextNames: Record<string, string>;
   logos: Record<string, string | null>;
 }) {
-  const [active, setActive] = useState(siteKeys[0] ?? "");
+  // Open the retailer they actually use, not whichever sorts first. Every self-serve
+  // retailer is listed now, including ones they have nothing on, so keying off position
+  // would greet a Target-only member with an empty Pokémon Center tab. Ties break on the
+  // existing order, and a member with nothing anywhere still lands somewhere valid.
+  const [active, setActive] = useState(() => {
+    let best = siteKeys[0] ?? "";
+    let most = -1;
+    for (const key of siteKeys) {
+      const count = profilesBySite[key]?.length ?? 0;
+      if (count > most) {
+        most = count;
+        best = key;
+      }
+    }
+    return best;
+  });
 
   if (siteKeys.length === 0) return null;
 
