@@ -122,11 +122,36 @@ jobs:
 
       - name: Build
         run: |
+          set -euo pipefail
+          image="${REGION}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/okie/${SERVICE}:${GITHUB_SHA::7}"
+
+          # --async, then poll. Left to itself gcloud tries to STREAM the build log, which
+          # reads Cloud Logging and needs project Viewer -- so the build succeeded and the
+          # step failed anyway, skipping the deploy. --suppress-logs does not avoid it.
+          # Polling needs only cloudbuild.builds.get, which the deploy account already has,
+          # so no blanket log access has to be granted to get a working pipeline.
+          #
           # Tagged with the commit, never :latest, so a rollback is one
           # `gcloud run services update-traffic` away.
-          gcloud builds submit \
-            --tag "${REGION}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/okie/${SERVICE}:${GITHUB_SHA::7}" \
-            --project "${{ vars.GCP_PROJECT_ID }}" .
+          id="$(gcloud builds submit --async --format='value(id)' \
+            --tag "$image" --project "${{ vars.GCP_PROJECT_ID }}" .)"
+          echo "build $id"
+          echo "logs: https://console.cloud.google.com/cloud-build/builds/${id}?project=${{ vars.GCP_PROJECT_ID }}"
+
+          # Cloud Build's own timeout is the real ceiling; this just stops us waiting on a
+          # queue forever if something upstream wedges.
+          for _ in $(seq 1 120); do
+            status="$(gcloud builds describe "$id" --project "${{ vars.GCP_PROJECT_ID }}" --format='value(status)')"
+            case "$status" in
+              SUCCESS) echo "build succeeded"; exit 0 ;;
+              FAILURE|TIMEOUT|CANCELLED|EXPIRED)
+                echo "build ended as $status -- open the logs link above"
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "gave up waiting after 20 minutes; build $id may still be running"
+          exit 1
 
       - name: Deploy
         # IMAGE ONLY -- no --set-env-vars, no --set-secrets, no --set-cloudsql-instances.
