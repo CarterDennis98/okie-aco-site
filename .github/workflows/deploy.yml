@@ -1,0 +1,153 @@
+name: Deploy site
+
+# Tests run on every push and PR. Build and deploy only from main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# No service account key anywhere in here. `id-token: write` lets the runner mint a
+# GitHub-signed OIDC token, which Workload Identity Federation trades for a short-lived
+# GCP credential -- see infra/setup-cicd.sh for why that matters.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: us-central1
+  SERVICE: okie-aco-site
+  SQL_INSTANCE: okie-pg
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: okie
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/okie
+      # Throwaway values so the DB-backed suites actually RUN rather than skip
+      # themselves. The database is destroyed with the runner and never holds real
+      # secrets, so this key protects nothing and is deliberately not a repo secret.
+      VAULT_KEY_ACTIVE: k1
+      BOT_INGEST_TOKEN: test-token-not-a-real-credential
+      ADMIN_DISCORD_IDS: "235941044460584960"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Generate a throwaway vault key
+        run: echo "VAULT_KEY_K1=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - run: npx prisma migrate deploy
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+  # A deploy against a schema that hasn't been migrated is a broken site, so this refuses
+  # rather than guessing. Applying stays a deliberate act -- see the failure message.
+  migrations:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Check for unapplied migrations
+        run: |
+          set -euo pipefail
+          curl -sSo cloud-sql-proxy \
+            https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          ./cloud-sql-proxy "${{ vars.GCP_PROJECT_ID }}:${REGION}:${SQL_INSTANCE}" --port 5433 &
+          for _ in $(seq 1 30); do
+            nc -z localhost 5433 && break
+            sleep 1
+          done
+
+          # The stored URL connects over the Cloud Run unix socket; rewrite it for the
+          # proxy's TCP port. The password is never echoed.
+          url="$(gcloud secrets versions access latest --secret=DATABASE_URL \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
+            | sed -E 's|@localhost/okie\?host=[^&]*|@localhost:5433/okie|; s|&connection_limit=[0-9]*||')"
+
+          if DATABASE_URL="$url" npx prisma migrate status; then
+            echo "Schema is up to date."
+          else
+            cat <<'MSG'
+
+          ✗ Cloud SQL has unapplied migrations, so this deploy was stopped.
+
+            Apply them, then re-run this workflow:
+
+              cloud-sql-proxy okie-aco:us-central1:okie-pg --port 5433
+              DATABASE_URL="postgresql://okie_app:<pw>@localhost:5433/okie" \
+                npx prisma migrate deploy
+
+          MSG
+            exit 1
+          fi
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build
+        run: |
+          # Tagged with the commit, never :latest, so a rollback is one
+          # `gcloud run services update-traffic` away.
+          gcloud builds submit \
+            --tag "${REGION}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/okie/${SERVICE}:${GITHUB_SHA::7}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" .
+
+      - name: Deploy
+        # IMAGE ONLY -- no --set-env-vars, no --set-secrets, no --set-cloudsql-instances.
+        # Those flags REPLACE rather than merge, so passing a partial set here would wipe
+        # the service's configuration; AUTH_URL and the admin allowlist live only on the
+        # service. Configuration changes go through infra/setup.sh by hand, deliberately.
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "${REGION}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/okie/${SERVICE}:${GITHUB_SHA::7}" \
+            --region "$REGION" \
+            --project "${{ vars.GCP_PROJECT_ID }}"
+
+      - name: Verify it serves
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 10); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' https://okie-aco.com/api/health || true)"
+            [ "$code" = "200" ] && { echo "healthy"; exit 0; }
+            sleep 5
+          done
+          echo "Health check never returned 200 (last: ${code:-none})."
+          echo "Roll back with:"
+          echo "  gcloud run services update-traffic $SERVICE --region $REGION --to-revisions PREVIOUS=100"
+          exit 1
