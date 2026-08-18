@@ -323,6 +323,63 @@ export async function setProfileActive(form: FormData): Promise<ActionResult> {
   return { ok: true };
 }
 
+/**
+ * Enable or disable several profiles at once.
+ *
+ * Same ownership rule as everywhere else: ids come from the form, but the query carries
+ * both predicates, so adding someone else's id to the POST selects nothing rather than
+ * touching their row.
+ *
+ * Profiles ALREADY in the requested state are skipped, not rewritten. Bulk-disabling a
+ * selection that happens to include three disabled rows should not stamp three audit
+ * entries claiming a change that didn't happen -- the count returned is the number that
+ * actually moved, which is also what the UI reports back.
+ *
+ * One notification for one action, matching `deleteProfiles`: a member switching off
+ * twenty profiles is one decision, and twenty webhook lines would train the operator to
+ * ignore the channel.
+ */
+export async function setProfilesActive(
+  form: FormData,
+): Promise<ActionResult & { changed?: number }> {
+  const viewer = await requireMember();
+  const ids = form.getAll("profileId").map(String).filter(Boolean);
+  const active = bool(form, "active");
+  if (ids.length === 0) return { ok: false, error: "Nothing selected." };
+
+  const profiles = await prisma.vaultProfile.findMany({
+    where: { id: { in: ids }, discordUserId: viewer.discordUserId, active: !active },
+    select: { id: true, name: true, siteKey: true },
+  });
+  // Not an error: the selection was valid, there was just nothing left to do. The UI
+  // phrases `changed: 0` rather than showing a failure for a no-op.
+  if (profiles.length === 0) return { ok: true, changed: 0 };
+
+  await prisma.vaultProfile.updateMany({
+    where: { id: { in: profiles.map((p) => p.id) } },
+    data: { active },
+  });
+
+  await recordBulkChange(
+    profiles.map((profile) => ({
+      actorDiscordId: viewer.discordUserId,
+      ownerDiscordId: viewer.discordUserId,
+      entity: VaultEntity.VAULT_PROFILE,
+      entityId: profile.id,
+      action: active ? VaultAction.ACTIVATE : VaultAction.DEACTIVATE,
+      siteKey: profile.siteKey,
+      label: profile.name,
+    })),
+    viewer.displayName,
+    `${active ? "enabled" : "disabled"} ${profiles.length} profile${
+      profiles.length === 1 ? "" : "s"
+    }`,
+  );
+
+  revalidatePath("/dashboard/profiles");
+  return { ok: true, changed: profiles.length };
+}
+
 // ---------------------------------------------------------------------------
 // Email app passwords
 // ---------------------------------------------------------------------------

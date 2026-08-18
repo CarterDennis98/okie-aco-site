@@ -9,6 +9,7 @@ import {
   loadProfileForEdit,
   revealOwnAppPassword,
   setProfileActive,
+  setProfilesActive,
   type ActionResult,
 } from "@/lib/vault/actions";
 import { ProfileForm } from "@/components/vault/profile-form";
@@ -154,11 +155,17 @@ function ProfileRow({
 }
 
 /**
- * Select-all plus the bulk remove.
+ * Select-all, the bulk enable/disable, and the bulk remove.
  *
- * Deliberately two clicks even when many rows are selected: removing forty profiles takes
- * their retailer logins with them and there is no undo, so the count is spelled out in
- * the confirmation rather than hidden behind a generic "Are you sure?".
+ * REMOVE is deliberately two clicks even when many rows are selected: it takes their
+ * retailer logins with them and there is no undo, so the count is spelled out in the
+ * confirmation rather than hidden behind a generic "Are you sure?".
+ *
+ * ENABLE and DISABLE are one click, on purpose. Nothing is destroyed and the same button
+ * puts it back, so a confirmation step would only be friction -- and the whole point of
+ * the bulk action is a member turning off twenty profiles before a drop they're sitting
+ * out. Each button is shown only when some of the selection is actually in the other
+ * state, so a click always does something.
  */
 function BulkBar({
   profiles,
@@ -184,8 +191,23 @@ function BulkBar({
     null,
   );
 
+  const [toggleState, toggleAction, togglePending] = useActionState(
+    async (_previous: (ActionResult & { changed?: number }) | null, formData: FormData) => {
+      const result = await setProfilesActive(formData);
+      if (result.ok) onCleared();
+      return result;
+    },
+    null,
+  );
+
   const count = selected.size;
   const allSelected = count > 0 && count === profiles.length;
+
+  // Counted from the CURRENT rows, so the buttons reflect what is really selected rather
+  // than what was selected before the last toggle landed.
+  const chosen = profiles.filter((p) => selected.has(p.id));
+  const activeChosen = chosen.filter((p) => p.active).length;
+  const inactiveChosen = chosen.length - activeChosen;
 
   return (
     <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
@@ -204,6 +226,41 @@ function BulkBar({
       </label>
 
       {count > 0 && <span className="text-xs text-[var(--color-fg)]">{count} selected</span>}
+
+      {count > 0 && !confirming && (inactiveChosen > 0 || activeChosen > 0) && (
+        <form action={toggleAction} className="flex flex-wrap items-center gap-2">
+          {[...selected].map((id) => (
+            <input key={id} type="hidden" name="profileId" value={id} />
+          ))}
+          {inactiveChosen > 0 && (
+            <button
+              type="submit"
+              name="active"
+              value="true"
+              disabled={togglePending}
+              className="rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)] disabled:opacity-60"
+            >
+              Enable {inactiveChosen}
+            </button>
+          )}
+          {activeChosen > 0 && (
+            <button
+              type="submit"
+              name="active"
+              value="false"
+              disabled={togglePending}
+              className="rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)] disabled:opacity-60"
+            >
+              Disable {activeChosen}
+            </button>
+          )}
+          {toggleState && !toggleState.ok && (
+            <span role="alert" className="text-xs text-[var(--color-brand)]">
+              {toggleState.error}
+            </span>
+          )}
+        </form>
+      )}
 
       {count > 0 &&
         (confirming ? (
