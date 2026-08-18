@@ -32,13 +32,16 @@ POOL="${POOL:-github}"
 PROVIDER="${PROVIDER:-github}"
 DEPLOYER="${DEPLOYER:-okie-deploy}"
 RUNTIME_SA="${RUNTIME_SA:-okie-run}"
+BOT_SA="${BOT_SA:-okie-bot}"
 GITHUB_OWNER="${GITHUB_OWNER:-CarterDennis98}"
 SITE_REPO="${SITE_REPO:-okie-aco-site}"
 BOT_REPO="${BOT_REPO:-okie-aco-mirror}"
 VM="${VM:-okie-bot}"
+ZONE="${ZONE:-us-central1-a}"
 
 DEPLOYER_EMAIL="${DEPLOYER}@${PROJECT_ID}.iam.gserviceaccount.com"
 RUNTIME_EMAIL="${RUNTIME_SA}@${PROJECT_ID}.iam.gserviceaccount.com"
+BOT_EMAIL="${BOT_SA}@${PROJECT_ID}.iam.gserviceaccount.com"
 POOL_PATH="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL}"
 
 say() { printf '\n== %s ==\n' "$1"; }
@@ -167,12 +170,29 @@ account)
     --condition=None --quiet >/dev/null
   echo "  roles/storage.objectAdmin (Cloud Build source staging)"
 
-  # Deploying a service that RUNS AS okie-run means acting as it. Scoped to that one
-  # account rather than granted project-wide.
-  say "letting the deployer act as $RUNTIME_SA"
-  gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_EMAIL" \
-    --member="serviceAccount:${DEPLOYER_EMAIL}" \
-    --role="roles/iam.serviceAccountUser" \
+  # Deploying a service that RUNS AS okie-run means acting as it. Scoped to those two
+  # accounts rather than granted project-wide.
+  #
+  # BOTH are required, and the second is easy to miss. SSHing into a VM that runs as a
+  # service account also needs actAs on THAT account -- without it OS Login's policy check
+  # denies the login and sshd reports the useless "Server refused our key", which looks
+  # like a key problem and is actually an IAM one.
+  say "letting the deployer act as $RUNTIME_SA and $BOT_SA"
+  for target in "$RUNTIME_EMAIL" "$BOT_EMAIL"; do
+    gcloud iam service-accounts add-iam-policy-binding "$target" \
+      --member="serviceAccount:${DEPLOYER_EMAIL}" \
+      --role="roles/iam.serviceAccountUser" \
+      --project="$PROJECT_ID" --quiet >/dev/null
+    echo "  $target"
+  done
+
+  # gcloud compute ssh falls back to writing the generated key into instance metadata
+  # unless OS Login is on, and that needs compute.instances.setMetadata -- a much broader
+  # permission than logging in. Enabled on the INSTANCE, not project-wide, so the blast
+  # radius is this one VM.
+  say "enabling OS Login on $VM"
+  gcloud compute instances add-metadata "$VM" \
+    --zone="$ZONE" --metadata enable-oslogin=TRUE \
     --project="$PROJECT_ID" --quiet >/dev/null
   echo "  ok"
 
