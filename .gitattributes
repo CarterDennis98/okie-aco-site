@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Shell scripts must keep LF endings: a CRLF shebang makes the kernel look
+# for an interpreter literally named "bash".
+*.sh text eol=lf

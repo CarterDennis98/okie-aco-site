@@ -54,7 +54,22 @@ TABLES=(
   testimonials admin_audit backfill_progress
 )
 
-require() { command -v "$1" >/dev/null || { echo "Need $1 on PATH."; exit 1; }; }
+# The Postgres client tools ship with the Windows installer but are not added to PATH.
+# Found here rather than demanded of the caller, so this works from a fresh shell.
+# PG_BIN overrides for any other layout.
+if ! command -v psql >/dev/null 2>&1; then
+  for candidate in "${PG_BIN:-}" /c/Program\ Files/PostgreSQL/*/bin /usr/lib/postgresql/*/bin; do
+    if [ -x "$candidate/psql" ]; then PATH="$candidate:$PATH"; break; fi
+  done
+fi
+
+require() {
+  command -v "$1" >/dev/null || {
+    echo "Need $1 on PATH. Postgres client tools live in the install's bin/ directory;"
+    echo "set PG_BIN=/path/to/postgresql/bin if they are somewhere unusual."
+    exit 1
+  }
+}
 
 counts() {
   local url="$1" label="$2"
@@ -83,14 +98,24 @@ case "${1:-check}" in
     require pg_dump
     [ -n "$LOCAL_URL" ] || { echo "Set DATABASE_URL or LOCAL_DATABASE_URL."; exit 1; }
     # Data only: the schema comes from `prisma migrate deploy`, not from here.
-    # --disable-triggers so foreign keys don't fight the insert order.
-    pg_dump "$LOCAL_URL" \
-      --data-only \
-      --disable-triggers \
-      --no-owner \
-      --no-privileges \
-      --exclude-table=_prisma_migrations \
-      --file "$DUMP_FILE"
+    #
+    # One pg_dump per table, appended in TABLES order, because TABLES is a valid foreign
+    # key dependency order -- parents before children. The obvious alternative,
+    # --disable-triggers, cannot work here: suppressing a foreign key's internal trigger
+    # needs real superuser, which Cloud SQL never grants, and the restore dies on
+    # "permission denied: RI_ConstraintTrigger_... is a system trigger".
+    #
+    # Safe because every id in this schema is a uuid or cuid: no sequences to carry over,
+    # so ordering is the only thing that has to be right.
+    : > "$DUMP_FILE"
+    for t in "${TABLES[@]}"; do
+      pg_dump "$LOCAL_URL" \
+        --data-only \
+        --no-owner \
+        --no-privileges \
+        --table="public.$t" \
+        >> "$DUMP_FILE"
+    done
     echo "Wrote $DUMP_FILE ($(du -h "$DUMP_FILE" | cut -f1))"
     echo
     echo "This file contains encrypted card numbers and passwords."

@@ -254,6 +254,11 @@ deploy)
     secret_flags="${secret_flags}${name}=${name}:latest,"
   done
   env_flags="$(IFS=','; echo "${PLAIN_ENV[*]}")"
+  # Non-secret configuration that differs per environment -- Discord ids, the admin
+  # allowlist, the canonical URL. Passed in rather than hardcoded so this script stays
+  # usable from CI, where no .env exists:
+  #   EXTRA_ENV="AUTH_DISCORD_ID=...,DISCORD_GUILD_ID=..." ./infra/setup.sh deploy
+  [ -n "${EXTRA_ENV:-}" ] && env_flags="${env_flags},${EXTRA_ENV}"
 
   say "deploying ${IMAGE}:${tag}"
   gcloud run deploy "$SERVICE" \
