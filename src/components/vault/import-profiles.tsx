@@ -20,7 +20,7 @@ import { siteStyle } from "@/lib/sites";
  */
 
 const field =
-  "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-sm text-[var(--color-fg)] file:mr-3 file:rounded file:border-0 file:bg-[var(--color-elevated)] file:px-2 file:py-1 file:text-xs file:text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none";
+  "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-base sm:text-sm text-[var(--color-fg)] file:mr-3 file:rounded file:border-0 file:bg-[var(--color-elevated)] file:px-2 file:py-1 file:text-xs file:text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none";
 
 export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
   const [open, setOpen] = useState(false);
@@ -46,7 +46,7 @@ export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50"
+          className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 sm:min-h-0"
         >
           Import a file
         </button>
@@ -120,14 +120,14 @@ export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
             <button
               type="submit"
               disabled={pending}
-              className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60"
+              className="inline-flex min-h-11 items-center rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60 sm:min-h-0"
             >
               {pending ? "Importing…" : "Import"}
             </button>
             <button
               type="button"
               onClick={() => setOpen(false)}
-              className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+              className="inline-flex min-h-11 items-center text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] sm:min-h-0"
             >
               Cancel
             </button>

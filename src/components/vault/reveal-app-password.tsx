@@ -112,21 +112,25 @@ export function RevealAppPassword({
           compact ? "mt-1 flex flex-wrap items-center gap-1.5" : "flex flex-wrap items-center gap-2"
         }
       >
-        {forwarded && <span className="text-[11px] text-[var(--color-muted)]">{mailbox}</span>}
-        <code className="rounded bg-[var(--color-elevated)] px-2 py-1 font-mono text-xs break-all text-[var(--color-fg)] select-all">
+        {forwarded && (
+          <span className="max-w-full truncate text-[11px] text-[var(--color-muted)]">
+            {mailbox}
+          </span>
+        )}
+        <code className="max-w-full rounded bg-[var(--color-elevated)] px-2 py-1 font-mono text-xs break-all text-[var(--color-fg)] select-all">
           {value}
         </code>
         <button
           type="button"
           onClick={copy}
-          className="rounded px-1.5 py-1 text-[11px] font-medium text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+          className="inline-flex min-h-11 items-center rounded px-2.5 py-1 text-[11px] font-medium text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] sm:min-h-0 sm:px-1.5"
         >
           {copied ? "Copied" : "Copy"}
         </button>
         <button
           type="button"
           onClick={() => setValue(null)}
-          className="rounded px-1.5 py-1 text-[11px] font-medium text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+          className="inline-flex min-h-11 items-center rounded px-2.5 py-1 text-[11px] font-medium text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] sm:min-h-0 sm:px-1.5"
         >
           Hide
         </button>
@@ -141,18 +145,24 @@ export function RevealAppPassword({
       }
     >
       {forwarded && (
+        // max-w-full + a truncating inner span: a mailbox address is a single unbreakable
+        // token, and left to size itself this pill was 379px wide. On a 375px screen that
+        // one chip set the min-content width of every ancestor up to <main>, which is a
+        // flex item and so cannot shrink below it -- the whole page scrolled sideways.
         <span
           title={`Codes for this address arrive in ${mailbox}, which has the app password`}
-          className="inline-flex items-center gap-1 rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase"
+          className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase"
         >
-          <span aria-hidden>↳</span> forwards to {mailbox}
+          <span aria-hidden>↳</span>
+          <span className="shrink-0">forwards to</span>
+          <span className="min-w-0 truncate">{mailbox}</span>
         </span>
       )}
       <button
         type="button"
         onClick={reveal}
         disabled={pending}
-        className="rounded-lg border border-[var(--color-edge)] px-2 py-1 text-[11px] font-medium text-[var(--color-muted)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-fg)] disabled:opacity-50"
+        className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1 text-[11px] font-medium text-[var(--color-muted)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-fg)] disabled:opacity-50 sm:min-h-0 sm:px-2"
       >
         {pending ? "Revealing…" : forwarded ? "Show inbox password" : "Show app password"}
       </button>

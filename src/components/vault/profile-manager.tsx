@@ -42,22 +42,29 @@ function Toggle({ profile }: { profile: VaultProfileSummary }) {
     <form action={formAction} title={state && !state.ok ? state.error : undefined}>
       <input type="hidden" name="profileId" value={profile.id} />
       <input type="hidden" name="active" value={profile.active ? "false" : "true"} />
+      {/* The pill stays 20px tall; the BUTTON around it is 44 on touch, pulled back with
+          a negative margin so the row height is unchanged. A 36x20 switch is a coin-flip
+          to hit with a thumb, and hitting it wrong toggles a profile mid-drop. */}
       <button
         type="submit"
         disabled={pending}
         aria-label={profile.active ? `Disable ${profile.name}` : `Enable ${profile.name}`}
         title={profile.active ? "Disable for this site" : "Enable for this site"}
-        className={
-          "relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 " +
-          (profile.active ? "bg-[var(--color-brand)]" : "bg-[var(--color-elevated)]")
-        }
+        className="-my-3 flex min-h-11 shrink-0 items-center disabled:opacity-50 sm:my-0 sm:min-h-0"
       >
         <span
           className={
-            "absolute top-0.5 size-4 rounded-full bg-white transition-[left] " +
-            (profile.active ? "left-[1.125rem]" : "left-0.5")
+            "relative block h-5 w-9 rounded-full transition-colors " +
+            (profile.active ? "bg-[var(--color-brand)]" : "bg-[var(--color-elevated)]")
           }
-        />
+        >
+          <span
+            className={
+              "absolute top-0.5 size-4 rounded-full bg-white transition-[left] " +
+              (profile.active ? "left-[1.125rem]" : "left-0.5")
+            }
+          />
+        </span>
       </button>
     </form>
   );
@@ -79,6 +86,46 @@ const VISIBLE_ROWS = 10;
 const ROW_REM = 5.75;
 /** Upper bound as a share of the window, so the scroll always starts on screen. */
 const VIEWPORT_SHARE = "55vh";
+
+/**
+ * A chip whose meaning lives in a `title` attribute is a chip that explains nothing on a
+ * phone -- there is no hover on touch, and these carry real information: which profiles
+ * share a card, and why one is on the backup bot.
+ *
+ * Tapping toggles the explanation inline (`basis-full` puts it on its own line inside the
+ * wrapping flex, so it never squeezes the name). The title stays for mouse users, who
+ * lose nothing.
+ */
+function HintChip({
+  label,
+  detail,
+  className,
+}: {
+  label: string;
+  detail: string;
+  className: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={detail}
+        className={className}
+      >
+        {label}
+      </button>
+      {open && (
+        <span className="basis-full text-[11px] leading-snug font-normal text-[var(--color-muted)]">
+          {detail}
+        </span>
+      )}
+    </>
+  );
+}
 
 function ProfileRow({
   profile,
@@ -102,20 +149,26 @@ function ProfileRow({
       }
     >
       {/* Both controls sit in one fixed-height box so the checkbox and the toggle share a
-          centre line, rather than each centring inside its own differently-sized cell. */}
-      <span className="flex h-5 shrink-0 items-center gap-3">
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={(e) => onSelect(e.currentTarget.checked)}
-          aria-label={`Select ${profile.name}`}
-          className="size-4 accent-[var(--color-brand)]"
-        />
+          centre line, rather than each centring inside its own differently-sized cell.
+          The box only has a fixed height from `sm` up -- below that each control grows its
+          own 44px hit area and the shared centre line comes from items-center instead. */}
+      <span className="flex shrink-0 items-center gap-2 sm:h-5 sm:gap-3">
+        <label className="-my-3 flex min-h-11 items-center px-1 sm:my-0 sm:min-h-0 sm:px-0">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={(e) => onSelect(e.currentTarget.checked)}
+            aria-label={`Select ${profile.name}`}
+            className="size-5 accent-[var(--color-brand)] sm:size-4"
+          />
+        </label>
         <Toggle profile={profile} />
       </span>
 
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-2 text-sm font-semibold text-white">
+        {/* Wraps: a long profile name plus three chips does not fit on one line at 375px,
+            and without wrapping the chips ran off the side of the row. */}
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm font-semibold text-white">
           <span className={profile.active ? "" : "text-[var(--color-muted)] line-through"}>
             {profile.name}
           </span>
@@ -125,26 +178,28 @@ function ProfileRow({
             </span>
           )}
           {onBackup && (
-            <span
-              title="Past the main bot's profile cap for this retailer — still runs, just on the backup"
-              className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase"
-            >
-              Backup bot
-            </span>
+            <HintChip
+              label="Backup bot"
+              detail="Past the main bot's profile cap for this retailer — still runs, just on the backup."
+              className="inline-flex min-h-6 items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase"
+            />
           )}
           {/* A chip rather than a sentence per row: on real data almost half the Walmart
               profiles share a card, and a paragraph on each would drown the list. The
-              explanation sits once above the list; the siblings are named here. */}
+              explanation sits once above the list; the siblings are named on tap. */}
           {profile.sharesCardWith.length > 0 && (
-            <span
-              title={`Same card as ${listNames(profile.sharesCardWith)}`}
-              className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase"
-            >
-              Shared card
-            </span>
+            <HintChip
+              label="Shared card"
+              detail={`Same card as ${listNames(profile.sharesCardWith)}.`}
+              className="inline-flex min-h-6 items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase"
+            />
           )}
         </p>
-        <p className="mt-1 truncate text-xs text-[var(--color-muted)]">
+        {/* Wraps on a phone, truncates on a wide screen. Truncating here cost the card and
+            the city outright -- a long address ate the whole line -- and those are the two
+            fields that tell one profile from another. `break-words` lets the address
+            itself break, which also keeps this line from setting a min-content floor. */}
+        <p className="mt-1 text-xs break-words text-[var(--color-muted)] sm:truncate">
           {profile.email} · {profile.cardLabel} · exp {profile.cardExpMonth}/
           {profile.cardExpYear.slice(-2)} · {profile.shipCity}, {profile.shipState}
         </p>
@@ -159,11 +214,14 @@ function ProfileRow({
 
       {/* Removal is deliberately only via the checkbox + "Remove selected" above. One
           stray click next to a toggle used to delete a profile and its retailer login
-          with a single confirm; making it a two-step selection is the point. */}
+          with a single confirm; making it a two-step selection is the point.
+
+          Bordered and 44px on touch, bare text from `sm` up: as a 21x16 text run it was
+          both the smallest target in the row and the only one that didn't look tappable. */}
       <button
         type="button"
         onClick={() => onEdit(profile.id)}
-        className="self-center text-xs font-medium text-[var(--color-fg)] transition-colors hover:text-white"
+        className="-my-2 flex min-h-11 shrink-0 items-center self-center rounded-lg border border-[var(--color-edge)] px-3 text-sm font-medium text-[var(--color-fg)] transition-colors hover:text-white sm:my-0 sm:min-h-0 sm:border-0 sm:px-0 sm:text-xs"
       >
         Edit
       </button>
@@ -228,7 +286,7 @@ function BulkBar({
 
   return (
     <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
-      <label className="flex items-center gap-2 text-xs text-[var(--color-muted)]">
+      <label className="flex min-h-11 items-center gap-2 text-xs text-[var(--color-muted)] sm:min-h-0">
         <input
           type="checkbox"
           checked={allSelected}
@@ -255,7 +313,7 @@ function BulkBar({
               name="active"
               value="true"
               disabled={togglePending}
-              className="rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)] disabled:opacity-60"
+              className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)] disabled:opacity-60 sm:min-h-0"
             >
               Enable {inactiveChosen}
             </button>
@@ -266,7 +324,7 @@ function BulkBar({
               name="active"
               value="false"
               disabled={togglePending}
-              className="rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)] disabled:opacity-60"
+              className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)] disabled:opacity-60 sm:min-h-0"
             >
               Disable {activeChosen}
             </button>
@@ -300,7 +358,7 @@ function BulkBar({
             <button
               type="button"
               onClick={() => setConfirming(false)}
-              className="text-xs text-[var(--color-muted)]"
+              className="inline-flex min-h-11 items-center text-xs text-[var(--color-muted)] sm:min-h-0"
             >
               Cancel
             </button>
@@ -309,7 +367,7 @@ function BulkBar({
           <button
             type="button"
             onClick={() => setConfirming(true)}
-            className="rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)]"
+            className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-2.5 py-1 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 hover:text-[var(--color-brand)] sm:min-h-0"
           >
             Remove selected
           </button>
@@ -365,7 +423,9 @@ export function ProfileManager({
   return (
     <section className="mt-10">
       <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
+        {/* Wraps: the retailer chip plus "18 of 24 active · 5/5 on the main bot · 3 on
+            backup" is wider than a 320px screen, and on one line it ran off the edge. */}
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
           <span
             className="inline-flex items-center gap-1.5 rounded-full py-1 pr-2.5 pl-1 text-[11px] font-medium text-[var(--color-fg)]"
             style={{
@@ -405,7 +465,7 @@ export function ProfileManager({
             setAdding((v) => !v);
             setEditing(null);
           }}
-          className="rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50"
+          className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 sm:min-h-0"
         >
           {adding ? "Cancel" : "Add profile"}
         </button>
@@ -443,11 +503,11 @@ export function ProfileManager({
           {sharedCardCount > 0 && (
             <p className="mb-2 px-1 text-xs text-[var(--color-muted)]">
               <span aria-hidden>⚠ </span>
-              {sharedCardCount} of these profiles share a card with another {style.label}{" "}
-              profile. Reusing a card number across profiles on one retailer can increase the
-              chance that orders fail — hover a{" "}
-              <span className="font-medium text-[var(--color-fg)]">Shared card</span> chip to
-              see which.
+              {sharedCardCount} of these profiles share a card with another {style.label} profile.
+              Reusing a card number across profiles on one retailer can increase the chance that
+              orders fail — tap a{" "}
+              <span className="font-medium text-[var(--color-fg)]">Shared card</span> chip to see
+              which.
             </p>
           )}
           {/* Scrolls past VISIBLE_ROWS rather than running the page long: a member with

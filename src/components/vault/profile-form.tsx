@@ -18,8 +18,15 @@ import { siteUsesAccounts } from "@/lib/sites";
  * everything server-side, since a Server Action is a public POST endpoint.
  */
 
+/*
+ * `text-base sm:text-sm` -- 16px on a phone, 14px from `sm` up, and the 16 is not a taste
+ * call. Mobile Safari zooms the page in on any input whose font-size is under 16px and
+ * does not zoom back out when the field blurs, so filling this form on an iPhone left you
+ * scrolled sideways inside a magnified page for every field after the first. The same
+ * threshold applies to every input and select on the site.
+ */
 const field =
-  "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
+  "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-base sm:text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
 const label = "mb-1 block text-xs font-medium text-[var(--color-muted)]";
 
 function Field({
@@ -197,7 +204,7 @@ export function ProfileForm({
         </div>
       </fieldset>
 
-      <label className="flex items-center gap-2.5 text-sm text-[var(--color-fg)]">
+      <label className="flex min-h-11 items-center gap-2.5 text-sm text-[var(--color-fg)] sm:min-h-0">
         <input
           type="checkbox"
           name="sameBillingAndShipping"
@@ -319,7 +326,7 @@ export function ProfileForm({
             the AYCD export and import round-trip it and imported profiles carry a real
             value, but it is the operator's call rather than a per-member setting. */}
         <div className="mt-4 flex flex-col gap-2">
-          <label className="flex items-center gap-2.5 text-sm text-[var(--color-fg)]">
+          <label className="flex min-h-11 items-center gap-2.5 text-sm text-[var(--color-fg)] sm:min-h-0">
             <input
               type="checkbox"
               name="matchNameOnCardAndAddress"
@@ -335,7 +342,7 @@ export function ProfileForm({
         <button
           type="submit"
           disabled={pending}
-          className="rounded-lg bg-[var(--color-brand)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60"
+          className="inline-flex min-h-11 items-center rounded-lg bg-[var(--color-brand)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60 sm:min-h-0"
         >
           {pending ? "Saving…" : isEdit ? "Save changes" : "Add profile"}
         </button>
@@ -343,7 +350,7 @@ export function ProfileForm({
           <button
             type="button"
             onClick={onDone}
-            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            className="inline-flex min-h-11 items-center text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] sm:min-h-0"
           >
             Cancel
           </button>

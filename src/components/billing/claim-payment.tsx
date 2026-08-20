@@ -16,7 +16,7 @@ import { money } from "@/lib/money";
  */
 
 const field =
-  "rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
+  "rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-base sm:text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
 
 export function ClaimPayment({
   billId,
@@ -182,14 +182,14 @@ export function ClaimPayment({
           <button
             type="submit"
             disabled={claiming}
-            className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60"
+            className="inline-flex min-h-11 items-center rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60 sm:min-h-0"
           >
             {claiming ? "Saving…" : "Submit"}
           </button>
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="px-1 text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            className="inline-flex min-h-11 items-center px-1 text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] sm:min-h-0"
           >
             Cancel
           </button>

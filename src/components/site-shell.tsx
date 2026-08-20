@@ -16,16 +16,18 @@ export function SiteHeader({ signedIn = false }: { signedIn?: boolean }) {
           <Logo height={44} />
         </Link>
 
+        {/* 44px tall on touch, back to the tighter 36 from `sm` up. These two are the only
+            way out of any page, so they are the last controls that should need aiming. */}
         <div className="flex items-center gap-2 sm:gap-3">
           <a
             href={DISCORD_INVITE}
-            className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+            className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
           >
             Discord
           </a>
           <Link
             href={signedIn ? "/dashboard" : "/signin"}
-            className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
+            className="inline-flex min-h-11 items-center rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] sm:min-h-0"
           >
             {signedIn ? "Dashboard" : "Sign in"}
           </Link>

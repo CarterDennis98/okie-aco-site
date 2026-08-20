@@ -46,13 +46,13 @@ export function ConfirmPayment({
         inputMode="decimal"
         defaultValue={((claimedCents ?? remaining) / 100).toFixed(2)}
         aria-label="Amount received"
-        className="w-20 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
+        className="w-20 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-base sm:text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
       />
       <select
         name="method"
         defaultValue={claimedMethod ?? ""}
         aria-label="Payment method"
-        className="rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
+        className="rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-base sm:text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
       >
         <option value="">Method…</option>
         {PAYMENT_METHODS.map((m) => (

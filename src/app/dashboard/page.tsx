@@ -84,7 +84,7 @@ export default async function DashboardPage() {
           <div className="flex items-center gap-2">
             <Link
               href="/dashboard/profiles"
-              className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+              className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
             >
               Profiles
             </Link>
@@ -92,7 +92,7 @@ export default async function DashboardPage() {
               <>
                 <Link
                   href="/admin/charges"
-                  className="relative rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+                  className="relative inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
                 >
                   Charges
                   {pendingConfirmation > 0 && (
@@ -108,7 +108,7 @@ export default async function DashboardPage() {
                 </Link>
                 <Link
                   href="/admin/profiles"
-                  className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+                  className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
                 >
                   Admin
                 </Link>
@@ -117,7 +117,7 @@ export default async function DashboardPage() {
             <form action={signOutOfSite}>
               <button
                 type="submit"
-                className="rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)]"
+                className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
               >
                 Sign out
               </button>
@@ -238,9 +238,7 @@ export default async function DashboardPage() {
                             is on the charge page; the number here is the one that answers
                             "what do I still owe". */}
                         {money(
-                          charge.paidAt
-                            ? charge.totalCents
-                            : charge.totalCents - charge.paidCents,
+                          charge.paidAt ? charge.totalCents : charge.totalCents - charge.paidCents,
                         )}
                       </span>
                       {/* The row's only standing "this opens something" cue -- a hover

@@ -28,12 +28,12 @@ import {
  */
 
 const field =
-  "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
+  "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-base sm:text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
 
 function AppPasswordGuide() {
   return (
     <details className="group mt-3 rounded-lg border border-[var(--color-edge)] bg-[var(--color-surface)] p-4">
-      <summary className="inline-flex list-none items-center gap-1.5 text-sm font-medium text-[var(--color-fg)]">
+      <summary className="inline-flex min-h-11 list-none items-center gap-1.5 text-sm font-medium text-[var(--color-fg)] sm:min-h-0">
         <span aria-hidden className="transition-transform group-open:rotate-90">
           ›
         </span>
@@ -57,7 +57,7 @@ function AppPasswordGuide() {
                 href={provider.setupUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-sm font-medium text-[var(--color-fg)] underline decoration-[var(--color-edge)] underline-offset-2 transition-colors hover:decoration-[var(--color-brand)]"
+                className="inline-flex min-h-11 items-center text-sm font-medium text-[var(--color-fg)] underline decoration-[var(--color-edge)] underline-offset-2 transition-colors hover:decoration-[var(--color-brand)] sm:min-h-0"
               >
                 {provider.label} app passwords ↗
               </a>
@@ -97,7 +97,7 @@ function RemoveCredential({ id }: { id: string }) {
         type="submit"
         disabled={pending}
         title={state && !state.ok ? state.error : undefined}
-        className="text-xs text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)] disabled:opacity-60"
+        className="inline-flex min-h-11 items-center text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)] disabled:opacity-60 sm:min-h-0 sm:text-xs"
       >
         Remove
       </button>
@@ -105,7 +105,7 @@ function RemoveCredential({ id }: { id: string }) {
   );
 }
 
-function RemoveAlias({ id }: { id: string }) {
+function RemoveAlias({ id, alias }: { id: string; alias: string }) {
   const [state, formAction, pending] = useActionState(
     async (_previous: ActionResult | null, formData: FormData) => deleteEmailAlias(formData),
     null,
@@ -114,11 +114,15 @@ function RemoveAlias({ id }: { id: string }) {
   return (
     <form action={formAction} className="contents">
       <input type="hidden" name="aliasId" value={id} />
+      {/* The glyph is 8px wide; the button is not. A negative margin keeps the pill its
+          original size while the hit area extends past it, which is the difference
+          between "tap the ×" working on a phone and not. */}
       <button
         type="submit"
         disabled={pending}
+        aria-label={`Stop forwarding ${alias}`}
         title={state && !state.ok ? state.error : "No longer forwards here"}
-        className="text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)] disabled:opacity-60"
+        className="-my-2 -mr-1.5 inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)] disabled:opacity-60"
       >
         ×
       </button>
@@ -152,7 +156,7 @@ function ForwardPicker({
         defaultValue=""
         aria-label={`Inbox that ${email} forwards to`}
         onChange={(e) => e.currentTarget.form?.requestSubmit()}
-        className="max-w-52 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
+        className="max-w-52 min-h-11 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-base text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none sm:min-h-0 sm:text-xs"
       >
         <option value="" disabled>
           Forwards to…
@@ -189,13 +193,16 @@ function AliasChips({ aliases }: { aliases: { id: string; email: string }[] }) {
   return (
     <ul className="mt-1.5 flex flex-wrap items-center gap-1.5">
       {shown.map((alias) => (
+        // max-w-full and a truncating address: these are single unbreakable tokens, and a
+        // long one sized this pill wider than a phone screen -- which, on a flex-item
+        // <main>, took the whole page's layout with it.
         <li
           key={alias.id}
-          className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-elevated)] py-1 pr-1.5 pl-2 text-[11px] leading-none text-[var(--color-muted)]"
+          className="inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-full bg-[var(--color-elevated)] py-1 pr-1.5 pl-2 text-[11px] leading-none text-[var(--color-muted)]"
         >
           <span aria-hidden>↳</span>
-          <span className="text-[var(--color-fg)]">{alias.email}</span>
-          <RemoveAlias id={alias.id} />
+          <span className="min-w-0 truncate text-[var(--color-fg)]">{alias.email}</span>
+          <RemoveAlias id={alias.id} alias={alias.email} />
         </li>
       ))}
       {(hidden > 0 || expanded) && (
@@ -203,7 +210,7 @@ function AliasChips({ aliases }: { aliases: { id: string; email: string }[] }) {
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="rounded-full px-2 py-1 text-[11px] leading-none font-medium text-[var(--color-muted)] underline underline-offset-2 transition-colors hover:text-[var(--color-fg)]"
+            className="inline-flex min-h-11 items-center rounded-full px-2 py-1 text-[11px] leading-none font-medium text-[var(--color-muted)] underline underline-offset-2 transition-colors hover:text-[var(--color-fg)] sm:min-h-0"
           >
             {expanded ? "Show fewer" : `Show ${hidden} more`}
           </button>
@@ -272,11 +279,11 @@ export function EmailCredentials({
               </div>
               {/* One row, fixed height, matching the email line above it -- so both
                   controls share a baseline no matter how many chips are below. */}
-              <span className="flex h-5 shrink-0 items-center gap-4">
+              <span className="flex shrink-0 items-center gap-4 sm:h-5">
                 <button
                   type="button"
                   onClick={() => setAdding(credential.email)}
-                  className="text-xs font-medium text-[var(--color-fg)] transition-colors hover:text-white"
+                  className="inline-flex min-h-11 items-center text-sm font-medium text-[var(--color-fg)] transition-colors hover:text-white sm:min-h-0 sm:text-xs"
                 >
                   Replace
                 </button>
@@ -311,7 +318,7 @@ export function EmailCredentials({
                 <button
                   type="button"
                   onClick={() => setAdding(email)}
-                  className="text-xs font-medium text-[var(--color-fg)] transition-colors hover:text-white"
+                  className="inline-flex min-h-11 items-center text-sm font-medium text-[var(--color-fg)] transition-colors hover:text-white sm:min-h-0 sm:text-xs"
                 >
                   Add password
                 </button>
@@ -325,7 +332,7 @@ export function EmailCredentials({
         <button
           type="button"
           onClick={() => setAdding("")}
-          className="mt-4 rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50"
+          className="mt-4 inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 sm:min-h-0"
         >
           Add an app password
         </button>
@@ -373,14 +380,14 @@ export function EmailCredentials({
             <button
               type="submit"
               disabled={pending}
-              className="rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60"
+              className="inline-flex min-h-11 items-center rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60 sm:min-h-0"
             >
               {pending ? "Saving…" : "Save"}
             </button>
             <button
               type="button"
               onClick={() => setAdding(null)}
-              className="text-sm text-[var(--color-muted)] hover:text-[var(--color-fg)]"
+              className="inline-flex min-h-11 items-center text-sm text-[var(--color-muted)] hover:text-[var(--color-fg)] sm:min-h-0"
             >
               Cancel
             </button>

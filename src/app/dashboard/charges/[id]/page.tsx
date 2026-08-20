@@ -77,85 +77,91 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
           </span>
         </header>
 
-        <table className="mt-8 w-full text-sm">
-          <caption className="sr-only">Itemized fees for {charge.dropLabel}</caption>
-          <thead>
-            {/* Explicit widths on the numeric columns. Left to auto-layout they collapse
-                to their content and Qty ends up almost touching Fee. */}
-            <tr className="border-b border-[var(--color-edge)] text-left text-[11px] tracking-[0.12em] text-[var(--color-muted)] uppercase">
-              <th scope="col" className="py-2 font-medium">
-                Product
-              </th>
-              <th scope="col" className="w-20 py-2 pl-6 text-right font-medium">
-                Qty
-              </th>
-              <th scope="col" className="w-24 py-2 pl-6 text-right font-medium">
-                Fee
-              </th>
-              <th scope="col" className="w-28 py-2 pl-6 text-right font-medium">
-                Subtotal
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--color-edge)]">
-            {charge.lines.map((line) => (
-              <tr key={line.id}>
-                <td className="py-3 pr-3">
-                  <div className="flex items-center gap-3">
-                    {line.imageUrl ? (
-                      <Image
-                        src={line.imageUrl}
-                        alt=""
-                        width={36}
-                        height={36}
-                        className="size-9 shrink-0 rounded border border-[var(--color-edge)] bg-white object-contain"
-                      />
-                    ) : (
-                      <div
-                        aria-hidden
-                        className="size-9 shrink-0 rounded border border-[var(--color-edge)] bg-[var(--color-elevated)]"
-                      />
-                    )}
-                    <span className="text-[var(--color-fg)]">{line.label}</span>
-                  </div>
-                </td>
-                <td className="py-3 pl-6 text-right tabular-nums">{count(line.qty)}</td>
-                <td className="py-3 pl-6 text-right text-[var(--color-muted)] tabular-nums">
-                  {money(line.feeCents)}
-                </td>
-                <td className="py-3 pl-6 text-right font-medium text-white tabular-nums">
-                  {money(line.subtotalCents)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot className="border-t border-[var(--color-edge)]">
-            <tr>
-              <th scope="row" colSpan={3} className="py-2.5 text-right font-normal">
-                Subtotal
-              </th>
-              <td className="py-2.5 text-right tabular-nums">{money(charge.subtotalCents)}</td>
-            </tr>
-            {charge.discountCents > 0 && (
-              <tr className="text-[var(--color-brand)]">
-                {/* Just "Discount" -- naming the OG role or its rate would leak what the
-                    perk is to anyone who screenshots a bill. The figure is still shown,
-                    because it is what they were actually charged. */}
-                <th scope="row" colSpan={3} className="py-2.5 text-right font-normal">
-                  Discount
+        {/* Same treatment the two admin tables get: four columns with fixed numeric widths
+            need about 30rem before anything is legible, which no phone has. Scrolling the
+            table inside its own box beats reflowing an itemised bill into something whose
+            figures no longer line up -- this is the page someone opens to check a total.
+            The negative margin lets it scroll edge-to-edge instead of inside the gutter. */}
+        <div className="-mx-5 mt-8 overflow-x-auto px-5">
+          <table className="w-full min-w-[30rem] text-sm">
+            <caption className="sr-only">Itemized fees for {charge.dropLabel}</caption>
+            <thead>
+              {/* Explicit widths on the numeric columns. Left to auto-layout they collapse
+                  to their content and Qty ends up almost touching Fee. */}
+              <tr className="border-b border-[var(--color-edge)] text-left text-[11px] tracking-[0.12em] text-[var(--color-muted)] uppercase">
+                <th scope="col" className="py-2 font-medium">
+                  Product
                 </th>
-                <td className="py-2.5 text-right tabular-nums">−{money(charge.discountCents)}</td>
+                <th scope="col" className="w-20 py-2 pl-6 text-right font-medium">
+                  Qty
+                </th>
+                <th scope="col" className="w-24 py-2 pl-6 text-right font-medium">
+                  Fee
+                </th>
+                <th scope="col" className="w-28 py-2 pl-6 text-right font-medium">
+                  Subtotal
+                </th>
               </tr>
-            )}
-            <tr className="border-t border-[var(--color-edge)] text-lg font-bold text-white">
-              <th scope="row" colSpan={3} className="py-3 text-right">
-                Total
-              </th>
-              <td className="py-3 text-right tabular-nums">{money(charge.totalCents)}</td>
-            </tr>
-          </tfoot>
-        </table>
-
+            </thead>
+            <tbody className="divide-y divide-[var(--color-edge)]">
+              {charge.lines.map((line) => (
+                <tr key={line.id}>
+                  <td className="py-3 pr-3">
+                    <div className="flex items-center gap-3">
+                      {line.imageUrl ? (
+                        <Image
+                          src={line.imageUrl}
+                          alt=""
+                          width={36}
+                          height={36}
+                          className="size-9 shrink-0 rounded border border-[var(--color-edge)] bg-white object-contain"
+                        />
+                      ) : (
+                        <div
+                          aria-hidden
+                          className="size-9 shrink-0 rounded border border-[var(--color-edge)] bg-[var(--color-elevated)]"
+                        />
+                      )}
+                      <span className="text-[var(--color-fg)]">{line.label}</span>
+                    </div>
+                  </td>
+                  <td className="py-3 pl-6 text-right tabular-nums">{count(line.qty)}</td>
+                  <td className="py-3 pl-6 text-right text-[var(--color-muted)] tabular-nums">
+                    {money(line.feeCents)}
+                  </td>
+                  <td className="py-3 pl-6 text-right font-medium text-white tabular-nums">
+                    {money(line.subtotalCents)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot className="border-t border-[var(--color-edge)]">
+              <tr>
+                <th scope="row" colSpan={3} className="py-2.5 text-right font-normal">
+                  Subtotal
+                </th>
+                <td className="py-2.5 text-right tabular-nums">{money(charge.subtotalCents)}</td>
+              </tr>
+              {charge.discountCents > 0 && (
+                <tr className="text-[var(--color-brand)]">
+                  {/* Just "Discount" -- naming the OG role or its rate would leak what the
+                      perk is to anyone who screenshots a bill. The figure is still shown,
+                      because it is what they were actually charged. */}
+                  <th scope="row" colSpan={3} className="py-2.5 text-right font-normal">
+                    Discount
+                  </th>
+                  <td className="py-2.5 text-right tabular-nums">−{money(charge.discountCents)}</td>
+                </tr>
+              )}
+              <tr className="border-t border-[var(--color-edge)] text-lg font-bold text-white">
+                <th scope="row" colSpan={3} className="py-3 text-right">
+                  Total
+                </th>
+                <td className="py-3 text-right tabular-nums">{money(charge.totalCents)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
         <ClaimPayment
           billId={charge.id}
           totalCents={charge.totalCents}

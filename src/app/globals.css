@@ -77,6 +77,23 @@ body {
  */
 body > main {
   flex: 1 0 auto;
+  /*
+   * `width: 100%` is load-bearing, not tidying.
+   *
+   * Every page's <main> carries `mx-auto` to centre itself under `max-w-*`. In a flex
+   * column, auto cross-axis margins SUPPRESS `align-items: stretch` -- so main stopped
+   * filling the body and became shrink-to-fit instead, which resolves to its own
+   * min-content width. One wide descendant therefore sized the entire page: on a 375px
+   * phone the dashboard laid out at 501px and the profiles page at 681px, pushing the
+   * header nav and half of every row off the right edge.
+   *
+   * Pinning the width to the body puts main back at viewport width. `min-width: 0` then
+   * keeps a genuinely-too-wide descendant overflowing on its own rather than dragging the
+   * layout with it -- it does nothing on its own here, because shrink-to-fit was never a
+   * min-width clamp.
+   */
+  width: 100%;
+  min-width: 0;
 }
 
 ::selection {
