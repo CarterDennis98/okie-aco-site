@@ -2,13 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
+  getMemberEmailsForAdmin,
   getMemberVaultForAdmin,
   getMembersForSite,
+  getPendingChanges,
   getSitesWithProfiles,
 } from "@/db/queries/admin-vault";
+import { AdminMemberEmailsPanel } from "@/components/vault/admin-member-emails";
+import { AdminMemberPicker } from "@/components/vault/admin-member-picker";
+import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { requireAdmin } from "@/lib/auth/guard";
-import { siteStyle } from "@/lib/sites";
+import { siteStyle, siteUsesAccounts } from "@/lib/sites";
 import { revealAppPasswordForAdmin } from "@/lib/vault/admin-actions";
 import { RevealAppPassword } from "@/components/vault/reveal-app-password";
 
@@ -32,14 +37,15 @@ const cell = "px-3 py-2 text-left align-top";
 export default async function AdminProfilesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ site?: string; member?: string }>;
+  searchParams: Promise<{ site?: string; member?: string; changes?: string }>;
 }) {
   const viewer = await requireAdmin();
-  const { site, member } = await searchParams;
+  const { site, member, changes: changeFilter } = await searchParams;
 
-  const [sites, pending] = await Promise.all([
+  const [sites, pending, changes] = await Promise.all([
     getSitesWithProfiles(),
     getPendingConfirmationCount(),
+    getPendingChanges(changeFilter),
   ]);
   if (sites.length === 0) {
     return (
@@ -56,9 +62,20 @@ export default async function AdminProfilesPage({
 
   const siteKey = site && sites.some((s) => s.siteKey === site) ? site : sites[0].siteKey;
   const style = siteStyle(siteKey);
+  // Guest checkout means no login and no emailed code. Every "account" and "app password"
+  // control on this page is gated on these -- see the export row below.
+  const usesAccounts = siteUsesAccounts(siteKey);
+  const usesEmailCodes = style.usesEmailCodes !== false;
   const members = await getMembersForSite(siteKey);
   const selected = member && members.some((m) => m.discordUserId === member) ? member : null;
-  const profiles = selected ? await getMemberVaultForAdmin(siteKey, selected) : [];
+  // The profile table is site-scoped; the mailbox panel deliberately is not. See
+  // getMemberEmailsForAdmin.
+  const [profiles, emails] = selected
+    ? await Promise.all([
+        getMemberVaultForAdmin(siteKey, selected),
+        getMemberEmailsForAdmin(selected),
+      ])
+    : [[], null];
   const selectedMember = members.find((m) => m.discordUserId === selected);
 
   if (member && !selected) notFound();
@@ -100,6 +117,19 @@ export default async function AdminProfilesPage({
           name and the member&rsquo;s.
         </p>
 
+        {/* --- changes pending confirmation --- */}
+        {/* Above the export tools on purpose: the sequence is export, load, then confirm, so
+            the queue should be the thing you see on the way back. */}
+        <AdminPendingChanges
+          rows={changes.rows}
+          groups={changes.groups}
+          total={changes.total}
+          active={changes.active}
+          shown={changes.shown}
+          siteKey={siteKey}
+          memberId={selected}
+        />
+
         {/* --- site picker --- */}
         <div className="mt-8 flex flex-wrap items-center gap-2">
           {sites.map((s) => {
@@ -136,54 +166,31 @@ export default async function AdminProfilesPage({
           ) : (
             <ExportLink href={`${exportBase}&bot=all`} label="Profiles (AYCD)" />
           )}
-          <ExportLink href={`${exportBase}&format=accounts`} label="Accounts (user:pass)" />
-          <ExportLink href={`${exportBase}&format=imap`} label="App passwords (IMAP)" />
+          {/* Both of these are meaningless on a guest-checkout retailer: Pokémon Center has
+              no logins to list and never emails a verification code, so the files came out
+              empty and the buttons implied credentials that do not exist. */}
+          {usesAccounts && (
+            <ExportLink href={`${exportBase}&format=accounts`} label="Accounts (user:pass)" />
+          )}
+          {usesEmailCodes && (
+            <ExportLink href={`${exportBase}&format=imap`} label="App passwords (IMAP)" />
+          )}
           <span className="text-xs text-[var(--color-muted)]">Active profiles only.</span>
         </div>
 
         <div className="mt-8 grid gap-6 lg:grid-cols-[20rem_1fr]">
           {/* --- member picker --- */}
           {/* Sticky + self-scrolling: 60-odd members would otherwise set the page height,
-              leaving you scrolling past the whole roster to reach the profile table. */}
-          <div className="lg:sticky lg:top-6 lg:self-start">
-            <h2 className="mb-3 text-sm font-semibold tracking-wide text-[var(--color-muted)] uppercase">
-              Members ({members.length})
-            </h2>
-            <ul className="max-h-[min(32rem,calc(100vh-12rem))] divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
-              {members.map((m) => (
-                <li key={m.discordUserId}>
-                  <Link
-                    href={`/admin/profiles?site=${encodeURIComponent(siteKey)}&member=${m.discordUserId}`}
-                    className={
-                      "block px-4 py-2.5 transition-colors hover:bg-[var(--color-elevated)]/40 " +
-                      (m.discordUserId === selected ? "bg-[var(--color-elevated)]/60" : "")
-                    }
-                  >
-                    <p className="truncate text-sm font-medium text-white">{m.username}</p>
-                    <p className="mt-0.5 text-xs text-[var(--color-muted)]">
-                      {m.activeCount}/{m.profileCount} active
-                      {m.onBackup > 0 && ` · ${m.onBackup} backup`}
-                      {m.expiredCards > 0 && ` · ${m.expiredCards} expired`}
-                      {m.missingAppPasswords > 0 && (
-                        <span className="text-[var(--color-warn)]">
-                          {" "}
-                          · {m.missingAppPasswords} no app pw
-                        </span>
-                      )}
-                      {/* Brand red, not warn: on a retailer that requires a phone these
-                          profiles are not "worth a look", they are failing every order. */}
-                      {m.missingPhone > 0 && (
-                        <span className="text-[var(--color-brand)]">
-                          {" "}
-                          · {m.missingPhone} no phone
-                        </span>
-                      )}
-                    </p>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
+              leaving you scrolling past the whole roster to reach the profile table.
+              A client component because the bulk-export selection is local state -- see
+              AdminMemberPicker for why it deliberately isn't in the URL. */}
+          <AdminMemberPicker
+            members={members}
+            siteKey={siteKey}
+            style={style}
+            selected={selected}
+            exportBase={exportBase}
+          />
 
           {/* --- member detail --- */}
           <div>
@@ -205,14 +212,18 @@ export default async function AdminProfilesPage({
                       href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all`}
                       label="Export profiles"
                     />
-                    <ExportLink
-                      href={`${exportBase}&member=${selectedMember.discordUserId}&format=accounts`}
-                      label="Export accounts"
-                    />
-                    <ExportLink
-                      href={`${exportBase}&member=${selectedMember.discordUserId}&format=imap`}
-                      label="Export app passwords"
-                    />
+                    {usesAccounts && (
+                      <ExportLink
+                        href={`${exportBase}&member=${selectedMember.discordUserId}&format=accounts`}
+                        label="Export accounts"
+                      />
+                    )}
+                    {usesEmailCodes && (
+                      <ExportLink
+                        href={`${exportBase}&member=${selectedMember.discordUserId}&format=imap`}
+                        label="Export app passwords"
+                      />
+                    )}
                   </div>
                 </div>
 
@@ -221,7 +232,10 @@ export default async function AdminProfilesPage({
                     <thead>
                       <tr className="border-b border-[var(--color-edge)] text-[11px] tracking-[0.1em] text-[var(--color-muted)] uppercase">
                         <th className={cell}>Profile</th>
-                        <th className={cell}>Account</th>
+                        {/* "Account" is wrong on a guest-checkout retailer: the column holds
+                            the email the order confirmation goes to, and there is no login
+                            behind it. Matches the member's own form, which says the same. */}
+                        <th className={cell}>{usesAccounts ? "Account" : "Checkout email"}</th>
                         <th className={cell}>Name</th>
                         <th className={cell}>Card</th>
                         <th className={cell}>Ships to</th>
@@ -283,6 +297,14 @@ export default async function AdminProfilesPage({
                     </tbody>
                   </table>
                 </div>
+
+                {emails && (
+                  <AdminMemberEmailsPanel
+                    discordUserId={selectedMember.discordUserId}
+                    username={selectedMember.username}
+                    emails={emails}
+                  />
+                )}
               </>
             )}
           </div>

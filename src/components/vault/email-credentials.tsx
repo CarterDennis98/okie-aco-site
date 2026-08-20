@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import type { EmailCredentialSummary } from "@/db/queries/vault";
+import { relativeTime } from "@/lib/format";
 import { EMAIL_PROVIDERS } from "@/lib/vault/email-providers";
 import {
   deleteEmailAlias,
@@ -228,6 +229,7 @@ export function EmailCredentials({
   needingPassword: string[];
 }) {
   const [adding, setAdding] = useState<string | null>(null);
+  const pendingCount = credentials.filter((c) => c.pendingSince !== null).length;
 
   const [state, formAction, pending] = useActionState(
     async (_previous: ActionResult | null, formData: FormData) => {
@@ -249,6 +251,18 @@ export function EmailCredentials({
         we can read that code automatically instead of messaging you mid-drop.
       </p>
 
+      {/* Said once, like the profile list's line. A new password is no use until it is on the
+          bot, and that is not something a member can check for themselves. */}
+      {pendingCount > 0 && (
+        <p className="mb-4 text-xs text-[var(--color-muted)]">
+          <span aria-hidden>⏳ </span>
+          <span className="font-medium text-[var(--color-warn)]">{pendingCount}</span> of these{" "}
+          {pendingCount === 1 ? "is" : "are"} pending confirmation — the tag becomes a{" "}
+          <span className="font-bold text-[var(--color-good)]">✓</span> once we&rsquo;ve confirmed
+          the change.
+        </p>
+      )}
+
       {state && !state.ok && (
         <p
           role="alert"
@@ -269,16 +283,40 @@ export function EmailCredentials({
                     `last_error` are only ever written back to null, by saveEmailCredential.
                     Until an IMAP login actually runs, the honest state is "saved" -- the
                     other two branches stay so the verifier lights them up when it lands. */}
-                <p className="mt-0.5 text-xs text-[var(--color-muted)]">
-                  {credential.lastError
-                    ? `Last check failed — re-enter the app password`
-                    : credential.verifiedAt
-                      ? "Working"
-                      : "Saved"}
-                  {credential.aliases.length > 0 &&
-                    ` · covers ${credential.aliases.length} forwarded address${
-                      credential.aliases.length === 1 ? "" : "es"
-                    }`}
+                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-[var(--color-muted)]">
+                  {/* Same rule as a profile row: pending beats the tick, and no pending
+                      change means up to date rather than requiring a change record. */}
+                  {credential.pendingSince ? (
+                    <span
+                      title={`Changed ${relativeTime(credential.pendingSince)}. Until it's confirmed, the bot is still using the previous password.`}
+                      className="inline-flex items-center rounded-full bg-[var(--color-warn)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-warn)] uppercase"
+                    >
+                      Pending confirmation
+                    </span>
+                  ) : (
+                    <span
+                      title={
+                        credential.confirmedAt
+                          ? `Confirmed ${relativeTime(credential.confirmedAt)}`
+                          : "Up to date"
+                      }
+                      aria-label={credential.confirmedAt ? "Confirmed" : "Up to date"}
+                      className="inline-flex items-center text-xs leading-none font-bold text-[var(--color-good)]"
+                    >
+                      ✓
+                    </span>
+                  )}
+                  <span>
+                    {credential.lastError
+                      ? `Last check failed — re-enter the app password`
+                      : credential.verifiedAt
+                        ? "Working"
+                        : "Saved"}
+                    {credential.aliases.length > 0 &&
+                      ` · covers ${credential.aliases.length} forwarded address${
+                        credential.aliases.length === 1 ? "" : "es"
+                      }`}
+                  </span>
                 </p>
                 <AliasChips aliases={credential.aliases} />
               </div>

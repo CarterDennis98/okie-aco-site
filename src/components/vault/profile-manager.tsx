@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import Image from "next/image";
 import type { VaultProfileDetail, VaultProfileSummary } from "@/db/queries/vault";
+import { relativeTime } from "@/lib/format";
 import { siteStyle } from "@/lib/sites";
 import {
   deleteProfiles,
@@ -22,6 +23,17 @@ import { RevealAppPassword } from "@/components/vault/reveal-app-password";
  * field for every profile up front -- a member with 90 profiles would otherwise send a
  * large payload of addresses to the browser to render a list that shows five columns.
  */
+
+/**
+ * The tooltip on a green tick.
+ *
+ * A date when there is one, and a plain "up to date" when there isn't -- an imported
+ * profile has nothing confirmed because it has no change history, not because something is
+ * unknown, and "Confirmed never" would be worse than saying nothing precise.
+ */
+function confirmedLabel(confirmedAt: Date | null): string {
+  return confirmedAt ? `Confirmed ${relativeTime(confirmedAt)}` : "Up to date";
+}
 
 /** "A", "A and B", "A, B and C" -- a list a person reads, not an array dumped on screen. */
 function listNames(names: string[]): string {
@@ -175,6 +187,38 @@ function ProfileRow({
           {profile.cardExpired && (
             <span className="inline-flex items-center rounded-full bg-[var(--color-brand)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase">
               Card expired
+            </span>
+          )}
+          {/* The answer to "did my change take effect". Saving here writes to the vault;
+              it is in use once the operator has confirmed it, and until then this profile
+              still checks out with its previous details.
+
+              Pending wins over the tick when both are true: a profile with a confirmed
+              history and a fresh edit waiting is pending, and showing a green tick beside
+              it would say the opposite. */}
+          {profile.pendingSince ? (
+            <HintChip
+              label="Pending confirmation"
+              detail={`Edited ${relativeTime(profile.pendingSince)}. Until it's confirmed, this profile still checks out with its previous details.`}
+              className="inline-flex min-h-6 items-center rounded-full bg-[var(--color-warn)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-warn)] uppercase"
+            />
+          ) : (
+            // NOTHING PENDING is the test, not "has a confirmed change row". 1,268 of the
+            // 1,287 real profiles came in through the AYCD import and have no
+            // `vault_changes` row at all, so keying the tick off one would leave almost
+            // every profile blank -- and the alternative, inventing a change row per
+            // profile to backfill, would put events that never happened into an
+            // append-only audit log. "Up to date" is the honest reading of no pending edit.
+            //
+            // A tick, not a chip: most profiles are in this state most of the time, so a
+            // full badge on every row would be noise. The eye should catch the amber
+            // exception, not read a wall of green.
+            <span
+              title={confirmedLabel(profile.confirmedAt)}
+              aria-label={confirmedLabel(profile.confirmedAt)}
+              className="inline-flex items-center text-xs leading-none font-bold text-[var(--color-good)]"
+            >
+              ✓
             </span>
           )}
           {onBackup && (
@@ -394,6 +438,7 @@ export function ProfileManager({
   const style = siteStyle(siteKey);
   const activeCount = profiles.filter((p) => p.active).length;
   const sharedCardCount = profiles.filter((p) => p.sharesCardWith.length > 0).length;
+  const pendingCount = profiles.filter((p) => p.pendingSince !== null).length;
 
   // Soft cap: the first N ACTIVE profiles run on the main bot, the rest on a backup.
   // Disabled profiles aren't running, so they don't hold a slot -- which means toggling
@@ -509,6 +554,22 @@ export function ProfileManager({
             }
             onCleared={() => setSelected(new Set())}
           />
+          {/* Said once for the retailer, like the shared-card line below it. Members were
+              asking in the channel whether an edit had taken effect; this is that answer
+              without anyone having to ask. */}
+          {pendingCount > 0 && (
+            <p className="mb-2 px-1 text-xs text-[var(--color-muted)]">
+              <span aria-hidden>⏳ </span>
+              <span className="font-medium text-[var(--color-warn)]">{pendingCount}</span> of these
+              profiles {pendingCount === 1 ? "is" : "are"} pending confirmation. Until{" "}
+              {pendingCount === 1
+                ? "it's confirmed, it still checks out"
+                : "they're confirmed, they still check out"}{" "}
+              with the previous details — the tag becomes a{" "}
+              <span className="font-bold text-[var(--color-good)]">✓</span> once we&rsquo;ve
+              confirmed the change.
+            </p>
+          )}
           {/* Said once for the retailer, not once per row. The chips mark which profiles;
               this says why it matters, which is the part a member acts on. */}
           {sharedCardCount > 0 && (

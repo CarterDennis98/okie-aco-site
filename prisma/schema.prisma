@@ -669,9 +669,28 @@ model VaultChange {
   at         DateTime  @default(now()) @db.Timestamptz(3)
   notifiedAt DateTime? @map("notified_at") @db.Timestamptz(3)
 
+  // "This edit is live on the bot now."
+  //
+  // A SEPARATE FACT from notifiedAt, and the distinction is the whole point. notifiedAt
+  // means the operator was told a change happened; appliedAt means the operator has since
+  // put it on the bot. Exactly the paidClaimedAt/paidAt split on PasBill: one party can
+  // only report, and only the other can confirm -- a member cannot see whether their new
+  // card is actually loaded, and until someone says so the honest answer to "did my change
+  // take effect" was nothing at all.
+  //
+  // Null means pending, so `appliedAt: null` is the queue and no filter has to learn about
+  // a status enum. Set by an operator only, and never unset: an edit that reached the bot
+  // reached it, and a later edit appends its own row rather than reopening this one.
+  appliedAt DateTime? @map("applied_at") @db.Timestamptz(3)
+  appliedBy String?   @map("applied_by")
+
   @@index([at(sort: Desc)])
   @@index([ownerDiscordId])
   @@index([notifiedAt])
+  // Drives both sides: the operator's pending queue, and the member's "is this profile
+  // waiting" lookup. Owner first because the member's page always scopes by it.
+  @@index([ownerDiscordId, appliedAt])
+  @@index([appliedAt, at(sort: Desc)])
   @@map("vault_changes")
 }
 

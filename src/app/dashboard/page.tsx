@@ -3,6 +3,7 @@ import Link from "next/link";
 import { MemberCheckoutList } from "@/components/member-checkout-list";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
+import { getPendingChangeCount } from "@/db/queries/admin-vault";
 import { getMemberDashboard } from "@/db/queries/member";
 import { getEmailsNeedingAppPassword, getMemberProfiles } from "@/db/queries/vault";
 import { count, plural } from "@/lib/format";
@@ -30,13 +31,15 @@ export default async function DashboardPage() {
   // The guard lives in the page, not the layout, and its return value is the ONLY
   // source of the id below. Nothing here reads an id from the URL.
   const viewer = await requireMember();
-  const [data, profileGroups, needingAppPassword, pendingConfirmation] = await Promise.all([
-    getMemberDashboard(viewer.discordUserId),
-    getMemberProfiles(viewer.discordUserId),
-    getEmailsNeedingAppPassword(viewer.discordUserId),
-    // Only the operator sees the badge, and only they pay for the query.
-    viewer.isAdmin ? getPendingConfirmationCount() : Promise.resolve(0),
-  ]);
+  const [data, profileGroups, needingAppPassword, pendingConfirmation, pendingChanges] =
+    await Promise.all([
+      getMemberDashboard(viewer.discordUserId),
+      getMemberProfiles(viewer.discordUserId),
+      getEmailsNeedingAppPassword(viewer.discordUserId),
+      // Only the operator sees these badges, and only they pay for the queries.
+      viewer.isAdmin ? getPendingConfirmationCount() : Promise.resolve(0),
+      viewer.isAdmin ? getPendingChangeCount() : Promise.resolve(0),
+    ]);
 
   const allProfiles = profileGroups.flatMap((g) => g.profiles);
   const activeProfiles = allProfiles.filter((p) => p.active).length;
@@ -108,9 +111,23 @@ export default async function DashboardPage() {
                 </Link>
                 <Link
                   href="/admin/profiles"
-                  className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
+                  className="relative inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
                 >
                   Admin
+                  {pendingChanges > 0 && (
+                    <span
+                      // Same treatment as the Charges badge beside it: announced rather
+                      // than a bare number, since "3" next to "Admin" says nothing on its
+                      // own. Both queues are the operator confirming something a member
+                      // reported, so they read as one family.
+                      aria-label={`${pendingChanges} profile change${
+                        pendingChanges === 1 ? "" : "s"
+                      } pending confirmation`}
+                      className="absolute -top-0.5 -right-0.5 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-[var(--color-warn)] px-1 text-[10px] font-bold text-[var(--color-ink)] tabular-nums"
+                    >
+                      {pendingChanges > 99 ? "99+" : pendingChanges}
+                    </span>
+                  )}
                 </Link>
               </>
             )}

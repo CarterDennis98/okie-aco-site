@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
+import { VaultEntity } from "@/generated/prisma/enums";
 import { siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
 import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
@@ -48,6 +49,23 @@ export type VaultProfileSummary = {
   // nothing covers it. The password is never carried here -- the reveal action fetches
   // it, and audits the read.
   mailbox: string | null;
+  /**
+   * When this profile's oldest unconfirmed edit was made, or null when nothing is waiting.
+   *
+   * The member's half of the pair on `VaultChange.appliedAt`. An edit saved here isn't in
+   * use until the operator confirms it, and before this existed the page gave no way to
+   * tell -- a member who changed a card an hour before a drop had no idea whether the drop
+   * would use the new one.
+   */
+  pendingSince: Date | null;
+  /**
+   * When this profile's most recent change was confirmed, or null if it never has been.
+   *
+   * Drives the green tick. Deliberately separate from `pendingSince` rather than one
+   * three-state field: a profile can have a confirmed history AND a fresh edit waiting, and
+   * the two facts are both worth showing.
+   */
+  confirmedAt: Date | null;
   updatedAt: Date;
 };
 
@@ -77,6 +95,15 @@ export type EmailCredentialSummary = {
   updatedAt: Date;
   /** Addresses that forward into this mailbox, so one password covers all of them. */
   aliases: { id: string; email: string }[];
+  /**
+   * When this mailbox's oldest unconfirmed change was made, or null when nothing is waiting.
+   *
+   * Same meaning as on a profile: a new app password is no use until it is on the bot, and
+   * that is not something the member can see for themselves.
+   */
+  pendingSince: Date | null;
+  /** When its most recent change was confirmed. Null when it has no change history. */
+  confirmedAt: Date | null;
 };
 
 const SUMMARY_SELECT = {
@@ -117,11 +144,17 @@ type SummaryRow = {
   account: { email: string };
 };
 
-function toSummary(row: SummaryRow, coverage?: MailboxCoverage): VaultProfileSummary {
+function toSummary(
+  row: SummaryRow,
+  coverage?: MailboxCoverage,
+  changes?: ChangeState,
+): VaultProfileSummary {
   return {
     // Filled in per retailer by whoever assembles the groups; a lone profile shares
     // nothing with anyone.
     sharesCardWith: [],
+    pendingSince: changes?.pending.get(row.id) ?? null,
+    confirmedAt: changes?.confirmed.get(row.id) ?? null,
     id: row.id,
     siteKey: row.siteKey,
     name: row.name,
@@ -153,15 +186,16 @@ function toSummary(row: SummaryRow, coverage?: MailboxCoverage): VaultProfileSum
 export async function getMemberProfiles(
   discordUserId: string,
 ): Promise<{ siteKey: string; profiles: VaultProfileSummary[] }[]> {
-  const [rows, coverage] = await Promise.all([
+  const [rows, coverage, changes] = await Promise.all([
     prisma.vaultProfile.findMany({ where: { discordUserId }, select: SUMMARY_SELECT }),
     loadMailboxCoverage(discordUserId),
+    loadProfileChangeState(discordUserId),
   ]);
 
   const bySite = new Map<string, VaultProfileSummary[]>();
   for (const row of rows) {
     const list = bySite.get(row.siteKey) ?? [];
-    list.push(toSummary(row, coverage));
+    list.push(toSummary(row, coverage, changes));
     bySite.set(row.siteKey, list);
   }
 
@@ -174,6 +208,50 @@ export async function getMemberProfiles(
   return [...bySite.entries()]
     .map(([siteKey, profiles]) => ({ siteKey, profiles }))
     .sort((a, b) => a.siteKey.localeCompare(b.siteKey));
+}
+
+type ChangeState = {
+  /** Profile id -> when its OLDEST unconfirmed edit was made. */
+  pending: Map<string, Date>;
+  /** Profile id -> when its MOST RECENT confirmed change was confirmed. */
+  confirmed: Map<string, Date>;
+};
+
+/**
+ * Per-profile confirmation state, in one query.
+ *
+ * Keyed on `entityId`, which for a VAULT_PROFILE change is the profile's own id. Only
+ * profile changes are considered: a mailbox edit is real but it isn't something a profile
+ * row can sensibly display.
+ *
+ * The two maps take opposite ends of the ordering on purpose. Pending wants the oldest --
+ * "waiting since 9am" is the useful sentence, not "since 4pm". Confirmed wants the newest,
+ * because the tick should say when this profile was last signed off, not when it was
+ * created.
+ *
+ * A DELETE leaves a row pointing at an id that no longer exists, which is harmless -- the
+ * lookup simply never matches -- and deliberately not cleaned up, because the audit trail
+ * outliving the row it describes is the entire point of an append-only log.
+ */
+async function loadProfileChangeState(discordUserId: string): Promise<ChangeState> {
+  const rows = await prisma.vaultChange.findMany({
+    where: { ownerDiscordId: discordUserId, entity: VaultEntity.VAULT_PROFILE },
+    orderBy: { at: "asc" },
+    select: { entityId: true, at: true, appliedAt: true },
+  });
+
+  const pending = new Map<string, Date>();
+  const confirmed = new Map<string, Date>();
+  for (const row of rows) {
+    if (row.appliedAt === null) {
+      // First write wins, and the rows arrive oldest-first, so this keeps the oldest.
+      if (!pending.has(row.entityId)) pending.set(row.entityId, row.at);
+    } else {
+      // Last write wins, for the same reason in reverse.
+      confirmed.set(row.entityId, row.appliedAt);
+    }
+  }
+  return { pending, confirmed };
 }
 
 /**
@@ -227,11 +305,15 @@ export async function getMemberProfile(
   if (!row) return null;
 
   // Resolved here rather than left null: a detail row that silently disagreed with the
-  // summary about coverage would be a trap for the next caller.
-  const coverage = await loadMailboxCoverage(discordUserId);
+  // summary about coverage -- or about whether an edit is still waiting -- would be a trap
+  // for the next caller.
+  const [coverage, changes] = await Promise.all([
+    loadMailboxCoverage(discordUserId),
+    loadProfileChangeState(discordUserId),
+  ]);
 
   return {
-    ...toSummary(row, coverage),
+    ...toSummary(row, coverage, changes),
     accountId: row.accountId,
     shipLine1: row.shipLine1,
     shipLine2: row.shipLine2,
@@ -255,23 +337,70 @@ export async function getMemberProfile(
  *
  * The password itself is never selected -- only whether one exists, and whether it last
  * worked. `hasPassword` is derived from a non-empty ciphertext rather than returning it.
+ *
+ * Carries the same confirmation state as a profile. A new app password has to reach the bot
+ * exactly like a new card does, so "is this live yet" is the same question and deserves the
+ * same answer -- the operator's queue already listed these changes under "Email"; only the
+ * member's side was silent.
+ *
+ * FORWARDING CHANGES COUNT TOO, and are attributed to the mailbox they point at: an alias
+ * only means anything relative to the inbox it routes into, so "this address now forwards
+ * here" is a pending change to THAT mailbox's coverage. A change to an alias that has since
+ * been deleted cannot be mapped back to a credential and is not shown here; it stays visible
+ * in the operator's queue, which is where an already-undone change belongs.
  */
 export async function getMemberEmailCredentials(
   discordUserId: string,
 ): Promise<EmailCredentialSummary[]> {
-  const rows = await prisma.emailCredential.findMany({
-    where: { discordUserId },
-    orderBy: { email: "asc" },
-    select: {
-      id: true,
-      email: true,
-      verifiedAt: true,
-      lastError: true,
-      updatedAt: true,
-      aliases: { select: { id: true, email: true }, orderBy: { email: "asc" } },
-    },
-  });
-  return rows;
+  const [rows, changes] = await Promise.all([
+    prisma.emailCredential.findMany({
+      where: { discordUserId },
+      orderBy: { email: "asc" },
+      select: {
+        id: true,
+        email: true,
+        verifiedAt: true,
+        lastError: true,
+        updatedAt: true,
+        aliases: { select: { id: true, email: true }, orderBy: { email: "asc" } },
+      },
+    }),
+    prisma.vaultChange.findMany({
+      where: {
+        ownerDiscordId: discordUserId,
+        entity: { in: [VaultEntity.EMAIL_CREDENTIAL, VaultEntity.EMAIL_ALIAS] },
+      },
+      orderBy: { at: "asc" },
+      select: { entity: true, entityId: true, at: true, appliedAt: true },
+    }),
+  ]);
+
+  // Alias id -> the credential it routes into, so an alias change lands on the right row.
+  const credentialByAlias = new Map<string, string>();
+  for (const row of rows) for (const alias of row.aliases) credentialByAlias.set(alias.id, row.id);
+
+  const pending = new Map<string, Date>();
+  const confirmed = new Map<string, Date>();
+  for (const change of changes) {
+    const credentialId =
+      change.entity === VaultEntity.EMAIL_CREDENTIAL
+        ? change.entityId
+        : credentialByAlias.get(change.entityId);
+    if (!credentialId) continue;
+
+    if (change.appliedAt === null) {
+      // Oldest wins for pending, newest for confirmed -- same rule as the profiles above.
+      if (!pending.has(credentialId)) pending.set(credentialId, change.at);
+    } else {
+      confirmed.set(credentialId, change.appliedAt);
+    }
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    pendingSince: pending.get(row.id) ?? null,
+    confirmedAt: confirmed.get(row.id) ?? null,
+  }));
 }
 
 /**

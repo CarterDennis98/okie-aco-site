@@ -1,6 +1,6 @@
 import { prisma } from "@/db/client";
 import { requireAdmin } from "@/lib/auth/guard";
-import { siteStyle } from "@/lib/sites";
+import { siteStyle, siteUsesAccounts } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { toAccountList, toAycdProfile } from "@/lib/vault/aycd";
 import { decrypt } from "@/lib/vault/crypto";
@@ -11,11 +11,13 @@ import { decrypt } from "@/lib/vault/crypto";
  *   /api/admin/vault/export?site=target                  every member, main bot
  *   /api/admin/vault/export?site=target&bot=backup       every member, past the cap
  *   /api/admin/vault/export?site=target&member=<id>      one member
+ *   /api/admin/vault/export?site=target&member=<a>&member=<b>   several, one file
  *   /api/admin/vault/export?site=target&format=accounts  username:password list
  *   /api/admin/vault/export?site=target&format=imap      mailbox app passwords, CSV
  *
  * Guarded by `requireAdmin`, which 404s rather than 403s, and every call writes a
- * `vault_exports` row before the body is produced. If credentials ever surface
+ * `vault_exports` row before the body is produced -- ONE PER MEMBER when several were
+ * selected, so the table can still say whose credentials left. If credentials ever surface
  * somewhere they shouldn't, that table is the trail.
  *
  * BOT SPLIT: each retailer has a soft cap on how many of a member's profiles the main
@@ -30,13 +32,25 @@ export const dynamic = "force-dynamic";
 
 type BotScope = "main" | "backup" | "all";
 
+/** Ceiling on `?member=` repeats. See the check in GET for why it refuses rather than trims. */
+const MAX_MEMBERS = 200;
+
 export async function GET(request: Request) {
   // Throws NEXT_NOT_FOUND for anyone who isn't an admin.
   const viewer = await requireAdmin();
 
   const url = new URL(request.url);
   const siteKey = url.searchParams.get("site") ?? "";
-  const memberId = url.searchParams.get("member");
+  // REPEATABLE: `&member=a&member=b` exports both in one file. Deduped, because the picker
+  // can send the same id twice and `in: [x, x]` would be a silent no-op to debug.
+  const memberIds = [
+    ...new Set(
+      url.searchParams
+        .getAll("member")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  ];
   const bot = (url.searchParams.get("bot") ?? "all") as BotScope;
   const format = url.searchParams.get("format") ?? "aycd";
 
@@ -46,8 +60,40 @@ export async function GET(request: Request) {
   if (!["aycd", "accounts", "imap"].includes(format))
     return new Response("Bad format", { status: 400 });
 
+  // Refused rather than answered with an empty file. On a guest-checkout retailer there are
+  // no logins and no emailed codes, so both of these used to produce a valid-looking export
+  // with nothing in it -- which reads as "this member has no credentials saved" rather than
+  // "this retailer has none to save". The UI hides the buttons; this is the half that holds
+  // for a hand-typed URL.
+  if (format === "accounts" && !siteUsesAccounts(siteKey)) {
+    return new Response(
+      `${siteStyle(siteKey).label} checks out as a guest — there are no logins.`,
+      {
+        status: 400,
+      },
+    );
+  }
+  if (format === "imap" && siteStyle(siteKey).usesEmailCodes === false) {
+    return new Response(
+      `${siteStyle(siteKey).label} never emails a verification code — no app password applies.`,
+      { status: 400 },
+    );
+  }
+  // A bound rather than a guess: this is a GET, and past a few hundred ids the URL itself
+  // starts getting truncated by something in the middle. Refuse loudly instead of
+  // exporting a silently short list, which for an export is the dangerous failure.
+  if (memberIds.length > MAX_MEMBERS) {
+    return new Response(`Too many members (max ${MAX_MEMBERS}). Export the whole site instead.`, {
+      status: 400,
+    });
+  }
+
   const rows = await prisma.vaultProfile.findMany({
-    where: { siteKey, active: true, ...(memberId ? { discordUserId: memberId } : {}) },
+    where: {
+      siteKey,
+      active: true,
+      ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
+    },
     include: { account: { select: { email: true, passwordEnc: true } } },
   });
 
@@ -82,32 +128,71 @@ export async function GET(request: Request) {
   // the recorded count is the number of credentials actually handed over -- this reads
   // no ciphertext, so nothing is decrypted before the export is recorded.
   const mailboxes = new Set<string>();
+  // Per member as well as overall, so a multi-member export can record what each person's
+  // share of it actually was rather than attributing the whole file to all of them.
+  const mailboxesByMember = new Map<string, Set<string>>();
   if (format === "imap") {
     const coverage = await loadMailboxCoverage();
     for (const row of selected) {
       const box = mailboxFor(coverage, row.account.email);
-      if (box) mailboxes.add(box.toLowerCase());
+      if (!box) continue;
+      mailboxes.add(box.toLowerCase());
+      const mine = mailboxesByMember.get(row.discordUserId) ?? new Set<string>();
+      mine.add(box.toLowerCase());
+      mailboxesByMember.set(row.discordUserId, mine);
     }
   }
 
-  // Audited BEFORE the secrets are decrypted, so a crash mid-export still leaves the
-  // record that an export was attempted.
-  await prisma.vaultExport.create({
-    data: {
-      actorDiscordId: viewer.discordUserId,
-      siteKey,
-      format,
-      scope: memberId ? "member" : "site",
-      targetDiscordId: memberId,
-      profileCount: format === "aycd" ? selected.length : 0,
-      accountCount: format === "aycd" ? 0 : format === "imap" ? mailboxes.size : selected.length,
-    },
+  const selectedByMember = new Map<string, typeof selected>();
+  for (const row of selected) {
+    const list = selectedByMember.get(row.discordUserId) ?? [];
+    list.push(row);
+    selectedByMember.set(row.discordUserId, list);
+  }
+
+  const countsFor = (profiles: typeof selected, boxes: number) => ({
+    profileCount: format === "aycd" ? profiles.length : 0,
+    accountCount: format === "aycd" ? 0 : format === "imap" ? boxes : profiles.length,
   });
 
+  // Audited BEFORE the secrets are decrypted, so a crash mid-export still leaves the
+  // record that an export was attempted.
+  //
+  // ONE ROW PER MEMBER when several were selected. `target_discord_id` holds a single id,
+  // and the point of this table is answering "whose credentials left, and when" -- a lone
+  // row with a null target and a total count cannot answer it for any of them. A
+  // single-member export keeps the exact shape it always had, so nothing downstream that
+  // reads scope='member' changes.
+  //
+  // Members with no active profiles here get no row: nothing of theirs was in the file.
+  if (memberIds.length > 1) {
+    await prisma.vaultExport.createMany({
+      data: [...selectedByMember.entries()].map(([discordUserId, profiles]) => ({
+        actorDiscordId: viewer.discordUserId,
+        siteKey,
+        format,
+        scope: "members",
+        targetDiscordId: discordUserId,
+        ...countsFor(profiles, mailboxesByMember.get(discordUserId)?.size ?? 0),
+      })),
+    });
+  } else {
+    await prisma.vaultExport.create({
+      data: {
+        actorDiscordId: viewer.discordUserId,
+        siteKey,
+        format,
+        scope: memberIds.length === 1 ? "member" : "site",
+        targetDiscordId: memberIds[0] ?? null,
+        ...countsFor(selected, mailboxes.size),
+      },
+    });
+  }
+
   const stamp = new Date().toISOString().slice(0, 10);
-  const suffix = [siteKey, bot === "all" ? null : bot, memberId ? "member" : null, stamp]
-    .filter(Boolean)
-    .join("-");
+  const scopeLabel =
+    memberIds.length === 1 ? "member" : memberIds.length > 1 ? `${memberIds.length}-members` : null;
+  const suffix = [siteKey, bot === "all" ? null : bot, scopeLabel, stamp].filter(Boolean).join("-");
 
   if (format === "imap") {
     // The bot split is deliberately ignored here: a mailbox can cover profiles on both

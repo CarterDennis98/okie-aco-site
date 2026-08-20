@@ -8,6 +8,7 @@ import {
   getDropDates,
   type ChargeFilter,
 } from "@/db/queries/admin-charges";
+import { getPendingChangeCount } from "@/db/queries/admin-vault";
 import { requireAdmin } from "@/lib/auth/guard";
 import { methodLabel } from "@/lib/billing/methods";
 import { count, plural } from "@/lib/format";
@@ -66,10 +67,11 @@ export default async function AdminChargesPage({
   const to = ISO_DATE.test(params.to ?? "") ? params.to : undefined;
   const page = Math.max(1, Number.parseInt(params.page ?? "1", 10) || 1);
 
-  const [result, totals, drops] = await Promise.all([
+  const [result, totals, drops, pendingChanges] = await Promise.all([
     getAdminCharges({ filter, search, from, to, page }),
     getAdminChargeTotals(),
     getDropDates(),
+    getPendingChangeCount(),
   ]);
   const rows = result.rows;
 
@@ -100,9 +102,21 @@ export default async function AdminChargesPage({
           </Link>
           <Link
             href="/admin/profiles"
-            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            className="relative text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
           >
             Profiles
+            {/* The mirror of the Charges badge on the profiles page: whichever admin page
+                you are on, the other one tells you if it needs you. */}
+            {pendingChanges > 0 && (
+              <span
+                aria-label={`${pendingChanges} profile change${
+                  pendingChanges === 1 ? "" : "s"
+                } pending confirmation`}
+                className="absolute -top-2 -right-3 inline-flex h-[1.125rem] min-w-[1.125rem] items-center justify-center rounded-full bg-[var(--color-warn)] px-1 text-[10px] font-bold text-[var(--color-ink)] tabular-nums"
+              >
+                {pendingChanges > 99 ? "99+" : pendingChanges}
+              </span>
+            )}
           </Link>
         </div>
 
