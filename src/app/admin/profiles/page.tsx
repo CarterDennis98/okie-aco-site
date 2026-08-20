@@ -170,6 +170,14 @@ export default async function AdminProfilesPage({
                           · {m.missingAppPasswords} no app pw
                         </span>
                       )}
+                      {/* Brand red, not warn: on a retailer that requires a phone these
+                          profiles are not "worth a look", they are failing every order. */}
+                      {m.missingPhone > 0 && (
+                        <span className="text-[var(--color-brand)]">
+                          {" "}
+                          · {m.missingPhone} no phone
+                        </span>
+                      )}
                     </p>
                   </Link>
                 </li>

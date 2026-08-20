@@ -4,7 +4,8 @@ import { useActionState, useState } from "react";
 import type { VaultProfileDetail } from "@/db/queries/vault";
 import { detectBrand, expectedCvvLength } from "@/lib/vault/card";
 import { saveProfile, type ActionResult } from "@/lib/vault/actions";
-import { siteUsesAccounts } from "@/lib/sites";
+import { siteRequiresPhone, siteStyle, siteUsesAccounts } from "@/lib/sites";
+import { randomFirstName, randomLastName, randomPhone } from "@/lib/vault/random-identity";
 
 /**
  * Add / edit form for one checkout profile.
@@ -29,44 +30,110 @@ const field =
   "w-full rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 text-base sm:text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
 const label = "mb-1 block text-xs font-medium text-[var(--color-muted)]";
 
+/**
+ * A die, for the in-field randomize control.
+ *
+ * Inline SVG rather than a text glyph or an emoji: the arrows and refresh characters all
+ * read as "undo" or "reload" next to a filled-in field, and 🎲 renders at a different
+ * weight and baseline on every platform. `currentColor` so it inherits the hover state.
+ */
+function DieIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden
+    >
+      <rect x="2.2" y="2.2" width="11.6" height="11.6" rx="2.6" />
+      <circle cx="5.6" cy="5.6" r="0.95" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="0.95" fill="currentColor" stroke="none" />
+      <circle cx="10.4" cy="10.4" r="0.95" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/**
+ * Uncontrolled by default, controlled when `value` is passed.
+ *
+ * The fields a randomize button writes to have to be controlled -- a click has to change
+ * what is on screen -- and the rest have no reason to re-render this form on every
+ * keystroke. Passing `value` opts one field in.
+ *
+ * `randomize` puts a die at the trailing edge of the input. It sits INSIDE the field rather
+ * than beside it so the control is unmistakably attached to the one value it rewrites --
+ * with three of them on this form, a row of buttons underneath would leave you guessing
+ * which was which. The input gains right padding to match, so a long value scrolls under
+ * the label rather than beneath the button.
+ */
 function Field({
   name,
   label: text,
   defaultValue,
+  value,
+  onChange,
   placeholder,
   required,
   maxLength,
   type = "text",
   className = "",
   hint,
+  randomize,
 }: {
   name: string;
   label: string;
   defaultValue?: string | null;
+  value?: string;
+  onChange?: (value: string) => void;
   placeholder?: string;
   required?: boolean;
   maxLength?: number;
   type?: string;
   className?: string;
   hint?: string;
+  /** Tooltip text plus the handler. Renders a die inside the trailing edge of the input. */
+  randomize?: { title: string; onClick: () => void };
 }) {
+  const controlled = value !== undefined;
+
   return (
     <div className={className}>
       <label htmlFor={name} className={label}>
         {text}
         {required && <span className="ml-0.5 text-[var(--color-brand)]">*</span>}
       </label>
-      <input
-        id={name}
-        name={name}
-        type={type}
-        defaultValue={defaultValue ?? ""}
-        placeholder={placeholder}
-        maxLength={maxLength}
-        // Browsers and password managers should not be storing these for us.
-        autoComplete="off"
-        className={field}
-      />
+      <div className="relative">
+        <input
+          id={name}
+          name={name}
+          type={type}
+          {...(controlled
+            ? { value, onChange: (e) => onChange?.(e.currentTarget.value) }
+            : { defaultValue: defaultValue ?? "" })}
+          placeholder={placeholder}
+          maxLength={maxLength}
+          // Browsers and password managers should not be storing these for us.
+          autoComplete="off"
+          className={field + (randomize ? " pr-11" : "")}
+        />
+        {randomize && (
+          // `title` is the hover tooltip and `aria-label` carries the same text, because a
+          // tooltip does not exist for a screen reader or on a touch screen. 44px wide and
+          // the full height of the field, so it is a real target on a phone.
+          <button
+            type="button"
+            onClick={randomize.onClick}
+            title={randomize.title}
+            aria-label={randomize.title}
+            className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)]"
+          >
+            <DieIcon />
+          </button>
+        )}
+      </div>
       {hint && <p className="mt-1 text-[11px] text-[var(--color-muted)]">{hint}</p>}
     </div>
   );
@@ -76,12 +143,18 @@ export function ProfileForm({
   siteKey,
   profile,
   nextName,
+  siblings = [],
   onDone,
 }: {
   siteKey: string;
   profile?: VaultProfileDetail;
   /** Preview of the name a new profile will be given. Display only. */
   nextName?: string;
+  /**
+   * The member's other profiles on this retailer, so a randomized name doesn't come back
+   * as one they already use. Names only -- nothing here reads anything else off them.
+   */
+  siblings?: { firstName: string; lastName: string }[];
   onDone?: () => void;
 }) {
   const isEdit = Boolean(profile);
@@ -89,8 +162,17 @@ export function ProfileForm({
   // confirmation goes -- but asking for a password invents a credential that does not
   // exist, and made the profile unsaveable because the field was required.
   const usesAccounts = siteUsesAccounts(siteKey);
+  // Walmart will not check out without a phone number, so the field is required and gets no
+  // die at all -- see requiresPhone in sites.ts.
+  const phoneRequired = siteRequiresPhone(siteKey);
   const [sameBilling, setSameBilling] = useState(profile?.sameBillingAndShipping ?? true);
   const [cardBrand, setCardBrand] = useState(profile?.cardBrand ?? "Unknown");
+
+  // Controlled, because the randomize buttons write to them.
+  const [firstName, setFirstName] = useState(profile?.firstName ?? "");
+  const [lastName, setLastName] = useState(profile?.lastName ?? "");
+  const [phone, setPhone] = useState(profile?.phone ?? "");
+  const [shipState, setShipState] = useState(profile?.shipState ?? "");
 
   const [state, formAction, pending] = useActionState(
     async (_previous: ActionResult | null, formData: FormData) => {
@@ -100,6 +182,23 @@ export function ProfileForm({
     },
     null,
   );
+
+  /*
+   * One die per field, and ONLY on these three.
+   *
+   * The address and the card are what the payment actually clears against, so a random one
+   * there is a declined order rather than a disguised one. Name and phone are the only
+   * fields where an invention beats a repeat -- retailers throttle orders that look like one
+   * person checking out five times, and those are the values they key on.
+   *
+   * Each name draw is checked against the member's other profiles on this retailer, on the
+   * PAIR rather than the single field: a new first name is fine or not depending on the last
+   * name already sitting next to it.
+   */
+  const randomizeFirstName = () => setFirstName(randomFirstName(lastName, siblings));
+  const randomizeLastName = () => setLastName(randomLastName(firstName, siblings));
+  // Area code follows the shipping state, so the number is plausible for the address.
+  const randomizePhone = () => setPhone(randomPhone(shipState));
 
   return (
     <form action={formAction} className="flex flex-col gap-5">
@@ -130,7 +229,25 @@ export function ProfileForm({
               : "Assigned automatically, counting on from your existing profiles."}
           </p>
         </div>
-        <Field name="phone" label="Phone" defaultValue={profile?.phone} placeholder="4055551234" />
+        <Field
+          name="phone"
+          label="Phone"
+          value={phone}
+          onChange={setPhone}
+          placeholder="4055551234"
+          required={phoneRequired}
+          hint={
+            phoneRequired
+              ? `${siteStyle(siteKey).label} checkout won't complete without one — and it has to be a number you can actually receive a call or text on.`
+              : undefined
+          }
+          // No die where the number has to reach the member: Walmart calls or texts it.
+          randomize={
+            phoneRequired
+              ? undefined
+              : { title: "Generate a random phone number", onClick: randomizePhone }
+          }
+        />
       </div>
 
       <fieldset className="rounded-lg border border-[var(--color-edge)] p-4">
@@ -168,8 +285,22 @@ export function ProfileForm({
           Shipping
         </legend>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field name="firstName" label="First name" defaultValue={profile?.firstName} required />
-          <Field name="lastName" label="Last name" defaultValue={profile?.lastName} required />
+          <Field
+            name="firstName"
+            label="First name"
+            value={firstName}
+            onChange={setFirstName}
+            required
+            randomize={{ title: "Generate a random first name", onClick: randomizeFirstName }}
+          />
+          <Field
+            name="lastName"
+            label="Last name"
+            value={lastName}
+            onChange={setLastName}
+            required
+            randomize={{ title: "Generate a random last name", onClick: randomizeLastName }}
+          />
           <Field
             name="shipLine1"
             label="Address"
@@ -185,10 +316,14 @@ export function ProfileForm({
           />
           <Field name="shipCity" label="City" defaultValue={profile?.shipCity} required />
           <div className="grid grid-cols-2 gap-3">
+            {/* Controlled only so `randomize` can read it: the generated phone takes its
+                area code from the state, so a member who fills the address first gets a
+                number that matches it. */}
             <Field
               name="shipState"
               label="State"
-              defaultValue={profile?.shipState}
+              value={shipState}
+              onChange={setShipState}
               maxLength={2}
               placeholder="OK"
               required

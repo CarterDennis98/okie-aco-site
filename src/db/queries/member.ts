@@ -24,7 +24,15 @@ export type MemberCheckout = {
   label: string;
   quantity: number;
   imageUrl: string | null;
-  /** The checkout profile it landed on, so a member with several can tell them apart. */
+  /**
+   * The checkout profile it landed on, so a member with several can tell them apart.
+   *
+   * Read from the CHECKOUT, not from the profile row it joins to. `profiles.profile_key`
+   * is the name with its " - N" suffix stripped, so every one of a member's numbered
+   * profiles joins to the same row -- and that row's `display_name` is whichever raw name
+   * happened to create it. Rendering it here told a member with four Target profiles that
+   * all four checkouts were on the same one.
+   */
   profileName: string | null;
 };
 
@@ -112,6 +120,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
         quantity: true,
         productRaw: true,
         imageUrl: true,
+        profileRaw: true,
         item: { select: { label: true, imageUrl: true } },
         profile: { select: { displayName: true } },
       },
@@ -157,7 +166,9 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
       quantity: row.quantity,
       label: row.item?.label ?? row.productRaw ?? "an item",
       imageUrl: row.item?.imageUrl ?? row.imageUrl,
-      profileName: row.profile?.displayName ?? null,
+      // Falls back to the joined row only for checkouts ingested before profileRaw was
+      // recorded; those are the ones with nothing more precise to show.
+      profileName: row.profileRaw ?? row.profile?.displayName ?? null,
     })),
   };
 }

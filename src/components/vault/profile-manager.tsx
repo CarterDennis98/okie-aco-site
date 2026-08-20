@@ -473,14 +473,25 @@ export function ProfileManager({
 
       {adding && (
         <div className="mb-4 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-5">
-          <ProfileForm siteKey={siteKey} nextName={nextName} onDone={() => setAdding(false)} />
+          <ProfileForm
+            siteKey={siteKey}
+            nextName={nextName}
+            siblings={profiles}
+            onDone={() => setAdding(false)}
+          />
         </div>
       )}
 
       {editing && (
         <div className="mb-4 rounded-xl border border-[var(--color-brand)]/40 bg-[var(--color-surface)] p-5">
           <p className="mb-4 text-sm font-semibold text-white">Editing {editing.name}</p>
-          <ProfileForm siteKey={siteKey} profile={editing} onDone={() => setEditing(null)} />
+          <ProfileForm
+            siteKey={siteKey}
+            profile={editing}
+            // Everything but the one being edited: its own name is not a collision.
+            siblings={profiles.filter((p) => p.id !== editing.id)}
+            onDone={() => setEditing(null)}
+          />
         </div>
       )}
 

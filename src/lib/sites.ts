@@ -95,6 +95,19 @@ export type SiteStyle = {
    * unable to save a profile because the form demands one you don't.
    */
   usesAccounts?: boolean;
+
+  /**
+   * Whether a profile here is unusable without a phone number.
+   *
+   * Walmart's checkout will not complete without one. `phone` is nullable and the AYCD
+   * export writes a missing one as `""`, so a Walmart profile saved without it exports
+   * cleanly, loads into the bot, and then fails every order -- silently, and only during
+   * a drop. Required at the form and in the save action, not just hinted at.
+   *
+   * Defaults to false: everywhere else a phone is useful and not load-bearing, and
+   * blocking a save over a field the retailer doesn't need would be inventing a rule.
+   */
+  requiresPhone?: boolean;
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -114,6 +127,8 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     width: 3840,
     height: 2160,
     selfServe: true,
+    // Checkout does not complete without one. See requiresPhone.
+    requiresPhone: true,
   },
   "pokemon-center": {
     label: "Pokémon Center",
@@ -165,6 +180,16 @@ export function supportedSites(): SiteStyle[] {
  */
 export function siteUsesAccounts(site: string | null | undefined): boolean {
   return siteStyle(site).usesAccounts !== false;
+}
+
+/**
+ * Whether a profile on this retailer must carry a phone number.
+ *
+ * Read by BOTH the profile form and the save action, for the same reason as
+ * `siteUsesAccounts`: the form decides what to render, the action is what actually holds.
+ */
+export function siteRequiresPhone(site: string | null | undefined): boolean {
+  return siteStyle(site).requiresPhone === true;
 }
 
 export function selfServeSiteKeys(): string[] {

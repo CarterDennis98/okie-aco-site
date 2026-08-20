@@ -1,4 +1,5 @@
 import { normalizeProfile } from "@/lib/normalize";
+import { siteRequiresPhone, siteStyle } from "@/lib/sites";
 import {
   detectBrand,
   isLuhnValid,
@@ -27,11 +28,77 @@ export function bool(form: FormData, key: string): boolean {
   return form.get(key) === "on" || form.get(key) === "true";
 }
 
-/** A message describing the first problem, or null when the form is acceptable. */
-export function validateProfileForm(form: FormData, isCreate: boolean): string | null {
+/**
+ * "0" in the phone field means "bot, generate one yourself".
+ *
+ * A VALOR CONVENTION, not junk data, and it is load-bearing on 229 real Pokémon Center
+ * profiles. Valor reads a bare 0 as an instruction to invent a random number at checkout
+ * -- the same family of placeholder as the `%fname%` / `%lname%` that Pokémon Center
+ * profiles carry in their name fields.
+ *
+ * Recorded here as a named constant purely so the next person to look at a column full of
+ * zeroes does not do what this file's first draft did and "clean them up" -- which nulls
+ * the column, exports an empty phone, and quietly takes away the bot's instruction.
+ *
+ * NOT accepted where the retailer requires a real number: `siteRequiresPhone` rejects it,
+ * because a generated number cannot receive the call or text Walmart makes.
+ */
+export const BOT_SENTINEL_PHONE = "0";
+
+/**
+ * A US phone number as ten digits, or null when it isn't one.
+ *
+ * Accepts whatever a member types -- "(405) 555-1234", "405.555.1234", "+1 405 555 1234"
+ * -- and returns one canonical form, because the retailer sees the digits and the
+ * punctuation is decoration. A leading country code 1 is dropped rather than rejected;
+ * that is the single most common way the field gets eleven digits.
+ *
+ * Returning null does NOT mean "discard this". A caller that stores the result must decide
+ * separately whether an unrecognized value is junk or a sentinel; see BOT_SENTINEL_PHONE.
+ */
+export function normalizePhone(raw: string | null | undefined): string | null {
+  let digits = String(raw ?? "").replace(/\D/g, "");
+  if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
+  if (digits.length !== 10) return null;
+  // A US area code and exchange never start with 0 or 1, so these are typos, not numbers.
+  if (/^[01]/.test(digits) || /^\d{3}[01]/.test(digits)) return null;
+  return digits;
+}
+
+/**
+ * A message describing the first problem, or null when the form is acceptable.
+ *
+ * `siteKey` is a parameter rather than something read from the form here because the
+ * caller has already checked it against the known retailers -- see saveProfile. It only
+ * affects the phone rule.
+ */
+export function validateProfileForm(
+  form: FormData,
+  isCreate: boolean,
+  siteKey?: string,
+): string | null {
   // No name check: profile names are generated, never submitted. See nextProfileName.
   if (!text(form, "firstName") || !text(form, "lastName")) {
     return "First and last name are required.";
+  }
+
+  // Checked on EDIT as well as create. A Walmart profile that predates this rule is
+  // exactly the one that has been failing orders, and letting an edit save without a
+  // phone would leave it broken -- the field is one line and the retailer requires it.
+  //
+  // ONLY on a retailer that requires one. Elsewhere an unrecognized phone is not an error
+  // at all, and must not be: 229 real Pokémon Center profiles carry the bare "0" that tells
+  // Valor to generate its own number, and rejecting the form would block every unrelated
+  // edit on them over a value that is doing its job. See BOT_SENTINEL_PHONE.
+  //
+  // Walmart is the exception on purpose. A generated number cannot take the call or text
+  // Walmart sends, so "0" is refused there like any other non-number.
+  const phone = text(form, "phone");
+  if (siteRequiresPhone(siteKey)) {
+    if (!phone) {
+      return `${siteStyle(siteKey).label} checkout needs a phone number — add one to save.`;
+    }
+    if (!normalizePhone(phone)) return "Enter a 10-digit US phone number.";
   }
   if (!text(form, "shipLine1") || !text(form, "shipCity")) return "A shipping address is required.";
   if (text(form, "shipState").length !== 2) return "Use the two-letter state code.";
@@ -76,7 +143,9 @@ export function profileFieldsFromForm(form: FormData) {
   return {
     firstName: text(form, "firstName"),
     lastName: text(form, "lastName"),
-    phone: text(form, "phone") || null,
+    // A recognizable US number is stored as ten bare digits. ANYTHING ELSE IS PRESERVED
+    // VERBATIM -- see BOT_SENTINEL_PHONE. Only a genuinely blank field becomes null.
+    phone: normalizePhone(text(form, "phone")) ?? (text(form, "phone") || null),
     shipLine1: text(form, "shipLine1"),
     shipLine2: text(form, "shipLine2") || null,
     shipCity: text(form, "shipCity"),

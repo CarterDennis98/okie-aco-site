@@ -16,6 +16,7 @@ import {
   onTint,
   selfServeSiteKeys,
   supportedSites,
+  siteRequiresPhone,
   siteUsesAccounts,
 } from "@/lib/sites";
 
@@ -118,5 +119,27 @@ describe("siteUsesAccounts", () => {
 
   it("accepts the raw vendor spelling, not just the key", () => {
     expect(siteUsesAccounts("Pokemon Center US")).toBe(false);
+  });
+});
+
+describe("siteRequiresPhone", () => {
+  /**
+   * Walmart checkout does not complete without a phone number. A profile saved without one
+   * exported cleanly and then failed every order, which is invisible until a drop.
+   */
+  it("is true only for Walmart", () => {
+    expect(siteRequiresPhone("walmart")).toBe(true);
+    expect(siteRequiresPhone("target")).toBe(false);
+    expect(siteRequiresPhone("pokemon-center")).toBe(false);
+  });
+
+  it("defaults to false for an unknown retailer", () => {
+    // The opposite default from siteUsesAccounts, deliberately: demanding a field a new
+    // retailer does not need would block the save outright over an invented rule.
+    expect(siteRequiresPhone("some-new-store")).toBe(false);
+  });
+
+  it("accepts the raw vendor spelling", () => {
+    expect(siteRequiresPhone("https://www.walmart.com")).toBe(true);
   });
 });

@@ -8,7 +8,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  BOT_SENTINEL_PHONE,
   nextProfileName,
+  normalizePhone,
   profileBaseFor,
   profileFieldsFromForm,
   profileIdentity,
@@ -87,6 +89,39 @@ describe("validateProfileForm", () => {
     expect(validateProfileForm(formOf({ cardExpYear: "29" }), true)).toBeNull(); // expanded to 2029
   });
 
+  it("requires a phone on Walmart, on create AND on edit", () => {
+    // Walmart checkout does not complete without one, so a profile saved without a phone
+    // was exported cleanly and then failed every order. Edit is checked too: the profiles
+    // that predate this rule are exactly the broken ones.
+    expect(validateProfileForm(formOf({ phone: "" }), true, "walmart")).toMatch(/phone number/i);
+    expect(validateProfileForm(formOf({ phone: "" }), false, "walmart")).toMatch(/phone number/i);
+    expect(validateProfileForm(formOf(), true, "walmart")).toBeNull();
+  });
+
+  it("leaves the phone optional on every other retailer", () => {
+    expect(validateProfileForm(formOf({ phone: "" }), true, "target")).toBeNull();
+    expect(validateProfileForm(formOf({ phone: "" }), true)).toBeNull();
+  });
+
+  it("rejects an unusable phone only where one is required", () => {
+    expect(validateProfileForm(formOf({ phone: "1055551234" }), true, "walmart")).toMatch(
+      /10-digit/,
+    );
+    // "0" is Valor's "generate one yourself", relied on by 229 Pokémon Center profiles.
+    // Failing the form would block every unrelated edit on them.
+    expect(
+      validateProfileForm(formOf({ phone: BOT_SENTINEL_PHONE }), false, "pokemon-center"),
+    ).toBeNull();
+    expect(validateProfileForm(formOf({ phone: "40555512" }), true, "target")).toBeNull();
+  });
+
+  it("refuses the bot placeholder on Walmart, which needs a reachable number", () => {
+    // Walmart texts or calls the number, so a generated one is no better than none.
+    expect(validateProfileForm(formOf({ phone: BOT_SENTINEL_PHONE }), true, "walmart")).toMatch(
+      /10-digit/,
+    );
+  });
+
   it("requires a billing address only when it differs", () => {
     const separate = formOf({ sameBillingAndShipping: "" });
     expect(validateProfileForm(separate, true)).toMatch(/billing address/i);
@@ -134,6 +169,46 @@ describe("profileFieldsFromForm", () => {
 
   it("turns an empty optional into null rather than an empty string", () => {
     expect(profileFieldsFromForm(formOf({ phone: "" })).phone).toBeNull();
+  });
+
+  it("stores the phone as bare digits whatever the member typed", () => {
+    expect(profileFieldsFromForm(formOf({ phone: "(405) 555-1234" })).phone).toBe("4055551234");
+    expect(profileFieldsFromForm(formOf({ phone: "+1 405.555.1234" })).phone).toBe("4055551234");
+  });
+
+  it("preserves the bot's own placeholder rather than 'cleaning it up'", () => {
+    // A bare "0" tells Valor to generate a number at checkout, and 229 Pokémon Center
+    // profiles rely on it. Normalizing it to null exports an empty phone and silently
+    // takes the instruction away. See BOT_SENTINEL_PHONE.
+    expect(profileFieldsFromForm(formOf({ phone: BOT_SENTINEL_PHONE })).phone).toBe("0");
+  });
+
+  it("keeps any other unrecognized value verbatim", () => {
+    // Same reasoning generalized: this column is read by bots with their own conventions,
+    // so a value this app does not recognize is not a value it gets to discard.
+    expect(profileFieldsFromForm(formOf({ phone: "%phone%" })).phone).toBe("%phone%");
+  });
+});
+
+describe("normalizePhone", () => {
+  it("accepts the shapes people actually type", () => {
+    expect(normalizePhone("4055551234")).toBe("4055551234");
+    expect(normalizePhone("(405) 555-1234")).toBe("4055551234");
+    expect(normalizePhone("405.555.1234")).toBe("4055551234");
+    // A leading country code is the commonest way this field gets eleven digits.
+    expect(normalizePhone("+1 (405) 555-1234")).toBe("4055551234");
+  });
+
+  it("rejects anything that isn't a dialable US number", () => {
+    expect(normalizePhone("")).toBeNull();
+    expect(normalizePhone(null)).toBeNull();
+    expect(normalizePhone("405555123")).toBeNull(); // nine digits
+    expect(normalizePhone("24055512345")).toBeNull(); // eleven, not a country code
+    // NANP: neither the area code nor the exchange may start with 0 or 1.
+    expect(normalizePhone("0555551234")).toBeNull();
+    expect(normalizePhone("1055551234")).toBeNull();
+    expect(normalizePhone("4050551234")).toBeNull();
+    expect(normalizePhone("4051551234")).toBeNull();
   });
 });
 

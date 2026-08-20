@@ -97,7 +97,9 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
   const siteKey = text(form, "siteKey");
   if (!SITE_KEYS.has(siteKey)) return { ok: false, error: "Unknown retailer." };
 
-  const problem = validateProfileForm(form, !profileId);
+  // siteKey is passed only after the check above: the phone rule is per-retailer, and an
+  // unknown key would silently mean "no rule".
+  const problem = validateProfileForm(form, !profileId, siteKey);
   if (problem) return { ok: false, error: problem };
 
   const email = text(form, "email").toLowerCase();

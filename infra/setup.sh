@@ -295,18 +295,38 @@ EOF
 
 domain)
   guard_account
-  say "mapping $DOMAIN"
-  gcloud beta run domain-mappings create \
-    --service "$SERVICE" --domain "$DOMAIN" \
-    --region "$REGION" --project "$PROJECT_ID" ||
-    echo "  (already mapped, or the domain needs verifying first)"
+  # BOTH hosts, and www is not optional. A mapping only exists for the name you map, so
+  # with the apex alone "www.okie-aco.com" does not resolve at all -- not a wrong page, no
+  # DNS record, nothing. www then 308s to the apex in next.config.ts; it is mapped so the
+  # request reaches the app that can redirect it, not so it can serve a second copy.
+  for host in "$DOMAIN" "www.$DOMAIN"; do
+    say "mapping $host"
+    gcloud beta run domain-mappings create \
+      --service "$SERVICE" --domain "$host" \
+      --region "$REGION" --project "$PROJECT_ID" ||
+      echo "  (already mapped, or the domain needs verifying first)"
+  done
+
+  say "DNS records to create"
+  # The apex takes A/AAAA (a CNAME at the zone apex is not legal); www takes a CNAME.
+  # Print what gcloud says rather than the literal IPs -- Google has changed them before.
+  for host in "$DOMAIN" "www.$DOMAIN"; do
+    gcloud beta run domain-mappings describe --domain "$host" \
+      --region "$REGION" --project "$PROJECT_ID" \
+      --format='table(status.resourceRecords[].type, status.resourceRecords[].name, status.resourceRecords[].rrdata)' ||
+      echo "  ($host: not mapped yet)"
+  done
   cat <<EOF
+
+  Add those at the registrar. www is a CNAME to ghs.googlehosted.com; the apex is A/AAAA.
 
   After DNS resolves:
     1. gcloud run services update $SERVICE --region $REGION \\
          --update-env-vars AUTH_URL=https://$DOMAIN
     2. Add https://$DOMAIN/api/auth/callback/discord to the Discord app's redirect URIs.
        Keep the run.app callback too until you are sure.
+       NOT the www callback: www redirects to the apex, so no auth flow ever runs there.
+    3. curl -sI https://www.$DOMAIN | head -3   # expect 308 to https://$DOMAIN
 EOF
   ;;
 

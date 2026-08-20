@@ -3,7 +3,8 @@ import "server-only";
 import { prisma } from "@/db/client";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { isExpired, maskedLabel } from "@/lib/vault/card";
-import { siteStyle } from "@/lib/sites";
+import { normalizePhone } from "@/lib/vault/profile-input";
+import { siteRequiresPhone, siteStyle } from "@/lib/sites";
 
 /**
  * Admin reads over the whole vault.
@@ -24,6 +25,18 @@ export type AdminMemberRow = {
   onBackup: number;
   expiredCards: number;
   missingAppPasswords: number;
+  /**
+   * Profiles with no USABLE phone number, on a retailer that cannot check out without one.
+   *
+   * Counts a bot placeholder like "0" as missing, which it is here specifically: Walmart
+   * calls or texts the number, so one Valor invents at checkout is no better than none.
+   * The same value on Pokémon Center is correct and deliberate -- see BOT_SENTINEL_PHONE.
+   *
+   * Always 0 elsewhere. These are the profiles that were saved before the phone became
+   * required and have been failing every order since -- the form now blocks new ones, but
+   * the existing ones only get fixed if somebody can see them.
+   */
+  missingPhone: number;
 };
 
 /** Every member holding at least one profile on a site, for the picker. */
@@ -35,6 +48,7 @@ export async function getMembersForSite(siteKey: string): Promise<AdminMemberRow
         discordUserId: true,
         name: true,
         active: true,
+        phone: true,
         cardExpMonth: true,
         cardExpYear: true,
         account: { select: { email: true } },
@@ -73,6 +87,11 @@ export async function getMembersForSite(siteKey: string): Promise<AdminMemberRow
       activeCount: active.length,
       onBackup: cap === undefined ? 0 : Math.max(0, active.length - cap),
       expiredCards: list.filter((p) => isExpired(p.cardExpMonth, p.cardExpYear)).length,
+      // Counted over ACTIVE profiles only: a disabled one isn't running, so it isn't
+      // failing orders and isn't the thing to chase.
+      missingPhone: siteRequiresPhone(siteKey)
+        ? active.filter((p) => !normalizePhone(p.phone)).length
+        : 0,
       // Counts addresses with nowhere to read a code from. An address that forwards into
       // a mailbox with a password is covered, so it is not missing one -- and a retailer
       // that never sends a code has nothing to miss.

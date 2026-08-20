@@ -264,12 +264,17 @@ export function EmailCredentials({
             <li key={credential.id} className="flex items-start gap-4 px-4 py-3 sm:px-5">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-[var(--color-fg)]">{credential.email}</p>
+                {/* "Saved, not yet checked" was permanent, and read as a check that was
+                    coming. Nothing verifies an app password: `verified_at` and
+                    `last_error` are only ever written back to null, by saveEmailCredential.
+                    Until an IMAP login actually runs, the honest state is "saved" -- the
+                    other two branches stay so the verifier lights them up when it lands. */}
                 <p className="mt-0.5 text-xs text-[var(--color-muted)]">
                   {credential.lastError
                     ? `Last check failed — re-enter the app password`
                     : credential.verifiedAt
                       ? "Working"
-                      : "Saved, not yet checked"}
+                      : "Saved"}
                   {credential.aliases.length > 0 &&
                     ` · covers ${credential.aliases.length} forwarded address${
                       credential.aliases.length === 1 ? "" : "es"
