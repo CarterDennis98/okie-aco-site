@@ -1,9 +1,11 @@
 import Image from "next/image";
 import Link from "next/link";
+import { DropCheckouts } from "@/components/drop-checkouts";
 import { MemberCheckoutList } from "@/components/member-checkout-list";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { getPendingChangeCount } from "@/db/queries/admin-vault";
+import { getMemberDropCheckouts } from "@/db/queries/drop-checkouts";
 import { getMemberDashboard } from "@/db/queries/member";
 import { getEmailsNeedingAppPassword, getMemberProfiles } from "@/db/queries/vault";
 import { count, plural } from "@/lib/format";
@@ -31,7 +33,7 @@ export default async function DashboardPage() {
   // The guard lives in the page, not the layout, and its return value is the ONLY
   // source of the id below. Nothing here reads an id from the URL.
   const viewer = await requireMember();
-  const [data, profileGroups, needingAppPassword, pendingConfirmation, pendingChanges] =
+  const [data, profileGroups, needingAppPassword, pendingConfirmation, pendingChanges, drops] =
     await Promise.all([
       getMemberDashboard(viewer.discordUserId),
       getMemberProfiles(viewer.discordUserId),
@@ -39,6 +41,10 @@ export default async function DashboardPage() {
       // Only the operator sees these badges, and only they pay for the queries.
       viewer.isAdmin ? getPendingConfirmationCount() : Promise.resolve(0),
       viewer.isAdmin ? getPendingChangeCount() : Promise.resolve(0),
+      // The operator's house profiles are never billed, so they have no charges and no
+      // per-drop breakdown. This is that breakdown, and it replaces the balance box they
+      // could only ever see $0 in.
+      viewer.isAdmin ? getMemberDropCheckouts(viewer.discordUserId) : Promise.resolve(null),
     ]);
 
   const allProfiles = profileGroups.flatMap((g) => g.profiles);
@@ -129,6 +135,16 @@ export default async function DashboardPage() {
                     </span>
                   )}
                 </Link>
+                {/* App passwords, which belong to people rather than retailers -- see
+                    /admin/imap. Its own entry because it is where drop-day "their codes
+                    aren't arriving" starts, and hunting for it under a retailer cost time
+                    at exactly the wrong moment. */}
+                <Link
+                  href="/admin/imap"
+                  className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
+                >
+                  IMAP
+                </Link>
               </>
             )}
             <form action={signOutOfSite}>
@@ -142,53 +158,68 @@ export default async function DashboardPage() {
           </div>
         </header>
 
-        {/* Balance first -- it's the one thing a member opens this page to find. Amount
-            left, action right, both vertically centred: stacked to the left it left
-            three quarters of a full-width box empty. */}
-        <section className="mt-8 flex flex-wrap items-center justify-between gap-x-8 gap-y-5 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-6">
-          <div>
-            <p className="text-[11px] tracking-[0.14em] text-[var(--color-muted)] uppercase">
-              You owe
-            </p>
-            {/* Proportional figures, not tabular: equal-width digits make a large
-                standalone number look loose. */}
-            <p className="mt-1.5 text-5xl font-black tracking-tight text-white">
-              {money(data.unpaidTotalCents)}
-            </p>
-            <p className="mt-2 text-sm text-[var(--color-muted)]">
-              {data.unpaidCount === 0
-                ? "You're all settled up."
-                : `Across ${data.unpaidCount} unpaid ${plural(data.unpaidCount, "charge")} — see the breakdown below.`}
-            </p>
-          </div>
+        {/* THE OPERATOR GETS NO BALANCE BOX. Their profiles are billable: false by design,
+            so it read "You owe $0 · You're all settled up" on every load -- a permanent
+            reassurance about a number that cannot change. What they actually need in that
+            spot is what they checked out, per drop, per profile: the same breakdown members
+            reach through their charges. */}
+        {drops ? (
+          <section className="mt-8">
+            <h2 className="mb-4 flex items-center gap-2.5 text-xl font-bold tracking-tight">
+              <span aria-hidden className="h-5 w-1 rounded-full bg-[var(--color-brand)]" />
+              Your checkouts by drop
+            </h2>
+            <DropCheckouts data={drops} />
+          </section>
+        ) : (
+          /* Balance first -- it's the one thing a member opens this page to find. Amount
+             left, action right, both vertically centred: stacked to the left it left
+             three quarters of a full-width box empty. */
+          <section className="mt-8 flex flex-wrap items-center justify-between gap-x-8 gap-y-5 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-6">
+            <div>
+              <p className="text-[11px] tracking-[0.14em] text-[var(--color-muted)] uppercase">
+                You owe
+              </p>
+              {/* Proportional figures, not tabular: equal-width digits make a large
+                  standalone number look loose. */}
+              <p className="mt-1.5 text-5xl font-black tracking-tight text-white">
+                {money(data.unpaidTotalCents)}
+              </p>
+              <p className="mt-2 text-sm text-[var(--color-muted)]">
+                {data.unpaidCount === 0
+                  ? "You're all settled up."
+                  : `Across ${data.unpaidCount} unpaid ${plural(data.unpaidCount, "charge")} — see the breakdown below.`}
+              </p>
+            </div>
 
-          {data.unpaidCount > 0 ? (
-            PAYMENT_URL && (
-              <a
-                href={PAYMENT_URL}
-                className="rounded-lg bg-[var(--color-brand)] px-6 py-3 font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
-              >
-                Payment methods
-              </a>
-            )
-          ) : (
-            // Something on the right in the settled state too, so the box doesn't read
-            // as lopsided the one time there's no call to action -- and green rather
-            // than grey, because settled up is the good outcome, not an absence.
-            <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-good)]/40 bg-[var(--color-good)]/15 px-4 py-2 text-sm font-semibold text-[var(--color-good)]">
-              <svg
-                viewBox="0 0 24 24"
-                className="size-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-              >
-                <path d="m5 13 4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Nothing owed
-            </span>
-          )}
-        </section>
+            {data.unpaidCount > 0 ? (
+              PAYMENT_URL && (
+                <a
+                  href={PAYMENT_URL}
+                  className="rounded-lg bg-[var(--color-brand)] px-6 py-3 font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
+                >
+                  Payment methods
+                </a>
+              )
+            ) : (
+              // Something on the right in the settled state too, so the box doesn't read
+              // as lopsided the one time there's no call to action -- and green rather
+              // than grey, because settled up is the good outcome, not an absence.
+              <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-good)]/40 bg-[var(--color-good)]/15 px-4 py-2 text-sm font-semibold text-[var(--color-good)]">
+                <svg
+                  viewBox="0 0 24 24"
+                  className="size-4"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                >
+                  <path d="m5 13 4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Nothing owed
+              </span>
+            )}
+          </section>
+        )}
 
         <section className="mt-12">
           <h2 className="mb-4 flex items-center gap-2.5 text-xl font-bold tracking-tight">

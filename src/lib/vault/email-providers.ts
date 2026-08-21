@@ -57,6 +57,18 @@ export const EMAIL_PROVIDERS: EmailProvider[] = [
     setupUrl: "https://help.yahoo.com/kb/create-party-passwords-sln15241.html",
   },
   {
+    key: "aol",
+    label: "AOL",
+    // AIM mail IS AOL mail -- @aim.com addresses have been served by AOL for years, and
+    // members were being told an address we can read perfectly well was unsupported. The
+    // rest are AOL's older aliases, all on the same host and all issuing app passwords
+    // from the same page.
+    domains: ["aol.com", "aim.com", "netscape.net", "love.com", "ygm.com", "wow.com", "games.com"],
+    imapHost: "imap.aol.com",
+    imapPort: 993,
+    setupUrl: "https://help.aol.com/articles/Create-and-manage-app-password",
+  },
+  {
     key: "icloud",
     label: "iCloud",
     domains: ["icloud.com", "me.com", "mac.com"],

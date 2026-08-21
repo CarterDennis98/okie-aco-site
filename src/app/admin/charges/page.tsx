@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ConfirmPayment, ReopenBill } from "@/components/billing/confirm-payment";
+import { ChargeRow } from "@/components/billing/charge-row";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
   PAGE_SIZE,
@@ -10,7 +10,6 @@ import {
 } from "@/db/queries/admin-charges";
 import { getPendingChangeCount } from "@/db/queries/admin-vault";
 import { requireAdmin } from "@/lib/auth/guard";
-import { methodLabel } from "@/lib/billing/methods";
 import { count, plural } from "@/lib/format";
 import { money } from "@/lib/money";
 
@@ -40,10 +39,6 @@ const cell = "px-3 py-2.5 text-left align-middle";
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const field =
   "rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-1.5 text-base sm:text-sm text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none";
-
-function formatDate(date: Date): string {
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-}
 
 export default async function AdminChargesPage({
   searchParams,
@@ -117,6 +112,12 @@ export default async function AdminChargesPage({
                 {pendingChanges > 99 ? "99+" : pendingChanges}
               </span>
             )}
+          </Link>
+          <Link
+            href="/admin/imap"
+            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+          >
+            IMAP
           </Link>
         </div>
 
@@ -260,85 +261,15 @@ export default async function AdminChargesPage({
                   <th className={`${cell} text-right`}>Action</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--color-edge)]">
-                {rows.map((row) => (
-                  <tr key={row.id}>
-                    <td className={cell}>
-                      <span className="font-medium text-white">{row.username}</span>
-                    </td>
-                    <td className={cell}>
-                      <span className="text-[var(--color-fg)]">{row.dropLabel}</span>
-                      <span className="mt-0.5 block text-xs text-[var(--color-muted)]">
-                        {formatDate(row.windowStart)} · {count(row.lineCount)}{" "}
-                        {plural(row.lineCount, "product")}
-                      </span>
-                    </td>
-                    <td className={cell}>
-                      {row.paidAt ? (
-                        <>
-                          <span className="text-[var(--color-muted)]">
-                            Received {formatDate(row.paidAt)}
-                          </span>
-                          {row.paidClaimedMethod && (
-                            <span className="mt-0.5 block text-xs text-[var(--color-muted)]">
-                              {methodLabel(row.paidClaimedMethod)}
-                            </span>
-                          )}
-                        </>
-                      ) : row.paidClaimedAt ? (
-                        <>
-                          <span className="text-[var(--color-warn)]">
-                            Sent {formatDate(row.paidClaimedAt)} ·{" "}
-                            {methodLabel(row.paidClaimedMethod)}
-                          </span>
-                          {row.paidClaimedNote && (
-                            <span className="mt-0.5 block text-xs text-[var(--color-muted)]">
-                              &ldquo;{row.paidClaimedNote}&rdquo;
-                            </span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-[var(--color-muted)]">Unpaid</span>
-                      )}
-                    </td>
-                    <td className={`${cell} text-right`}>
-                      <span className="font-semibold text-white tabular-nums">
-                        {money(row.totalCents)}
-                      </span>
-                      {/* Part-paid: what is still owed is the number the operator is
-                          chasing, so it goes under the total rather than replacing it. */}
-                      {!row.paidAt && row.paidCents > 0 && (
-                        <span className="block text-xs text-[var(--color-muted)] tabular-nums">
-                          {money(row.totalCents - row.paidCents)} left
-                        </span>
-                      )}
-                    </td>
-                    <td className={`${cell} text-right`}>
-                      {row.paidAt ? (
-                        <ReopenBill billId={row.id} />
-                      ) : (
-                        <>
-                          <ConfirmPayment
-                            billId={row.id}
-                            totalCents={row.totalCents}
-                            paidCents={row.paidCents}
-                            claimedCents={row.paidClaimedCents}
-                            claimedMethod={row.paidClaimedMethod}
-                          />
-                          {/* Reversing is offered on a part-paid row too: a payment
-                              entered against the wrong charge needs undoing whether or
-                              not it happened to settle the bill. */}
-                          {row.paidCents > 0 && (
-                            <div className="mt-1">
-                              <ReopenBill billId={row.id} />
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
+              {/* One <tbody> per charge, not one for the table: an expanded row is a
+                  SECOND <tr>, and the two have to stay together when the divider borders
+                  are drawn -- otherwise the line lands between a charge and its own
+                  breakdown. Row markup lives in ChargeRow, which owns the expansion. */}
+              {rows.map((row) => (
+                <tbody key={row.id} className="border-b border-[var(--color-edge)] last:border-0">
+                  <ChargeRow row={row} />
+                </tbody>
+              ))}
             </table>
           </div>
         )}

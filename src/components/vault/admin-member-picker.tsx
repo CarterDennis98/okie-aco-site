@@ -27,6 +27,8 @@ export function AdminMemberPicker({
   style,
   selected,
   exportBase,
+  filtering = false,
+  extraParams,
 }: {
   members: AdminMemberRow[];
   siteKey: string;
@@ -34,12 +36,34 @@ export function AdminMemberPicker({
   /** The member whose profiles are open, from the URL. Not the export selection. */
   selected: string | null;
   exportBase: string;
+  /**
+   * Whether the page's search or active/inactive filter is doing anything.
+   *
+   * The roster arrives WHOLE either way -- the page validates `?member=` against it -- so
+   * the narrowing happens here. Members with no matching profile drop out of the list;
+   * their counts are still what they own, not what matched.
+   */
+  filtering?: boolean;
+  /** The page's search params, carried into every member link. Serializable on purpose. */
+  extraParams?: Record<string, string>;
 }) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
 
+  // What the filter left. The member currently open is kept even with no matches, so
+  // clicking a name never makes the row you just clicked disappear from under you.
+  const shown = filtering
+    ? members.filter((m) => m.matchCount > 0 || m.discordUserId === selected)
+    : members;
+
   const count = checked.size;
-  const allChecked = count > 0 && count === members.length;
+  const allChecked = count > 0 && count === shown.length;
   const overCap = count > MAX_MEMBERS;
+
+  const hrefFor = (discordUserId: string) => {
+    const params = new URLSearchParams({ site: siteKey, member: discordUserId });
+    for (const [key, value] of Object.entries(extraParams ?? {})) params.set(key, value);
+    return `/admin/profiles?${params.toString()}`;
+  };
 
   // Repeatable `member` params -- see the export route. Built once and shared by the
   // format links so they cannot drift apart.
@@ -50,7 +74,7 @@ export function AdminMemberPicker({
     <div className="lg:sticky lg:top-6 lg:self-start">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
         <h2 className="text-sm font-semibold tracking-wide text-[var(--color-muted)] uppercase">
-          Members ({members.length})
+          Members ({filtering ? `${shown.length} of ${members.length}` : members.length})
         </h2>
         <label className="flex min-h-11 items-center gap-2 text-xs text-[var(--color-muted)] sm:min-h-0">
           <input
@@ -59,9 +83,11 @@ export function AdminMemberPicker({
             ref={(el) => {
               if (el) el.indeterminate = count > 0 && !allChecked;
             }}
+            // Over what is VISIBLE, not the whole roster: ticking "select all" under a
+            // search must not quietly queue up sixty members you cannot see.
             onChange={(e) =>
               setChecked(
-                e.currentTarget.checked ? new Set(members.map((m) => m.discordUserId)) : new Set(),
+                e.currentTarget.checked ? new Set(shown.map((m) => m.discordUserId)) : new Set(),
               )
             }
             className="size-4 accent-[var(--color-brand)]"
@@ -107,21 +133,29 @@ export function AdminMemberPicker({
               ) : (
                 <BulkLink href={bulkHref(`bot=all`)} label="Profiles (AYCD)" />
               )}
-              {/* Neither exists on a guest-checkout retailer -- no logins, and no emailed
-                  code to read. Same gating as the site-wide row on the page. */}
+              {/* No logins on a guest-checkout retailer, so no file. Same gating as the
+                  site-wide row on the page.
+
+                  The app-password export used to sit beside this one, scoped to the
+                  retailer. It moved to /admin/imap: a mailbox serves whichever retailers a
+                  member happens to use, so splitting it per site produced overlapping files
+                  and left the operator guessing which one was current. */}
               {style.usesAccounts !== false && (
                 <BulkLink href={bulkHref(`format=accounts`)} label="Accounts" />
-              )}
-              {style.usesEmailCodes !== false && (
-                <BulkLink href={bulkHref(`format=imap`)} label="App passwords" />
               )}
             </div>
           )}
         </div>
       )}
 
-      <ul className="max-h-[min(32rem,calc(100vh-12rem))] divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
-        {members.map((m) => (
+      {shown.length === 0 && (
+        <p className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-8 text-center text-xs text-[var(--color-muted)]">
+          No {style.label} profiles match.
+        </p>
+      )}
+
+      <ul className="max-h-[min(32rem,calc(100vh-12rem))] divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] empty:hidden">
+        {shown.map((m) => (
           <li
             key={m.discordUserId}
             className={
@@ -154,11 +188,19 @@ export function AdminMemberPicker({
               />
             </label>
             <Link
-              href={`/admin/profiles?site=${encodeURIComponent(siteKey)}&member=${m.discordUserId}`}
+              href={hrefFor(m.discordUserId)}
               className="min-w-0 flex-1 py-2.5 pr-4 transition-colors hover:bg-[var(--color-elevated)]/40"
             >
               <p className="truncate text-sm font-medium text-white">{m.username}</p>
               <p className="mt-0.5 text-xs text-[var(--color-muted)]">
+                {/* The match count leads when filtering, because it is the number you are
+                    looking at the list for -- the ownership counts stay beside it so a
+                    search result never reads as the member's whole profile set. */}
+                {filtering && (
+                  <span className="font-medium text-[var(--color-brand)]">
+                    {m.matchCount} match{m.matchCount === 1 ? "" : "es"} ·{" "}
+                  </span>
+                )}
                 {m.activeCount}/{m.profileCount} active
                 {m.onBackup > 0 && ` · ${m.onBackup} backup`}
                 {m.expiredCards > 0 && ` · ${m.expiredCards} expired`}

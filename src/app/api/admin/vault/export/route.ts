@@ -13,7 +13,14 @@ import { decrypt } from "@/lib/vault/crypto";
  *   /api/admin/vault/export?site=target&member=<id>      one member
  *   /api/admin/vault/export?site=target&member=<a>&member=<b>   several, one file
  *   /api/admin/vault/export?site=target&format=accounts  username:password list
- *   /api/admin/vault/export?site=target&format=imap      mailbox app passwords, CSV
+ *   /api/admin/vault/export?format=imap                  EVERY mailbox app password, CSV
+ *   /api/admin/vault/export?format=imap&member=<id>      one member's, CSV
+ *
+ * `site` is required by every format EXCEPT `imap`, which has no retailer in it: a mailbox
+ * belongs to a person and its codes cover whichever retailers that person uses. Scoping the
+ * app-password file per site produced overlapping files with no way to tell which was
+ * current, so the site-less form is now the one the UI links to. `site` is still accepted
+ * there for the old links.
  *
  * Guarded by `requireAdmin`, which 404s rather than 403s, and every call writes a
  * `vault_exports` row before the body is produced -- ONE PER MEMBER when several were
@@ -54,11 +61,17 @@ export async function GET(request: Request) {
   const bot = (url.searchParams.get("bot") ?? "all") as BotScope;
   const format = url.searchParams.get("format") ?? "aycd";
 
-  if (!siteKey) return new Response("Missing site", { status: 400 });
   if (!["main", "backup", "all"].includes(bot))
     return new Response("Bad bot scope", { status: 400 });
   if (!["aycd", "accounts", "imap"].includes(format))
     return new Response("Bad format", { status: 400 });
+  // Every format but `imap` is a list OF PROFILES on one retailer, so it cannot mean
+  // anything without a site. App passwords can, and that is the form the UI uses.
+  if (!siteKey && format !== "imap") return new Response("Missing site", { status: 400 });
+
+  // Site-less app passwords: the credentials are the subject, so this path never touches
+  // the profile table or the per-retailer bot cap at all.
+  const everyMailbox = format === "imap" && !siteKey;
 
   // Refused rather than answered with an empty file. On a guest-checkout retailer there are
   // no logins and no emailed codes, so both of these used to produce a valid-looking export
@@ -73,7 +86,7 @@ export async function GET(request: Request) {
       },
     );
   }
-  if (format === "imap" && siteStyle(siteKey).usesEmailCodes === false) {
+  if (format === "imap" && siteKey && siteStyle(siteKey).usesEmailCodes === false) {
     return new Response(
       `${siteStyle(siteKey).label} never emails a verification code — no app password applies.`,
       { status: 400 },
@@ -88,14 +101,20 @@ export async function GET(request: Request) {
     });
   }
 
-  const rows = await prisma.vaultProfile.findMany({
-    where: {
-      siteKey,
-      active: true,
-      ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
-    },
-    include: { account: { select: { email: true, passwordEnc: true } } },
-  });
+  // Wrapped so the empty case can be typed as the same row array rather than `never[]`,
+  // which nothing downstream could push into.
+  const loadProfiles = () =>
+    prisma.vaultProfile.findMany({
+      where: {
+        siteKey,
+        active: true,
+        ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
+      },
+      include: { account: { select: { email: true, passwordEnc: true } } },
+    });
+  type ProfileRow = Awaited<ReturnType<typeof loadProfiles>>[number];
+
+  const rows: ProfileRow[] = everyMailbox ? [] : await loadProfiles();
 
   // Apply the soft cap PER MEMBER, in the same name order the UI shows.
   const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
@@ -131,7 +150,22 @@ export async function GET(request: Request) {
   // Per member as well as overall, so a multi-member export can record what each person's
   // share of it actually was rather than attributing the whole file to all of them.
   const mailboxesByMember = new Map<string, Set<string>>();
-  if (format === "imap") {
+  if (everyMailbox) {
+    // Straight off the credentials: with no retailer in the request there is no profile
+    // list to resolve through, and a mailbox with no active profile behind it is still a
+    // live app password the bot needs.
+    const credentials = await prisma.emailCredential.findMany({
+      where: memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {},
+      select: { email: true, discordUserId: true },
+    });
+    for (const credential of credentials) {
+      const box = credential.email.toLowerCase();
+      mailboxes.add(box);
+      const mine = mailboxesByMember.get(credential.discordUserId) ?? new Set<string>();
+      mine.add(box);
+      mailboxesByMember.set(credential.discordUserId, mine);
+    }
+  } else if (format === "imap") {
     const coverage = await loadMailboxCoverage();
     for (const row of selected) {
       const box = mailboxFor(coverage, row.account.email);
@@ -165,11 +199,23 @@ export async function GET(request: Request) {
   // reads scope='member' changes.
   //
   // Members with no active profiles here get no row: nothing of theirs was in the file.
+  //
+  // `vault_exports.site_key` is NOT NULL, so a site-less app-password export records the
+  // literal "all" -- no retailer is called that, and the alternative would be a migration
+  // to make the column nullable for a value that reads worse than the word does.
+  const auditSite = everyMailbox ? "all" : siteKey;
+  // On the site-less path the members are whoever holds a credential, not whoever has a
+  // profile -- `selectedByMember` is empty there, and using it would write no audit row at
+  // all for an export of everybody's passwords.
+  const auditMembers: [string, ProfileRow[]][] = everyMailbox
+    ? [...mailboxesByMember.keys()].map((id) => [id, []])
+    : [...selectedByMember.entries()];
+
   if (memberIds.length > 1) {
     await prisma.vaultExport.createMany({
-      data: [...selectedByMember.entries()].map(([discordUserId, profiles]) => ({
+      data: auditMembers.map(([discordUserId, profiles]) => ({
         actorDiscordId: viewer.discordUserId,
-        siteKey,
+        siteKey: auditSite,
         format,
         scope: "members",
         targetDiscordId: discordUserId,
@@ -180,9 +226,9 @@ export async function GET(request: Request) {
     await prisma.vaultExport.create({
       data: {
         actorDiscordId: viewer.discordUserId,
-        siteKey,
+        siteKey: auditSite,
         format,
-        scope: memberIds.length === 1 ? "member" : "site",
+        scope: memberIds.length === 1 ? "member" : everyMailbox ? "all" : "site",
         targetDiscordId: memberIds[0] ?? null,
         ...countsFor(selected, mailboxes.size),
       },
@@ -192,7 +238,14 @@ export async function GET(request: Request) {
   const stamp = new Date().toISOString().slice(0, 10);
   const scopeLabel =
     memberIds.length === 1 ? "member" : memberIds.length > 1 ? `${memberIds.length}-members` : null;
-  const suffix = [siteKey, bot === "all" ? null : bot, scopeLabel, stamp].filter(Boolean).join("-");
+  const suffix = [
+    siteKey || (everyMailbox ? "all" : null),
+    bot === "all" ? null : bot,
+    scopeLabel,
+    stamp,
+  ]
+    .filter(Boolean)
+    .join("-");
 
   if (format === "imap") {
     // The bot split is deliberately ignored here: a mailbox can cover profiles on both

@@ -2,11 +2,19 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
-import type { VaultAction, VaultEntity } from "@/generated/prisma/enums";
+// VaultEntity as a VALUE, not just a type: the mailbox query filters on it. The generated
+// module exports a const and a matching type under each name, so this covers both uses.
+import { VaultEntity, type VaultAction } from "@/generated/prisma/enums";
 import { isExpired, maskedLabel } from "@/lib/vault/card";
+import { providerForEmail } from "@/lib/vault/email-providers";
 import { normalizePhone } from "@/lib/vault/profile-input";
 import { siteRequiresPhone, siteStyle } from "@/lib/sites";
 import { EMAIL_BUCKET } from "@/lib/vault/pending-filter";
+import {
+  isProfileFilterActive,
+  matchesProfileFilter,
+  type ProfileFilter,
+} from "@/lib/vault/profile-filter";
 
 /**
  * Admin reads over the whole vault.
@@ -39,10 +47,28 @@ export type AdminMemberRow = {
    * the existing ones only get fixed if somebody can see them.
    */
   missingPhone: number;
+  /**
+   * How many of this member's profiles match the search / active filter.
+   *
+   * Equal to `profileCount` when no filter is set. The counts above stay UNFILTERED on
+   * purpose -- "3 match · 18/24 active" is the useful line, and recomputing "active" over
+   * a search result would make the roster's own numbers change meaning as you type.
+   */
+  matchCount: number;
 };
 
-/** Every member holding at least one profile on a site, for the picker. */
-export async function getMembersForSite(siteKey: string): Promise<AdminMemberRow[]> {
+/**
+ * Every member holding at least one profile on a site, for the picker.
+ *
+ * Returns EVERY member regardless of the filter, with `matchCount` per row. Dropping
+ * non-matching members here would 404 the page the moment a search excluded whoever was
+ * already open -- the page validates `?member=` against this list, so it has to stay the
+ * full roster and the display filtering happens in the picker.
+ */
+export async function getMembersForSite(
+  siteKey: string,
+  filter?: ProfileFilter,
+): Promise<AdminMemberRow[]> {
   const [profiles, members, coverage] = await Promise.all([
     prisma.vaultProfile.findMany({
       where: { siteKey },
@@ -53,6 +79,13 @@ export async function getMembersForSite(siteKey: string): Promise<AdminMemberRow
         phone: true,
         cardExpMonth: true,
         cardExpYear: true,
+        // Selected for the search, not for the roster's own display: the matcher looks at
+        // the same fields here as it does in the profile table, so a member counted as
+        // matching always has a row to show.
+        firstName: true,
+        lastName: true,
+        shipCity: true,
+        shipState: true,
         account: { select: { email: true } },
       },
     }),
@@ -82,6 +115,11 @@ export async function getMembersForSite(siteKey: string): Promise<AdminMemberRow
     const member = nameById.get(discordUserId);
 
     rows.push({
+      matchCount:
+        filter && isProfileFilterActive(filter)
+          ? list.filter((p) => matchesProfileFilter({ ...p, email: p.account.email }, filter))
+              .length
+          : list.length,
       discordUserId,
       username: member?.username ?? discordUserId,
       displayName: member?.globalName ?? member?.username ?? discordUserId,
@@ -133,11 +171,21 @@ function formatAddress(parts: (string | null)[]): string {
   return parts.filter(Boolean).join(", ");
 }
 
-/** One member's full picture for a site. Still no secrets. */
+/**
+ * One member's full picture for a site. Still no secrets.
+ *
+ * `total` is the unfiltered count, so the table can say "showing 3 of 27" rather than
+ * silently presenting a search result as everything the member owns.
+ *
+ * The bot split is computed BEFORE the filter is applied. A profile's slot on the main bot
+ * depends on where it falls in the member's whole active list, so filtering first would
+ * have a search for one profile report it as running on the main bot when it doesn't.
+ */
 export async function getMemberVaultForAdmin(
   siteKey: string,
   discordUserId: string,
-): Promise<AdminProfileRow[]> {
+  filter?: ProfileFilter,
+): Promise<{ rows: AdminProfileRow[]; total: number }> {
   const [profiles, coverage] = await Promise.all([
     prisma.vaultProfile.findMany({
       where: { siteKey, discordUserId },
@@ -151,7 +199,7 @@ export async function getMemberVaultForAdmin(
   const cap = siteStyle(siteKey).profileSoftCap;
   let slot = 0;
 
-  return profiles.map((p) => {
+  const rows = profiles.map((p) => {
     if (p.active) slot += 1;
     return {
       id: p.id,
@@ -180,6 +228,16 @@ export async function getMemberVaultForAdmin(
       onBackup: cap !== undefined && p.active && slot > cap,
     };
   });
+
+  // Paired by index against the raw rows, which carry the columns the matcher reads. Doing
+  // it here rather than in the `where` above is what keeps `onBackup` and `total` honest.
+  const shown = filter
+    ? rows.filter((_, i) =>
+        matchesProfileFilter({ ...profiles[i], email: profiles[i].account.email }, filter),
+      )
+    : rows;
+
+  return { rows: shown, total: rows.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +347,236 @@ export async function getMemberEmailsForAdmin(discordUserId: string): Promise<Ad
       ),
     })),
     uncovered: uncovered.sort((a, b) => collator.compare(a.email, b.email)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Every mailbox, across every member
+// ---------------------------------------------------------------------------
+
+export type AdminImapRow = {
+  id: string;
+  email: string;
+  ownerDiscordId: string;
+  /** globalName when they have one, so the roster reads like Discord does. */
+  ownerName: string;
+  ownerUsername: string;
+  /** The provider we recognized the domain as, or null for one saved before it was known. */
+  provider: string | null;
+  imapHost: string | null;
+  imapPort: number | null;
+  verifiedAt: Date | null;
+  lastError: string | null;
+  updatedAt: Date;
+  /** When the oldest unconfirmed change to this mailbox was made. Null when nothing waits. */
+  pendingSince: Date | null;
+  /** Addresses that forward in here, so one password covers all of them. */
+  aliases: string[];
+  /** Retailer accounts whose verification codes land here, and where each is used. */
+  covers: { email: string; siteKeys: string[] }[];
+};
+
+export type AdminImapView = {
+  rows: AdminImapRow[];
+  /** Every mailbox on file, ignoring the search. */
+  total: number;
+  /** How many matched the search. Can exceed `rows.length` -- see IMAP_LIMIT. */
+  shown: number;
+  /** Distinct members holding at least one mailbox. */
+  memberCount: number;
+  /** Mailboxes whose last IMAP check failed. */
+  failingCount: number;
+  /** Retailer accounts with nowhere to read a code from, by owner. */
+  uncovered: {
+    discordUserId: string;
+    username: string;
+    accounts: { email: string; siteKeys: string[] }[];
+  }[];
+  /** Total uncovered addresses, which is what the headline number should say. */
+  uncoveredCount: number;
+};
+
+/**
+ * One member's name, for a page reached by `?member=<id>` alone.
+ *
+ * Exists so a member with no mailboxes still renders as themselves -- "no app passwords on
+ * file" against their name is a real and actionable state, and deriving the name from the
+ * mailbox rows would 404 exactly the people worth looking at. Null means the id is not a
+ * member, which is a typed URL rather than a state to render.
+ */
+export async function getMemberIdentity(
+  discordUserId: string,
+): Promise<{ username: string; displayName: string } | null> {
+  const member = await prisma.discordMember.findUnique({
+    where: { discordUserId },
+    select: { username: true, globalName: true },
+  });
+  if (!member) return null;
+  return { username: member.username, displayName: member.globalName ?? member.username };
+}
+
+/**
+ * Cap on rendered mailbox rows. Each one carries its aliases and every account it covers,
+ * so a few hundred is already a long page; the search is how you get to a specific one,
+ * and `shown` reports what the cap left out.
+ */
+const IMAP_LIMIT = 300;
+
+/**
+ * Every app password on file, with who owns it and what it covers.
+ *
+ * NOT SITE-SCOPED, and that is the whole point. A mailbox belongs to a person: one Gmail
+ * routinely serves the same member's Target, Walmart and Pokémon Center accounts, so
+ * "what app passwords do we hold" is a question with no retailer in it. Reaching these
+ * through a retailer picker showed a slice of the answer and produced one export file per
+ * retailer for a credential set that does not split that way.
+ *
+ * Reads no ciphertext. `app_password_enc` is not selected; the reveal action fetches one
+ * row at a time and audits each read.
+ */
+export async function getAllMailboxesForAdmin(options?: {
+  search?: string;
+  /** Restrict to one member, for the per-member view. */
+  discordUserId?: string;
+}): Promise<AdminImapView> {
+  const scope = options?.discordUserId ? { discordUserId: options.discordUserId } : {};
+  const terms = (options?.search ?? "")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 10);
+
+  const [credentials, accounts, members, coverage, pendingChanges] = await Promise.all([
+    prisma.emailCredential.findMany({
+      where: scope,
+      orderBy: { email: "asc" },
+      select: {
+        id: true,
+        email: true,
+        discordUserId: true,
+        imapHost: true,
+        imapPort: true,
+        verifiedAt: true,
+        lastError: true,
+        updatedAt: true,
+        aliases: { select: { email: true }, orderBy: { email: "asc" } },
+      },
+    }),
+    prisma.vaultAccount.findMany({
+      where: { active: true, ...scope },
+      select: { email: true, siteKey: true, discordUserId: true },
+    }),
+    prisma.discordMember.findMany({
+      select: { discordUserId: true, username: true, globalName: true },
+    }),
+    // Coverage is deliberately UNSCOPED even for one member: an alias row is unique
+    // globally, and scoping it would make an address look uncovered here and covered on
+    // the export, which is the one disagreement that costs somebody a code mid-drop.
+    loadMailboxCoverage(),
+    prisma.vaultChange.findMany({
+      where: { appliedAt: null, entity: VaultEntity.EMAIL_CREDENTIAL },
+      orderBy: { at: "asc" },
+      select: { entityId: true, at: true },
+    }),
+  ]);
+
+  const memberById = new Map(members.map((m) => [m.discordUserId, m]));
+
+  // Oldest unconfirmed change per mailbox: "waiting since this morning" is the useful
+  // sentence, not "since ten minutes ago". Same rule as the member-facing pages.
+  const pending = new Map<string, Date>();
+  for (const change of pendingChanges) {
+    if (!pending.has(change.entityId)) pending.set(change.entityId, change.at);
+  }
+
+  // Address -> the retailers it is used on, restricted to retailers that actually email a
+  // code. A Pokémon Center account checks out as a guest, so listing it here would claim
+  // an app password serves it when nothing does.
+  const sitesByEmail = new Map<string, { sites: Set<string>; owner: string }>();
+  for (const account of accounts) {
+    if (siteStyle(account.siteKey).usesEmailCodes === false) continue;
+    const key = account.email.toLowerCase();
+    const entry = sitesByEmail.get(key) ?? {
+      sites: new Set<string>(),
+      owner: account.discordUserId,
+    };
+    entry.sites.add(account.siteKey);
+    sitesByEmail.set(key, entry);
+  }
+
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+  const coversByMailbox = new Map<string, { email: string; siteKeys: string[] }[]>();
+  const uncoveredByMember = new Map<string, { email: string; siteKeys: string[] }[]>();
+
+  for (const [email, { sites, owner }] of sitesByEmail) {
+    const siteKeys = [...sites].sort();
+    const mailbox = mailboxFor(coverage, email);
+    if (mailbox === null) {
+      uncoveredByMember.set(owner, [...(uncoveredByMember.get(owner) ?? []), { email, siteKeys }]);
+      continue;
+    }
+    const key = mailbox.toLowerCase();
+    coversByMailbox.set(key, [...(coversByMailbox.get(key) ?? []), { email, siteKeys }]);
+  }
+
+  const all: AdminImapRow[] = credentials.map((credential) => {
+    const owner = memberById.get(credential.discordUserId);
+    return {
+      id: credential.id,
+      email: credential.email,
+      ownerDiscordId: credential.discordUserId,
+      // Falls back to the id: a mailbox belonging to someone who has left the server is
+      // still a live credential on the bot, and a blank name would read as a broken row.
+      ownerName: owner?.globalName ?? owner?.username ?? credential.discordUserId,
+      ownerUsername: owner?.username ?? credential.discordUserId,
+      provider: providerForEmail(credential.email)?.label ?? null,
+      imapHost: credential.imapHost,
+      imapPort: credential.imapPort,
+      verifiedAt: credential.verifiedAt,
+      lastError: credential.lastError,
+      updatedAt: credential.updatedAt,
+      pendingSince: pending.get(credential.id) ?? null,
+      aliases: credential.aliases.map((a) => a.email),
+      covers: (coversByMailbox.get(credential.email.toLowerCase()) ?? []).sort((a, b) =>
+        collator.compare(a.email, b.email),
+      ),
+    };
+  });
+
+  // Every term has to match something, same rule as the profile search: "carter gmail"
+  // means that person's Gmail, not everyone's.
+  const matches = (row: AdminImapRow) => {
+    if (terms.length === 0) return true;
+    const haystack = [
+      row.email,
+      row.ownerName,
+      row.ownerUsername,
+      row.provider ?? "",
+      ...row.aliases,
+      ...row.covers.map((c) => c.email),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  };
+
+  const matched = all.filter(matches);
+
+  return {
+    rows: matched.slice(0, IMAP_LIMIT),
+    total: all.length,
+    shown: matched.length,
+    memberCount: new Set(all.map((r) => r.ownerDiscordId)).size,
+    failingCount: all.filter((r) => r.lastError !== null).length,
+    uncovered: [...uncoveredByMember.entries()]
+      .map(([discordUserId, list]) => ({
+        discordUserId,
+        username: memberById.get(discordUserId)?.username ?? discordUserId,
+        accounts: list.sort((a, b) => collator.compare(a.email, b.email)),
+      }))
+      .sort((a, b) => collator.compare(a.username, b.username)),
+    uncoveredCount: [...uncoveredByMember.values()].reduce((sum, list) => sum + list.length, 0),
   };
 }
 

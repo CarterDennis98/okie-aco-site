@@ -22,6 +22,19 @@ describe("email providers", () => {
     expect(providerForEmail("a@hotmail.com")?.imapHost).toBe("outlook.office365.com");
     expect(providerForEmail("a@yahoo.co.kr")?.imapHost).toBe("imap.mail.yahoo.com");
     expect(providerForEmail("a@me.com")?.imapHost).toBe("imap.mail.me.com");
+    // AIM resolves to AOL's host, not Yahoo's, even though AOL and Yahoo are one company:
+    // imap.mail.yahoo.com does not serve an @aim.com login.
+    expect(providerForEmail("a@aim.com")?.imapHost).toBe("imap.aol.com");
+    expect(providerForEmail("a@aol.com")?.imapHost).toBe("imap.aol.com");
+  });
+
+  it("accepts AOL and AIM", () => {
+    // Regression: both were refused outright, so members with an AIM or AOL inbox could
+    // not save an app password at all and their codes had to be chased by hand.
+    for (const email of ["someone@aol.com", "someone@aim.com", "SOMEONE@AOL.COM"]) {
+      expect(isSupportedEmail(email), email).toBe(true);
+    }
+    expect(providerForEmail("someone@aim.com")?.key).toBe("aol");
   });
 
   it("rejects a custom or work domain", () => {
@@ -32,7 +45,9 @@ describe("email providers", () => {
       "riley@heyrileyhelp.com",
       "someone@exceedhealthcare.com",
       "buyer@mycatchall.xyz",
-      "anything@aol.com",
+      // A real provider, still refused: Proton has no plain IMAP without its bridge, so
+      // an app password saved here would be a credential that silently never works.
+      "buyer@proton.me",
       "no-at-sign",
       "",
     ]) {

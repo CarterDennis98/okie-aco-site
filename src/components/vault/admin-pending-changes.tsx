@@ -106,6 +106,7 @@ export function AdminPendingChanges({
   shown,
   siteKey,
   memberId,
+  extraParams,
 }: {
   rows: PendingChangeRow[];
   groups: PendingChangeGroup[];
@@ -127,10 +128,19 @@ export function AdminPendingChanges({
    */
   siteKey: string;
   memberId: string | null;
+  /**
+   * The page's other query params -- the profile search and the active/inactive filter.
+   *
+   * A plain object for the same reason siteKey is a string: it has to cross the
+   * server/client boundary, so it must be serializable. Carried for the same reason as
+   * the member id -- filtering the queue must not clear the search below it.
+   */
+  extraParams?: Record<string, string>;
 }) {
   const hrefFor = (bucket: string | null) => {
     const params = new URLSearchParams({ site: siteKey });
     if (memberId) params.set("member", memberId);
+    for (const [key, value] of Object.entries(extraParams ?? {})) params.set(key, value);
     if (bucket) params.set(CHANGE_FILTER_PARAM, bucket);
     return `/admin/profiles?${params.toString()}`;
   };

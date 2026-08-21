@@ -530,7 +530,15 @@ export function ProfileManager({
       {editing && (
         <div className="mb-4 rounded-xl border border-[var(--color-brand)]/40 bg-[var(--color-surface)] p-5">
           <p className="mb-4 text-sm font-semibold text-white">Editing {editing.name}</p>
+          {/* KEYED ON THE PROFILE ID, and it is load-bearing. Clicking Edit on a second row
+              while one is already open swaps this prop, and without a key React keeps the
+              same form instance: its `useState(profile?.firstName)` initialisers don't re-run
+              and its uncontrolled inputs keep the DOM values they already had. The heading
+              said "Editing carter - 4" over carter - 3's name, address and card expiry --
+              and saving wrote them onto carter - 4. Remounting is what makes switching
+              profiles cancel the open edit rather than inherit it. */}
           <ProfileForm
+            key={editing.id}
             siteKey={siteKey}
             profile={editing}
             // Everything but the one being edited: its own name is not a collision.
