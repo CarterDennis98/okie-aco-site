@@ -162,6 +162,14 @@ export async function testCredential(
   // because a mail server had a bad minute, and the member would dutifully replace a
   // password that was never wrong.
   if (result.kind === "network") {
+    // LOGGED, because nothing else records it. Deliberately not written to `lastError` --
+    // that column drives "needs re-entering", which is the wrong thing to tell somebody
+    // whose password is fine. But leaving no trace at all made "some of my members get
+    // Unreachable" unanswerable: the reason existed only in a tooltip nobody had open.
+    //
+    // Host and reason, never the address or the password: enough to tell a blocked port
+    // from a rate limit from a dead DNS record, without putting mailboxes in a log.
+    console.warn(`imap check unreachable: ${credential.imapHost} — ${result.detail}`);
     await prisma.emailCredential.update({
       where: { id: credential.id },
       data: { lastCheckedAt },

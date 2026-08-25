@@ -157,17 +157,31 @@ describe("checkImapLogin", () => {
     expect(login.split("\r\n").filter(Boolean)).toHaveLength(1);
   });
 
-  it("refuses a host that isn't one of ours before opening a socket", async () => {
-    // The SSRF guard. `imap_host` is derived server-side and can't come from a form, but
-    // this is the only outbound socket in the app and it should not take direction from
-    // a database column alone.
+  it("refuses an unsafe host before opening a socket", async () => {
+    // The SSRF guard, wired in from imap-dial-guard.ts -- which owns the rules and its own
+    // tests. What matters HERE is only that checkImapLogin consults it and gives up before
+    // dialling, so `connected` staying false is the whole assertion.
+    //
+    // The resolver is injected so this stays hermetic: without it the evil.tld case would
+    // put a real DNS query in a unit test.
     let connected = false;
-    for (const host of ["localhost", "127.0.0.1", "169.254.169.254", "imap.gmail.com.evil.tld"]) {
+    const resolve = async (host: string) => {
+      if (host === "mail.corp.example") return ["10.0.0.5"];
+      throw new Error("ENOTFOUND");
+    };
+    for (const host of [
+      "localhost",
+      "127.0.0.1",
+      "169.254.169.254",
+      "imap.gmail.com.evil.tld",
+      "mail.corp.example",
+    ]) {
       const result = await checkImapLogin({
         host,
         port: 993,
         user: "a@gmail.com",
         password: "x",
+        resolve,
         connect: async () => {
           connected = true;
           return scripted({}).socket;
@@ -176,6 +190,23 @@ describe("checkImapLogin", () => {
       expect(result, host).toMatchObject({ ok: false, kind: "network" });
     }
     expect(connected).toBe(false);
+  });
+
+  it("DOES dial a vanity mail host, which the vault legitimately contains", async () => {
+    // The regression this whole change exists for: import-imap.ts writes hosts straight
+    // from the operator's CSV, and the old allowlist guard reported every self-hosted
+    // mailbox as Unreachable without ever opening a socket.
+    const { socket } = scripted({});
+    const result = await checkImapLogin({
+      host: "mail.somecompany.com",
+      port: 993,
+      user: "someone@somecompany.com",
+      password: "x",
+      resolve: async () => ["203.0.113.10"],
+      connect: async () => socket,
+      timeoutMs: 200,
+    });
+    expect(result).toMatchObject({ ok: true });
   });
 
   it("never puts the password in the result", async () => {

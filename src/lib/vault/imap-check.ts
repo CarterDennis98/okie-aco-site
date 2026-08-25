@@ -1,7 +1,7 @@
 import "server-only";
 
 import { connect as tlsConnect } from "node:tls";
-import { isKnownImapHost } from "@/lib/vault/email-providers";
+import { checkDialable, type AddressLookup } from "@/lib/vault/imap-dial-guard";
 
 /**
  * Does this app password actually open this mailbox?
@@ -59,6 +59,8 @@ export type ImapCheckOptions = {
   connect?: ImapConnect;
   /** Injected in tests, so a timeout case doesn't take ten real seconds. */
   timeoutMs?: number;
+  /** Injected in tests, so the dial guard needs no resolver. */
+  resolve?: AddressLookup;
 };
 
 /**
@@ -182,13 +184,13 @@ export async function checkImapLogin(options: ImapCheckOptions): Promise<ImapChe
   const connect = options.connect ?? defaultConnect;
   const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
-  // SSRF GUARD. The host is derived server-side from the provider list and never comes from
-  // a form, but this is the one place in the app that opens an outbound socket, so it
-  // refuses anything that isn't a mail host we put there ourselves. A stored row that
-  // somehow held "localhost" must not be a way to make the server dial itself.
-  if (!isKnownImapHost(host)) {
-    return { ok: false, kind: "network", detail: `${host} isn't a mail host we recognise.` };
-  }
+  // SSRF GUARD -- see imap-dial-guard.ts for what it does and doesn't promise.
+  //
+  // It asks "is this safe to dial", NOT "is this a provider we listed". The list version
+  // reported Unreachable for every self-hosted and vanity mailbox in the vault, because
+  // scripts/import-imap.ts writes those hosts from the operator's CSV on purpose.
+  const dialable = await checkDialable(host, port, options.resolve);
+  if (!dialable.ok) return { ok: false, kind: "network", detail: dialable.reason };
 
   let socket: SocketLike;
   try {
