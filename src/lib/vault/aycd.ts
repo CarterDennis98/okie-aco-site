@@ -17,6 +17,7 @@
  */
 
 import { toAycdCardType, type CardBrand } from "@/lib/vault/card";
+import { BOT_SENTINEL_PHONE } from "@/lib/vault/profile-input";
 
 /** Two-letter code to the full name AYCD writes. */
 const STATE_NAMES: Record<string, string> = {
@@ -196,7 +197,26 @@ function address(parts: {
 
 export function toAycdProfile(profile: ExportableProfile): AycdProfile {
   const shippingName = `${profile.firstName} ${profile.lastName}`.trim();
-  const phone = profile.phone ?? "";
+
+  /**
+   * A MISSING PHONE EXPORTS AS THE SENTINEL, NEVER AS "".
+   *
+   * Valor's profile importer rejects the WHOLE FILE -- "invalid profile list", naming no
+   * row -- if any profile carries an empty phone. One member with a blank phone therefore
+   * takes down the export for everybody in it, which is exactly what happened to the
+   * Pokémon Center batch: two profiles, one blank phone, nothing imported.
+   *
+   * Established by bisecting the failing file against Valor's own store. Everything else
+   * suspected first turned out to be fine and is deliberately NOT normalized here --
+   * punctuated phones ("330-607-9000") and ZIP+4 ("15001-2908") both import, and 173 and
+   * 2 live profiles respectively carry them.
+   *
+   * "0" rather than a made-up number: Valor reads a bare zero as "generate one at
+   * checkout", which is the honest way to say we don't have one. See BOT_SENTINEL_PHONE,
+   * and note `siteRequiresPhone` already stops a blank phone being saved at all on the
+   * one retailer where a generated number cannot work.
+   */
+  const phone = profile.phone?.trim() || BOT_SENTINEL_PHONE;
 
   const shippingAddress = address({
     name: shippingName,
