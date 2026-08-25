@@ -56,6 +56,37 @@ describe("validateProfileForm", () => {
     expect(validateProfileForm(formOf({ shipPostalCode: "73099-1234" }), true)).toBeNull();
   });
 
+  it("refuses every shape of unusable ZIP, on create AND on edit", () => {
+    // The real junk found in live profiles was a 6-digit and a 4-digit code, so those
+    // two lead. An edit must be refused as well: a profile that predates this rule is
+    // exactly the one being opened to fix, and letting the save through leaves it broken.
+    for (const bad of ["100128", "1374", "730", "7309a", "73099-12", "73099 1234", "  "]) {
+      expect(validateProfileForm(formOf({ shipPostalCode: bad }), true)).toMatch(/ZIP/i);
+      expect(validateProfileForm(formOf({ shipPostalCode: bad }), false)).toMatch(/ZIP/i);
+    }
+  });
+
+  it("validates the BILLING ZIP too, but only when billing is a real second address", () => {
+    const billing = (over: Record<string, string>) =>
+      formOf({
+        sameBillingAndShipping: "",
+        billLine1: "9 Other St",
+        billCity: "Tulsa",
+        billState: "OK",
+        billPostalCode: "74103",
+        ...over,
+      });
+
+    expect(validateProfileForm(billing({}), true)).toBeNull();
+    expect(validateProfileForm(billing({ billPostalCode: "741" }), true)).toMatch(/billing ZIP/i);
+    expect(validateProfileForm(billing({ billPostalCode: "" }), true)).toMatch(/billing ZIP/i);
+    expect(validateProfileForm(billing({ billPostalCode: "74103-2201" }), true)).toBeNull();
+
+    // With the box ticked the billing columns are never stored, so whatever is sitting in
+    // the hidden fields must not be able to block a save.
+    expect(validateProfileForm(formOf({ billPostalCode: "1374" }), true)).toBeNull();
+  });
+
   it("catches a mistyped card before it reaches a drop", () => {
     // Transposed digits -- the exact failure Luhn exists for.
     expect(validateProfileForm(formOf({ cardNumber: "4147098930053834" }), true)).toMatch(/typo/i);
@@ -129,6 +160,9 @@ describe("validateProfileForm", () => {
     separate.set("billLine1", "1 Other St");
     separate.set("billCity", "Edmond");
     separate.set("billState", "OK");
+    // A complete billing address includes its ZIP. This case used to pass WITHOUT one,
+    // which is the gap that let a billing ZIP be anything at all.
+    separate.set("billPostalCode", "73013");
     expect(validateProfileForm(separate, true)).toBeNull();
   });
 });

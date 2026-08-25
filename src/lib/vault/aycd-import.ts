@@ -1,5 +1,5 @@
 import { countryCode, stateCode } from "@/lib/vault/aycd";
-import { nextProfileName, profileBaseFor } from "@/lib/vault/profile-input";
+import { isValidPostalCode, nextProfileName, profileBaseFor } from "@/lib/vault/profile-input";
 import {
   detectBrand,
   isExpired,
@@ -209,6 +209,14 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
       fail("Shipping address is missing a street, city, state, or ZIP.");
       return;
     }
+    // A REJECTION, not a warning like the Luhn check below. A card that fails Luhn is
+    // sometimes a real store card; a four-digit ZIP is never a real address, and importing
+    // it puts a profile in the vault that quietly ships to the wrong place. This path is
+    // how "100128" and "1374" reached live profiles.
+    if (!isValidPostalCode(shipPostalCode)) {
+      fail(`Shipping ZIP "${shipPostalCode}" isn't a US ZIP — five digits, or ZIP+4.`);
+      return;
+    }
 
     const sameBillingAndShipping = bool(entry.sameBillingAndShippingAddress);
     const billLine1 = str(bill.line1);
@@ -217,6 +225,12 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
     const billPostalCode = str(bill.postCode) || str(bill.postcode) || str(bill.zip);
     if (!sameBillingAndShipping && (!billLine1 || !billCity || !billState || !billPostalCode)) {
       fail("Billing address is incomplete, and it isn't marked the same as shipping.");
+      return;
+    }
+    // Only when it is a real second address. With the flag set the billing columns are
+    // never stored, so whatever the file happens to carry there is not ours to judge.
+    if (!sameBillingAndShipping && !isValidPostalCode(billPostalCode)) {
+      fail(`Billing ZIP "${billPostalCode}" isn't a US ZIP — five digits, or ZIP+4.`);
       return;
     }
 

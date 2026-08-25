@@ -66,6 +66,28 @@ export function normalizePhone(raw: string | null | undefined): string | null {
 }
 
 /**
+ * A US ZIP: five digits, optionally +4.
+ *
+ * THE ONE DEFINITION. Every write path shares it -- the member's form, the AYCD upload,
+ * the operator's import script -- because the form used to be the only thing checking, and
+ * the import path put "100128" and "1374" into live Pokémon Center profiles, where they sat
+ * unnoticed until an export was traced by hand.
+ *
+ * ZIP+4 IS VALID and must stay that way. It is real address precision, Valor's own store
+ * holds profiles that use it, and a file carrying one imports fine -- the temptation to
+ * "clean" it to five digits is throwing information away to fix a problem it never caused.
+ *
+ * Nothing here repairs a bad value, and nothing should: the digits missing from a
+ * four-digit ZIP cannot be guessed, and a wrong guess ships somebody's order to the wrong
+ * address. An unusable ZIP is refused at the door and sent back to whoever typed it.
+ */
+export const POSTAL_CODE_RE = /^\d{5}(-\d{4})?$/;
+
+export function isValidPostalCode(raw: string | null | undefined): boolean {
+  return POSTAL_CODE_RE.test(String(raw ?? "").trim());
+}
+
+/**
  * A message describing the first problem, or null when the form is acceptable.
  *
  * `siteKey` is a parameter rather than something read from the form here because the
@@ -102,7 +124,9 @@ export function validateProfileForm(
   }
   if (!text(form, "shipLine1") || !text(form, "shipCity")) return "A shipping address is required.";
   if (text(form, "shipState").length !== 2) return "Use the two-letter state code.";
-  if (!/^\d{5}(-\d{4})?$/.test(text(form, "shipPostalCode"))) return "Enter a valid ZIP code.";
+  if (!isValidPostalCode(text(form, "shipPostalCode"))) {
+    return "Enter a valid ZIP code — five digits, or ZIP+4 like 73069-1234.";
+  }
 
   const pan = normalizePan(text(form, "cardNumber"));
   // On edit a blank card number means "keep the existing card", so it is only required
@@ -126,6 +150,12 @@ export function validateProfileForm(
       return "A billing address is required.";
     }
     if (text(form, "billState").length !== 2) return "Use the two-letter billing state code.";
+    // Checked at last. The billing ZIP went unvalidated while the shipping one beside it
+    // was checked from the start, so a typo here saved cleanly and only surfaced as a
+    // declined card -- the ZIP is what an issuer matches on.
+    if (!isValidPostalCode(text(form, "billPostalCode"))) {
+      return "Enter a valid billing ZIP code — five digits, or ZIP+4 like 73069-1234.";
+    }
   }
   return null;
 }

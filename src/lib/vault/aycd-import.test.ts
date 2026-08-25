@@ -108,6 +108,59 @@ describe("parseAycdExport", () => {
     expect(profiles[0].billCity).toBe("Tulsa");
   });
 
+  it("rejects a profile whose ZIP isn't a US ZIP, and imports the rest of the file", () => {
+    // THIS is the path that put "100128" and "1374" into live Pokémon Center profiles:
+    // it checked that a ZIP was PRESENT and never that it was usable.
+    const good = JSON.parse(exported())[0];
+    const bad = JSON.parse(exported())[0];
+    bad.name = "carter - 4";
+    bad.shippingAddress.email = "other@example.com";
+    bad.billingAddress.email = "other@example.com";
+    bad.shippingAddress.postCode = "100128";
+
+    const { profiles, issues } = parseAycdExport(JSON.stringify([good, bad]));
+
+    // One bad row does not cost the member the other forty-nine.
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].shipPostalCode).toBe("73069");
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe("error");
+    expect(issues[0].problem).toMatch(/100128/);
+    expect(issues[0].problem).toMatch(/ZIP/i);
+  });
+
+  it("rejects a bad billing ZIP only when billing is a real second address", () => {
+    const withBilling = (postCode: string) =>
+      parseAycdExport(
+        exported({
+          sameBillingAndShipping: false,
+          billLine1: "9 Other Ave",
+          billCity: "Tulsa",
+          billState: "OK",
+          billPostalCode: postCode,
+          billCountry: "US",
+        }),
+      );
+
+    expect(withBilling("1374").profiles).toHaveLength(0);
+    expect(withBilling("1374").issues[0].problem).toMatch(/Billing ZIP/i);
+    expect(withBilling("74103-2201").profiles).toHaveLength(1);
+
+    // Flagged same-as-shipping: the billing columns are never stored, so a junk value
+    // the file happens to carry there is not ours to refuse.
+    const raw = JSON.parse(exported());
+    raw[0].billingAddress.postCode = "1374";
+    expect(parseAycdExport(JSON.stringify(raw)).profiles).toHaveLength(1);
+  });
+
+  it("keeps ZIP+4 exactly as written", () => {
+    const raw = JSON.parse(exported());
+    raw[0].shippingAddress.postCode = "73069-1234";
+    const { profiles, issues } = parseAycdExport(JSON.stringify(raw));
+    expect(issues).toEqual([]);
+    expect(profiles[0].shipPostalCode).toBe("73069-1234");
+  });
+
   it("rejects a file that isn't JSON", () => {
     const { profiles, issues } = parseAycdExport("not json at all");
     expect(profiles).toEqual([]);

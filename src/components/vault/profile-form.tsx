@@ -5,7 +5,21 @@ import type { VaultProfileDetail } from "@/db/queries/vault";
 import { detectBrand, expectedCvvLength } from "@/lib/vault/card";
 import { saveProfile, type ActionResult } from "@/lib/vault/actions";
 import { siteRequiresPhone, siteStyle, siteUsesAccounts } from "@/lib/sites";
+import { POSTAL_CODE_RE } from "@/lib/vault/profile-input";
 import { randomFirstName, randomLastName, randomPhone } from "@/lib/vault/random-identity";
+
+/**
+ * The server's ZIP rule, handed to the browser.
+ *
+ * DERIVED from POSTAL_CODE_RE rather than retyped, so the field a member types into and
+ * the check that refuses their save cannot drift apart. `pattern` is implicitly anchored,
+ * which is why the ^ and $ come off.
+ *
+ * No `inputMode="numeric"`: the numeric keypad on iOS has no hyphen, so it would make a
+ * ZIP+4 untypeable on a phone -- and ZIP+4 is valid.
+ */
+const ZIP_PATTERN = POSTAL_CODE_RE.source.replace(/^\^/, "").replace(/\$$/, "");
+const ZIP_TITLE = "Five digits, or ZIP+4 like 73069-1234.";
 
 /**
  * Add / edit form for one checkout profile.
@@ -81,6 +95,8 @@ function Field({
   type = "text",
   className = "",
   hint,
+  pattern,
+  patternTitle,
   randomize,
 }: {
   name: string;
@@ -89,11 +105,34 @@ function Field({
   value?: string;
   onChange?: (value: string) => void;
   placeholder?: string;
+  /**
+   * Draws the asterisk AND refuses a blank in the browser.
+   *
+   * It used to do only the first, so every "required" field on this form was a red star
+   * over an input that submitted happily empty and came back with a server error. Callers
+   * that mean "required only sometimes" already say so -- `required={!isEdit}` on the
+   * account password, `required={phoneRequired}` on the phone -- so passing this straight
+   * through is what those were always describing.
+   *
+   * NOT used where the rule is conditional on another field: the security code is required
+   * only when a new card number is entered, which no HTML attribute can express, so it
+   * stays unmarked here and `validateProfileForm` owns it.
+   */
   required?: boolean;
   maxLength?: number;
   type?: string;
   className?: string;
   hint?: string;
+  /**
+   * Native constraint validation, for fields with a shape a browser can check.
+   *
+   * `title` is what the browser puts in the bubble when the pattern fails, so it has to
+   * read as an instruction rather than a label. This is a CONVENIENCE, not the rule --
+   * `validateProfileForm` re-checks server-side, because a pattern attribute is one
+   * devtools edit away from gone.
+   */
+  pattern?: string;
+  patternTitle?: string;
   /** Tooltip text plus the handler. Renders a die inside the trailing edge of the input. */
   randomize?: { title: string; onClick: () => void };
 }) {
@@ -115,6 +154,9 @@ function Field({
             : { defaultValue: defaultValue ?? "" })}
           placeholder={placeholder}
           maxLength={maxLength}
+          required={required}
+          pattern={pattern}
+          title={patternTitle}
           // Browsers and password managers should not be storing these for us.
           autoComplete="off"
           className={field + (randomize ? " pr-11" : "")}
@@ -333,6 +375,8 @@ export function ProfileForm({
               label="ZIP"
               defaultValue={profile?.shipPostalCode}
               maxLength={10}
+              pattern={ZIP_PATTERN}
+              patternTitle={ZIP_TITLE}
               required
             />
           </div>
@@ -385,6 +429,8 @@ export function ProfileForm({
                 label="ZIP"
                 defaultValue={profile?.billPostalCode}
                 maxLength={10}
+                pattern={ZIP_PATTERN}
+                patternTitle={ZIP_TITLE}
                 required
               />
             </div>
@@ -416,6 +462,10 @@ export function ProfileForm({
               inputMode="numeric"
               autoComplete="off"
               placeholder={isEdit ? "•••• (unchanged)" : ""}
+              // Its own input rather than a Field, for the brand detection -- so it needs
+              // the rule spelled out here. Matches the asterisk above it and the server:
+              // required to create a profile, blank on edit means "keep the current card".
+              required={!isEdit}
               onChange={(e) => setCardBrand(detectBrand(e.target.value))}
               className={field}
             />

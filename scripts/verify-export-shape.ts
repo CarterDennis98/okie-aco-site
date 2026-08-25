@@ -26,13 +26,11 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { isValidPostalCode } from "../src/lib/vault/profile-input";
 
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL, options: "-c timezone=UTC" }),
 });
-
-/** What a US postal code may look like. Anything else is a typo, not a format. */
-const POSTCODE = /^\d{5}(-\d{4})?$/;
 
 async function main() {
   const rows = await prisma.vaultProfile.findMany({
@@ -69,7 +67,7 @@ async function main() {
     }
 
     for (const [which, code] of codes) {
-      if (code && !POSTCODE.test(code)) badPostcode.push(`${where} — ${which} "${code}"`);
+      if (code && !isValidPostalCode(code)) badPostcode.push(`${where} — ${which} "${code}"`);
     }
     for (const [which, state] of states) {
       if (state && !/^[A-Z]{2}$/.test(state)) badState.push(`${where} — ${which} "${state}"`);
