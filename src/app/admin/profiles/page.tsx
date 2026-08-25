@@ -194,6 +194,7 @@ export default async function AdminProfilesPage({
                 // Drops the member -- an id valid on one retailer need not hold profiles on
                 // the next, and the page 404s on a member with none. The search survives.
                 href={hrefFor({ site: s.siteKey, member: undefined })}
+                scroll={false}
                 className={
                   "rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors " +
                   (active
@@ -284,6 +285,7 @@ export default async function AdminProfilesPage({
           {filtering && (
             <Link
               href={hrefFor({ q: undefined, status: undefined })}
+              scroll={false}
               className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
             >
               Clear
@@ -314,7 +316,11 @@ export default async function AdminProfilesPage({
             selected={selected}
             exportBase={exportBase}
             filtering={filtering}
-            extraParams={carried}
+            // `changes` rides along HERE but not in `carried`, which the pending queue also
+            // receives: the queue builds its own bucket param, and an "All" tab that
+            // inherited the current one could never clear it. Opening a member must not
+            // reset the queue's filter, which is what dropping it did.
+            extraParams={changeFilter ? { ...carried, changes: changeFilter } : carried}
           />
 
           {/* --- member detail --- */}

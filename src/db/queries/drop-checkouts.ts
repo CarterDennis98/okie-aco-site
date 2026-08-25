@@ -213,9 +213,19 @@ export async function getMemberDropCheckouts(discordUserId: string): Promise<Mem
 
   const drops: DropGroup[] = [];
 
+  for (const run of runs) {
+    const list = byRun.get(run.id);
+    // Drops this person sat out are skipped rather than listed as empty: eight "0
+    // checkouts" rows push the drops that matter off the screen.
+    if (!list || list.length === 0) continue;
+    drops.push(summarize(run.id, run.dropLabel, run.windowStart, run.windowEnd, list));
+  }
+
   if (unassigned.length > 0) {
-    // Newest first, so this sits above the billed drops -- it is where a checkout from
-    // yesterday's restock lands, and that is the one people look for.
+    // LAST, below every billed drop, even though it holds the newest rows. It is not a
+    // drop -- it is the leftovers from between them -- and sitting at the top it pushed
+    // the actual drops down and read as the most recent one. The list is scanned for
+    // "what did I get on drop night", so the drops own the top of it.
     const dates = unassigned.map((row) => row.occurredAt.getTime());
     drops.push(
       summarize(
@@ -226,14 +236,6 @@ export async function getMemberDropCheckouts(discordUserId: string): Promise<Mem
         unassigned,
       ),
     );
-  }
-
-  for (const run of runs) {
-    const list = byRun.get(run.id);
-    // Drops this person sat out are skipped rather than listed as empty: eight "0
-    // checkouts" rows push the drops that matter off the screen.
-    if (!list || list.length === 0) continue;
-    drops.push(summarize(run.id, run.dropLabel, run.windowStart, run.windowEnd, list));
   }
 
   return {

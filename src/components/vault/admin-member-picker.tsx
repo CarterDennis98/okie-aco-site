@@ -189,6 +189,11 @@ export function AdminMemberPicker({
             </label>
             <Link
               href={hrefFor(m.discordUserId)}
+              // Stay where you are. The roster sits well down the page, so the default
+              // scroll-to-top threw you back to the header on every name you clicked --
+              // and the thing that changed, the profile table, is beside the row you just
+              // clicked rather than at the top.
+              scroll={false}
               className="min-w-0 flex-1 py-2.5 pr-4 transition-colors hover:bg-[var(--color-elevated)]/40"
             >
               <p className="truncate text-sm font-medium text-white">{m.username}</p>

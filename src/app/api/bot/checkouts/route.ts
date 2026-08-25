@@ -1,6 +1,7 @@
 import { prisma } from "@/db/client";
 import { authorizeBot } from "@/lib/bot-auth";
 import { sanitizeEmbed } from "@/lib/ingest/embed-allowlist";
+import { matchProfileOwner } from "@/lib/ingest/profile-owner";
 import { normalizeProduct, normalizeProfile, toAliasMap } from "@/lib/normalize";
 import { checkoutBatch } from "@/types/ingest";
 import type { Prisma } from "@/generated/prisma/client";
@@ -23,6 +24,60 @@ import type { Prisma } from "@/generated/prisma/client";
  * needing a fee and surface in admin; nothing here throws because a name was new.
  */
 export const dynamic = "force-dynamic";
+
+/**
+ * Attach unmapped profiles in this batch to the member whose name they obviously are.
+ *
+ * A checkout only reaches its member through `profiles.discord_user_id`, and before this
+ * nothing outside `prisma db seed` ever wrote that column -- so every profile that first
+ * appeared here stayed UNMAPPED, and its checkouts stayed invisible to the member, to
+ * their charge pages, and to the operator's per-charge breakdown. The bot bills off its
+ * own mapping file, so it went on charging people for orders the site could not show.
+ *
+ * EVERY unmapped key in the batch, not only the rows just created: a profile stranded by
+ * an earlier ingest is claimed the next time it checks out, which heals the backlog
+ * without a migration.
+ *
+ * Only ever CLAIMS. It never moves a profile that already has an owner, never touches an
+ * IGNORED one -- those are the operator's house profiles, deliberately attached to
+ * nobody -- and never sets `billable`, which is the operator's decision alone.
+ *
+ * NEVER FAILS THE INGEST, same rule as an unrecognised product. A checkout that made it
+ * into the database unattributed is recoverable; one that never landed is not.
+ */
+async function claimObviousProfiles(profileKeys: string[]): Promise<void> {
+  try {
+    const unmapped = await prisma.profile.findMany({
+      where: { profileKey: { in: profileKeys }, discordUserId: null, status: "UNMAPPED" },
+      select: { profileKey: true },
+    });
+    if (unmapped.length === 0) return;
+
+    const members = await prisma.discordMember.findMany({
+      select: { discordUserId: true, username: true, globalName: true },
+    });
+
+    for (const { profileKey } of unmapped) {
+      const discordUserId = matchProfileOwner(profileKey, members);
+      if (!discordUserId) continue;
+
+      // Conditional on still being unowned: a concurrent flush of the same drop could
+      // have claimed it between the read above and here.
+      await prisma.profile.updateMany({
+        where: { profileKey, discordUserId: null, status: "UNMAPPED" },
+        data: {
+          discordUserId,
+          status: "MAPPED",
+          mappedAt: new Date(),
+          // Named so an audit can tell these apart from what a human decided.
+          mappedBy: "ingest:name-match",
+        },
+      });
+    }
+  } catch (error) {
+    console.error("bot ingest: profile auto-mapping failed:", (error as Error).message);
+  }
+}
 
 export async function POST(request: Request) {
   // Before the body is read: an unauthenticated caller shouldn't get to make us parse
@@ -95,7 +150,8 @@ export async function POST(request: Request) {
 
   // --- profiles ------------------------------------------------------------
   // checkouts.profile_key is a foreign key, so an unseen profile needs its row before
-  // the insert. Unmapped is the correct initial state; the operator maps it later.
+  // the insert. Unmapped is the correct initial state; the step below claims the obvious
+  // ones and the operator maps the rest.
   const profileKeys = [
     ...new Set(rows.map((r) => r.profile?.profileKey).filter(Boolean)),
   ] as string[];
@@ -107,6 +163,7 @@ export async function POST(request: Request) {
       }),
       skipDuplicates: true,
     });
+    await claimObviousProfiles(profileKeys);
   }
 
   // --- items ---------------------------------------------------------------

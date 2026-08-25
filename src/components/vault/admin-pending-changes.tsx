@@ -57,6 +57,10 @@ function FilterTab({
     <Link
       href={href}
       aria-current={active ? "page" : undefined}
+      // Same rule as every other control on this page: filtering something must not move
+      // the page under you. The queue has its own scroll pane, so the row you were
+      // reading is where you left it.
+      scroll={false}
       className={
         "inline-flex min-h-11 items-center rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors sm:min-h-0 " +
         (active
