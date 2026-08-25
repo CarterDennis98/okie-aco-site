@@ -249,6 +249,8 @@ export type AdminMailboxRow = {
   email: string;
   verifiedAt: Date | null;
   lastError: string | null;
+  /** When a check last ran, pass or fail. Null means nobody has ever tested it. */
+  lastCheckedAt: Date | null;
   updatedAt: Date;
   /** Addresses that forward into this mailbox, so one password covers all of them. */
   aliases: string[];
@@ -288,6 +290,7 @@ export async function getMemberEmailsForAdmin(discordUserId: string): Promise<Ad
         email: true,
         verifiedAt: true,
         lastError: true,
+        lastCheckedAt: true,
         updatedAt: true,
         aliases: { select: { email: true }, orderBy: { email: "asc" } },
       },
@@ -340,6 +343,7 @@ export async function getMemberEmailsForAdmin(discordUserId: string): Promise<Ad
       email: credential.email,
       verifiedAt: credential.verifiedAt,
       lastError: credential.lastError,
+      lastCheckedAt: credential.lastCheckedAt,
       updatedAt: credential.updatedAt,
       aliases: credential.aliases.map((a) => a.email),
       covers: (coversByMailbox.get(credential.email.toLowerCase()) ?? []).sort((a, b) =>
@@ -367,6 +371,8 @@ export type AdminImapRow = {
   imapPort: number | null;
   verifiedAt: Date | null;
   lastError: string | null;
+  /** When a check last ran, pass or fail. Null means nobody has ever tested it. */
+  lastCheckedAt: Date | null;
   updatedAt: Date;
   /** When the oldest unconfirmed change to this mailbox was made. Null when nothing waits. */
   pendingSince: Date | null;
@@ -459,6 +465,7 @@ export async function getAllMailboxesForAdmin(options?: {
         imapPort: true,
         verifiedAt: true,
         lastError: true,
+        lastCheckedAt: true,
         updatedAt: true,
         aliases: { select: { email: true }, orderBy: { email: "asc" } },
       },
@@ -535,6 +542,7 @@ export async function getAllMailboxesForAdmin(options?: {
       imapPort: credential.imapPort,
       verifiedAt: credential.verifiedAt,
       lastError: credential.lastError,
+      lastCheckedAt: credential.lastCheckedAt,
       updatedAt: credential.updatedAt,
       pendingSince: pending.get(credential.id) ?? null,
       aliases: credential.aliases.map((a) => a.email),

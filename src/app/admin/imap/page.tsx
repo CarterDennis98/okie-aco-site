@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { AdminMemberEmailsPanel } from "@/components/vault/admin-member-emails";
 import { RevealAppPassword } from "@/components/vault/reveal-app-password";
+import { SweepMailboxes, TestButton } from "@/components/vault/imap-test-controls";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import {
   getAllMailboxesForAdmin,
@@ -13,7 +14,10 @@ import {
 import { requireAdmin } from "@/lib/auth/guard";
 import { count, plural, relativeTime } from "@/lib/format";
 import { siteStyle } from "@/lib/sites";
-import { revealAppPasswordForAdmin } from "@/lib/vault/admin-actions";
+import {
+  revealAppPasswordForAdmin,
+  testEmailCredentialForAdmin,
+} from "@/lib/vault/admin-actions";
 
 /**
  * IMAP mailboxes — every app password on file, and what each one covers.
@@ -186,6 +190,25 @@ export default async function AdminImapPage({
           </a>
         </div>
 
+        {/* --- the pre-drop sweep --- */}
+        {/* Above the list rather than buried in it: "whose codes are going to fail tonight"
+            is the question this page gets opened for on a drop evening, and the answer used
+            to require clicking every row. Scoped to the member when one is open, so it
+            doubles as "check this person" without sweeping everybody. */}
+        {view.total > 0 && (
+          <div className="mt-4 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-3">
+            <SweepMailboxes discordUserId={memberId} total={memberId ? view.shown : view.total} />
+            <p className="mt-1.5 text-[11px] text-[var(--color-muted)]">
+              Signs in to each mailbox and opens the inbox — the same login the bot makes on drop
+              night. Nothing is read, and no password leaves the server.
+              {/* The sweep takes the MEMBER filter but not the search box, and the button's
+                  count says so plainly rather than matching a list it won't match. Silently
+                  sweeping 41 mailboxes while one row is on screen is the confusing version. */}
+              {search && !memberId && " The search box doesn't narrow this — it checks every mailbox."}
+            </p>
+          </div>
+        )}
+
         {memberId && memberEmails && member ? (
           <>
             <p className="mt-6 rounded-xl border border-[var(--color-brand)]/40 bg-[var(--color-brand)]/5 px-4 py-2.5 text-sm text-[var(--color-fg)]">
@@ -237,14 +260,22 @@ export default async function AdminImapPage({
                           )}
                         </p>
                         <p className="mt-1 text-xs text-[var(--color-muted)]">
-                          {/* Nothing verifies an app password yet: `verified_at` and
-                              `last_error` are only ever written back to null. "Saved" is the
-                              honest state until an IMAP login actually runs. */}
-                          {row.lastError
-                            ? "Last check failed — needs re-entering"
-                            : row.verifiedAt
-                              ? "Working"
-                              : "Saved"}
+                          {/* The Test button on this row is what writes these. "Saved" now
+                              means nobody has checked it yet, not that a check is pending. */}
+                          <span
+                            // The provider's own refusal. Too long for the line, and the
+                            // exact wording is what says whether to regenerate the password
+                            // or go and turn IMAP back on.
+                            title={row.lastError ?? undefined}
+                            className={row.lastError ? "text-[var(--color-warn)]" : undefined}
+                          >
+                            {row.lastError
+                              ? "Last check failed — needs re-entering"
+                              : row.verifiedAt
+                                ? "Working"
+                                : "Saved"}
+                          </span>
+                          {row.lastCheckedAt && ` · checked ${relativeTime(row.lastCheckedAt)}`}
                           {row.provider ? ` · ${row.provider}` : " · unknown provider"}
                           {row.imapHost && ` · ${row.imapHost}:${row.imapPort ?? 993}`}
                           {row.aliases.length > 0 &&
@@ -256,11 +287,14 @@ export default async function AdminImapPage({
                         </p>
                       </div>
                       {/* This row IS the mailbox, so there is no forwarding hop to describe. */}
-                      <RevealAppPassword
-                        email={row.email}
-                        mailbox={row.email}
-                        action={revealAppPasswordForAdmin}
-                      />
+                      <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                        <TestButton email={row.email} action={testEmailCredentialForAdmin} />
+                        <RevealAppPassword
+                          email={row.email}
+                          mailbox={row.email}
+                          action={revealAppPasswordForAdmin}
+                        />
+                      </span>
                     </div>
 
                     {row.covers.length > 0 && (

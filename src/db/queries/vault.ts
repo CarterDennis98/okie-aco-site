@@ -92,6 +92,8 @@ export type EmailCredentialSummary = {
   email: string;
   verifiedAt: Date | null;
   lastError: string | null;
+  /** When a check last ran, pass or fail. Null means nobody has ever tested it. */
+  lastCheckedAt: Date | null;
   updatedAt: Date;
   /** Addresses that forward into this mailbox, so one password covers all of them. */
   aliases: { id: string; email: string }[];
@@ -361,6 +363,7 @@ export async function getMemberEmailCredentials(
         email: true,
         verifiedAt: true,
         lastError: true,
+        lastCheckedAt: true,
         updatedAt: true,
         aliases: { select: { id: true, email: true }, orderBy: { email: "asc" } },
       },

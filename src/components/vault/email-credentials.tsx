@@ -9,8 +9,10 @@ import {
   deleteEmailCredential,
   saveEmailAlias,
   saveEmailCredential,
+  testOwnEmailCredential,
   type ActionResult,
 } from "@/lib/vault/actions";
+import { TestButton } from "@/components/vault/imap-test-controls";
 
 /**
  * Email app passwords, for reading checkout verification codes over IMAP.
@@ -72,10 +74,16 @@ function AppPasswordGuide() {
           ))}
         </ul>
 
+        {/* This used to say a custom domain could not be used at all, which was wrong for
+            most of them: a work domain is nearly always Google Workspace or Microsoft 365,
+            and we now check who actually handles its mail rather than guessing from the
+            name. The forwarding route stays, for the ones that really aren't. */}
         <p className="text-xs">
-          Using a work address or your own domain? We can&rsquo;t read those directly. Set it to
-          forward into one of the inboxes above, add that inbox here, then point the address at it
-          with &ldquo;Forwards to&rdquo;.
+          Using a work address or your own domain? Add it here anyway. Most are hosted on one of
+          the providers above — we check who handles the domain&rsquo;s mail and use their app
+          password. If yours isn&rsquo;t one of them, we&rsquo;ll say so; set it to forward into
+          one of the inboxes above, add that inbox here, then point the address at it with
+          &ldquo;Forwards to&rdquo;.
         </p>
       </div>
     </details>
@@ -278,11 +286,9 @@ export function EmailCredentials({
             <li key={credential.id} className="flex items-start gap-4 px-4 py-3 sm:px-5">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-[var(--color-fg)]">{credential.email}</p>
-                {/* "Saved, not yet checked" was permanent, and read as a check that was
-                    coming. Nothing verifies an app password: `verified_at` and
-                    `last_error` are only ever written back to null, by saveEmailCredential.
-                    Until an IMAP login actually runs, the honest state is "saved" -- the
-                    other two branches stay so the verifier lights them up when it lands. */}
+                {/* Three states, and "Saved" now means "nobody has pressed Test", not "a
+                    check is coming" -- the Test button beside this line is the check, and
+                    it writes all three. See imap-check.ts. */}
                 <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-[var(--color-muted)]">
                   {/* Same rule as a profile row: pending beats the tick, and no pending
                       change means up to date rather than requiring a change record. */}
@@ -306,12 +312,22 @@ export function EmailCredentials({
                       ✓
                     </span>
                   )}
-                  <span>
+                  <span
+                    // The server's own refusal, on hover: "Invalid credentials" and
+                    // "Application-specific password required" are different fixes, and
+                    // the line is too narrow to carry either one inline.
+                    title={credential.lastError ?? undefined}
+                    className={credential.lastError ? "text-[var(--color-warn)]" : undefined}
+                  >
                     {credential.lastError
                       ? `Last check failed — re-enter the app password`
                       : credential.verifiedAt
                         ? "Working"
                         : "Saved"}
+                    {/* Undated, "Working" could be from March. What a member wants to know
+                        before a drop is whether it was true recently. */}
+                    {credential.lastCheckedAt &&
+                      ` · checked ${relativeTime(credential.lastCheckedAt)}`}
                     {credential.aliases.length > 0 &&
                       ` · covers ${credential.aliases.length} forwarded address${
                         credential.aliases.length === 1 ? "" : "es"
@@ -322,15 +338,23 @@ export function EmailCredentials({
               </div>
               {/* One row, fixed height, matching the email line above it -- so both
                   controls share a baseline no matter how many chips are below. */}
-              <span className="flex shrink-0 items-center gap-4 sm:h-5">
-                <button
-                  type="button"
-                  onClick={() => setAdding(credential.email)}
-                  className="inline-flex min-h-11 items-center text-sm font-medium text-[var(--color-fg)] transition-colors hover:text-white sm:min-h-0 sm:text-xs"
-                >
-                  Replace
-                </button>
-                <RemoveCredential id={credential.id} />
+              {/* Two lines, right-aligned: the text links that change the row on top, the
+                  button that goes and checks it underneath. Test earns its own line because
+                  it is the only one of the three with a RESULT, and sharing a line meant its
+                  answer had to squeeze in beside two controls it has nothing to do with. */}
+              <span className="flex shrink-0 flex-col items-end gap-2">
+                {/* Fixed height keeps Replace and Remove on one baseline, as before. */}
+                <span className="flex items-center gap-4 sm:h-5">
+                  <button
+                    type="button"
+                    onClick={() => setAdding(credential.email)}
+                    className="inline-flex min-h-11 items-center text-sm font-medium text-[var(--color-fg)] transition-colors hover:text-white sm:min-h-0 sm:text-xs"
+                  >
+                    Replace
+                  </button>
+                  <RemoveCredential id={credential.id} />
+                </span>
+                <TestButton email={credential.email} action={testOwnEmailCredential} />
               </span>
             </li>
           ))}

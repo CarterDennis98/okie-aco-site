@@ -591,8 +591,19 @@ model EmailCredential {
   imapHost String? @map("imap_host")
   imapPort Int?    @map("imap_port")
 
+  // Set by an IMAP login that actually succeeded; cleared whenever the password changes.
   verifiedAt DateTime? @map("verified_at") @db.Timestamptz(3)
+  // The server's own refusal text from the last failed check, capped and stripped. Null
+  // once a check passes, so the pair reads as one state rather than two flags.
   lastError  String?   @map("last_error")
+
+  // WHEN a check last RAN, pass or fail -- which neither column above can say.
+  //
+  // Two jobs. It is the cooldown: repeated failed IMAP logins are exactly what makes
+  // Google and Yahoo lock an account, so a member leaning on the Test button must not be
+  // able to lock themselves out of their own mailbox mid-drop. And it is what lets the UI
+  // say "checked 5 minutes ago" instead of an undated "Working" that might be from March.
+  lastCheckedAt DateTime? @map("last_checked_at") @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)

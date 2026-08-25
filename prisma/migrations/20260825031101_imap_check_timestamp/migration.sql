@@ -1,0 +1,13 @@
+-- When an app-password check last RAN, pass or fail.
+--
+-- `verified_at` says when one last SUCCEEDED and `last_error` says why one last failed, but
+-- neither can answer "when did we last try" -- and that is the question the cooldown needs.
+-- Repeated failed IMAP logins are what make Google and Yahoo temporarily lock an account, so
+-- without this a member holding down the Test button could lock themselves out of the very
+-- mailbox the bot reads their drop codes from.
+--
+-- Nullable with no backfill, deliberately. NULL means "never checked", which is exactly true
+-- of every row that exists today: nothing has ever verified an app password, and inventing a
+-- timestamp would claim a check that never happened. A NULL also means no cooldown applies,
+-- so every existing credential is testable the moment this ships.
+ALTER TABLE "email_credentials" ADD COLUMN     "last_checked_at" TIMESTAMPTZ(3);

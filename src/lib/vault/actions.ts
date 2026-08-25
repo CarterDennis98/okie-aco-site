@@ -9,12 +9,10 @@ import { siteUsesAccounts } from "@/lib/sites";
 import { changedFields, recordBulkChange, recordChange } from "@/lib/vault/audit";
 import { detectBrand, last4, normalizePan } from "@/lib/vault/card";
 import { encrypt } from "@/lib/vault/crypto";
-import {
-  isSupportedEmail,
-  providerForEmail,
-  unsupportedMessage,
-} from "@/lib/vault/email-providers";
+import { domainOf, unsupportedMessage } from "@/lib/vault/email-providers";
+import { resolveMailProvider } from "@/lib/vault/email-mx";
 import { revealCredential, type RevealResult } from "@/lib/vault/reveal";
+import { testCredential, type ImapTestOutcome } from "@/lib/vault/imap-test";
 import {
   bool,
   nextProfileName,
@@ -84,6 +82,39 @@ export async function revealOwnAppPassword(form: FormData): Promise<RevealResult
     select: { id: true, email: true, appPasswordEnc: true, discordUserId: true },
   });
   return revealCredential(credential, viewer.discordUserId);
+}
+
+/**
+ * Check one of your own app passwords against the mail server.
+ *
+ * Scoped by owner in the query, so an id belonging to somebody else reads as missing --
+ * same shape as the reveal above. The cooldown and the column writes live in imap-test.ts,
+ * because the operator's sweep must behave identically.
+ */
+export async function testOwnEmailCredential(form: FormData): Promise<ImapTestOutcome> {
+  const viewer = await requireMember();
+  const email = String(form.get("email") ?? "")
+    .trim()
+    .toLowerCase();
+  if (!email) return { ok: false, verdict: false, label: "Missing", message: "Missing address." };
+
+  const credential = await prisma.emailCredential.findFirst({
+    where: { discordUserId: viewer.discordUserId, email },
+    select: {
+      id: true,
+      email: true,
+      appPasswordEnc: true,
+      imapHost: true,
+      imapPort: true,
+      lastCheckedAt: true,
+    },
+  });
+
+  const outcome = await testCredential(credential);
+  // Only when something was actually recorded: a throttled press changed nothing, and
+  // re-rendering the page for it would make the button feel like it did something.
+  if (!outcome.throttled) revalidatePath("/dashboard/profiles");
+  return outcome;
 }
 
 const SITE_KEYS = new Set(["target", "walmart", "pokemon-center", "best-buy", "sams-club"]);
@@ -467,10 +498,22 @@ export async function saveEmailCredential(form: FormData): Promise<ActionResult>
   if (!EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid email address." };
   if (!appPassword) return { ok: false, error: "Enter the app password." };
 
-  // A closed provider list: an app password on an untested provider is a credential
-  // that silently never works, discovered mid-drop. See email-providers.ts.
-  if (!isSupportedEmail(email)) return { ok: false, error: unsupportedMessage(email) };
-  const imap = providerForEmail(email);
+  // WHO SERVES THE MAIL, not what the domain is called. A custom domain on Workspace or
+  // Microsoft 365 takes an app password from its provider and reads over that provider's
+  // IMAP host, so refusing it for not being @gmail.com turned away addresses that work
+  // perfectly. The provider list stays closed -- an app password on an untested host is a
+  // credential that silently never works, discovered mid-drop. See email-mx.ts.
+  const { provider: imap, mailHost, lookupFailed } = await resolveMailProvider(email);
+  if (lookupFailed) {
+    // Distinguished from a rejection on purpose: DNS being briefly unreachable is not a
+    // verdict about their address, and telling them it is sends them to change settings
+    // that were never wrong.
+    return {
+      ok: false,
+      error: `Couldn't check who handles mail for ${domainOf(email)} just now. Try again in a moment.`,
+    };
+  }
+  if (!imap) return { ok: false, error: unsupportedMessage(email, mailHost) };
 
   const existing = await prisma.emailCredential.findUnique({
     where: { email },
@@ -493,11 +536,25 @@ export async function saveEmailCredential(form: FormData): Promise<ActionResult>
       email,
       discordUserId: viewer.discordUserId,
       appPasswordEnc,
-      imapHost: imap?.imapHost ?? null,
-      imapPort: imap?.imapPort ?? null,
+      imapHost: imap.imapHost,
+      imapPort: imap.imapPort,
     },
-    // A new password invalidates whatever the last verification said.
-    update: { appPasswordEnc, verifiedAt: null, lastError: null },
+    // A new password invalidates whatever the last verification said. The host is
+    // re-derived too: it is a fact about who serves the domain today, and a domain that
+    // has moved from Workspace to Microsoft 365 would otherwise keep reading over the
+    // wrong IMAP host until somebody noticed by hand.
+    update: {
+      appPasswordEnc,
+      imapHost: imap.imapHost,
+      imapPort: imap.imapPort,
+      verifiedAt: null,
+      lastError: null,
+      // Cleared with the rest: the cooldown guards a mailbox against repeated failed
+      // logins, and a password that just changed is the one case where retrying
+      // immediately is the RIGHT thing. Someone who just fixed a typo should not be told
+      // to wait a minute before finding out whether it worked.
+      lastCheckedAt: null,
+    },
     select: { id: true },
   });
 

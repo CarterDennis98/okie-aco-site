@@ -4,6 +4,14 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
 import { requireAdmin } from "@/lib/auth/guard";
 import { revealCredential, type RevealResult } from "@/lib/vault/reveal";
+import { testCredential, type ImapTestOutcome } from "@/lib/vault/imap-test";
+
+/**
+ * Pause between mailboxes during a sweep. Sixty back-to-back IMAP logins from one address
+ * is the shape of traffic a provider throttles, and the providers it would annoy are the
+ * ones the bot needs an hour later.
+ */
+const SWEEP_GAP_MS = 400;
 
 /**
  * Admin-only vault actions.
@@ -155,4 +163,94 @@ export async function revealAllAppPasswordsForAdmin(form: FormData): Promise<Rev
   }
 
   return { ok: true, revealed, failed };
+}
+
+const CREDENTIAL_FOR_TEST = {
+  id: true,
+  email: true,
+  appPasswordEnc: true,
+  imapHost: true,
+  imapPort: true,
+  lastCheckedAt: true,
+} as const;
+
+/**
+ * Check one member's app password on their behalf.
+ *
+ * No owner predicate, which is the point of the admin view -- and unlike a reveal there is
+ * nothing to audit here, because nothing is decrypted into anybody's hands. The plaintext
+ * exists only inside the IMAP login and is never returned.
+ */
+export async function testEmailCredentialForAdmin(form: FormData): Promise<ImapTestOutcome> {
+  await requireAdmin();
+  const email = String(form.get("email") ?? "")
+    .trim()
+    .toLowerCase();
+  if (!email) return { ok: false, verdict: false, label: "Missing", message: "Missing address." };
+
+  const credential = await prisma.emailCredential.findFirst({
+    where: { email },
+    select: CREDENTIAL_FOR_TEST,
+  });
+
+  const outcome = await testCredential(credential);
+  if (!outcome.throttled) {
+    revalidatePath("/admin/imap");
+    revalidatePath("/admin/profiles");
+    revalidatePath("/dashboard/profiles");
+  }
+  return outcome;
+}
+
+export type SweepResult =
+  | { ok: true; passed: number; failed: string[]; skipped: number; unreachable: number }
+  | { ok: false; error: string };
+
+/**
+ * The pre-drop sweep: check every app password on file, or one member's.
+ *
+ * The question this answers is the one asked at 8pm on drop night -- "whose codes are going
+ * to fail tonight" -- and answering it by clicking sixty buttons is not answering it.
+ *
+ * SEQUENTIAL, and a pause between mailboxes. Sixty simultaneous IMAP logins from one Cloud
+ * Run address is indistinguishable from something worth rate-limiting, and the providers
+ * that would throttle us are the same ones the bot needs to read from an hour later. Slow is
+ * correct here.
+ *
+ * ALREADY-CHECKED CREDENTIALS ARE SKIPPED, not re-run: `testCredential` refuses inside its
+ * cooldown anyway, and counting those as failures would make a second sweep look like a
+ * catastrophe. A sweep is idempotent -- running it twice tells you the same thing.
+ */
+export async function sweepEmailCredentials(form: FormData): Promise<SweepResult> {
+  await requireAdmin();
+  const discordUserId = String(form.get("discordUserId") ?? "").trim();
+
+  const credentials = await prisma.emailCredential.findMany({
+    where: discordUserId ? { discordUserId } : {},
+    orderBy: { email: "asc" },
+    select: CREDENTIAL_FOR_TEST,
+  });
+  if (credentials.length === 0) return { ok: false, error: "No app passwords on file." };
+
+  let passed = 0;
+  let skipped = 0;
+  let unreachable = 0;
+  const failed: string[] = [];
+
+  for (const [index, credential] of credentials.entries()) {
+    if (index > 0) await new Promise((resolve) => setTimeout(resolve, SWEEP_GAP_MS));
+
+    const outcome = await testCredential(credential);
+    if (outcome.throttled) skipped++;
+    else if (outcome.ok) passed++;
+    // A mail server we couldn't reach is not a member with a bad password, and listing it
+    // as one would send somebody to regenerate a credential that was never wrong.
+    else if (outcome.message.startsWith("Couldn't reach")) unreachable++;
+    else failed.push(credential.email);
+  }
+
+  revalidatePath("/admin/imap");
+  revalidatePath("/admin/profiles");
+  revalidatePath("/dashboard/profiles");
+  return { ok: true, passed, failed, skipped, unreachable };
 }
