@@ -6,12 +6,13 @@ import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
   getEmailsNeedingAppPassword,
   getMemberEmailCredentials,
+  getMemberLogins,
   getMemberProfiles,
   getNextProfileName,
 } from "@/db/queries/vault";
 import { requireMember } from "@/lib/auth/guard";
 import { resolveSiteLogo } from "@/lib/site-logo";
-import { selfServeSiteKeys } from "@/lib/sites";
+import { selfServeSiteKeys, siteUsesProfiles } from "@/lib/sites";
 
 // One member's checkout credentials. Never cached, never a build artifact.
 export const dynamic = "force-dynamic";
@@ -26,22 +27,30 @@ const OPEN_SITES = selfServeSiteKeys();
 export default async function ProfilesPage() {
   const viewer = await requireMember();
 
-  const [grouped, credentials, needingPassword] = await Promise.all([
+  const [grouped, logins, credentials, needingPassword] = await Promise.all([
     getMemberProfiles(viewer.discordUserId),
+    getMemberLogins(viewer.discordUserId),
     getMemberEmailCredentials(viewer.discordUserId),
     getEmailsNeedingAppPassword(viewer.discordUserId),
   ]);
 
   // Show a section for every retailer they have profiles on, plus any open site they
   // don't yet -- otherwise a member with nothing has no way to add their first profile.
-  const siteKeys = [...new Set([...grouped.map((g) => g.siteKey), ...OPEN_SITES])].sort();
+  // A login-only retailer counts the same way: those rows are accounts rather than
+  // profiles, so they arrive from their own query and are grouped separately.
+  const siteKeys = [
+    ...new Set([...grouped.map((g) => g.siteKey), ...logins.map((g) => g.siteKey), ...OPEN_SITES]),
+  ].sort();
   const bySite = new Map(grouped.map((g) => [g.siteKey, g.profiles]));
+  const loginsBySite = new Map(logins.map((g) => [g.siteKey, g.logins]));
 
   // Preview only -- saveProfile recomputes the name at write time, so a stale preview
-  // can never become a wrong name.
+  // can never become a wrong name. Login-only retailers are skipped: their rows have no
+  // profile name, and computing one would scan every profile on a site that has none.
+  const profileSites = siteKeys.filter((key) => siteUsesProfiles(key));
   const nextNames = new Map(
     await Promise.all(
-      siteKeys.map(
+      profileSites.map(
         async (siteKey) =>
           [
             siteKey,
@@ -88,13 +97,17 @@ export default async function ProfilesPage() {
         <SiteSwitcher
           siteKeys={siteKeys}
           profilesBySite={Object.fromEntries(siteKeys.map((k) => [k, bySite.get(k) ?? []]))}
+          loginsBySite={Object.fromEntries(siteKeys.map((k) => [k, loginsBySite.get(k) ?? []]))}
           nextNames={Object.fromEntries(siteKeys.map((k) => [k, nextNames.get(k) ?? ""]))}
           logos={Object.fromEntries(siteKeys.map((k) => [k, resolveSiteLogo(k)]))}
         />
 
         <EmailCredentials credentials={credentials} needingPassword={needingPassword} />
 
-        <ImportProfiles siteKeys={siteKeys} />
+        {/* Profile sites only. An AYCD export is a file of cards and addresses, so a
+            login-only retailer has nothing to import from one -- and offering it in the
+            picker would take an upload and then reject it. */}
+        <ImportProfiles siteKeys={profileSites} />
       </main>
 
       <SiteFooter />

@@ -6,6 +6,9 @@
  *
  *   - Target #CC0000 sits ΔE 4.9 from Okie's own brand red #E30613 under normal
  *     vision — below the 15 floor, i.e. genuinely hard to tell apart.
+ *   - Costco #E31837 is a third red: ΔE2000 7.3 from #E30613 and 10.6 from Target's
+ *     #CC0000, measured on the raw tints. Below floor against both, so red now marks
+ *     the brand, one retailer we ship to, and another we only hold logins for.
  *   - Pokémon Center yellow and Best Buy yellow are ΔE 10.6 apart. Also below floor.
  *   - Walmart and Sam's Club are both corporate blue, and deliberately so.
  *   - Target red (2.34:1) and Walmart blue (2.79:1) don't even clear 3:1 as UI shapes
@@ -53,17 +56,42 @@ export type SiteStyle = {
   profileSoftCap?: number;
 
   /**
-   * Whether checking out here involves an emailed verification code.
+   * Whether WE need to read an emailed verification code here.
    *
-   * Pokémon Center checks out as a guest -- there is no login, so no code is ever sent
-   * and an app password would do nothing. Flagging those profiles as "missing" one told
-   * members to go and fix something that isn't broken.
+   * Two different reasons it can be false, and both end in the same place -- no app
+   * password is wanted, so nothing should nag a member for one:
    *
-   * Defaults to true: a new retailer almost certainly mails a code, and being nagged
-   * about a password you don't need is a smaller failure than silently not asking for
-   * one you do.
+   *   - Pokémon Center checks out as a guest. There is no login, so no code is ever sent
+   *     and an app password would do nothing.
+   *   - Costco is signed into BY HAND. If Costco asks for a code, the operator is sitting
+   *     at the login and can read it out of the member's inbox with them -- there is no
+   *     bot mid-drop that has to open the mailbox unattended, which is the only thing a
+   *     stored app password buys.
+   *
+   * Defaults to true: a new retailer almost certainly mails a code to something automated,
+   * and being nagged about a password you don't need is a smaller failure than silently
+   * not asking for one you do.
    */
   usesEmailCodes?: boolean;
+
+  /**
+   * Whether an edit here is live the moment it is saved.
+   *
+   * Everywhere else a change has to be exported and loaded onto a bot before it takes
+   * effect, which is what `VaultChange.appliedAt` records and what the member's "pending
+   * confirmation" chip is about. Costco has no such step: nothing loads these credentials
+   * anywhere, and the operator reads the login at order time, so an edit is in use as soon
+   * as it is written and there is nothing for anyone to confirm.
+   *
+   * Changes on such a retailer are stamped applied on arrival -- see recordChange. They
+   * still notify, because a new signup is worth knowing about; they just never sit in the
+   * operator's queue asking to be actioned.
+   *
+   * Defaults to false, which is the safe direction: a retailer wrongly marked this way
+   * would tell a member their new card was in use while it sat in a queue nobody was
+   * looking at any more.
+   */
+  changesApplyImmediately?: boolean;
 
   /**
    * Whether a member can add their FIRST profile here on their own.
@@ -95,6 +123,31 @@ export type SiteStyle = {
    * unable to save a profile because the form demands one you don't.
    */
   usesAccounts?: boolean;
+
+  /**
+   * Whether we hold a full checkout profile here, or only a login.
+   *
+   * Costco is the first retailer where the answer is no, and the reason is how its bot
+   * works: it takes spots in the queue without signing in, and once a queue pass lands the
+   * order is placed BY HAND from the member's own account. The card and the address come
+   * from what the member has saved at Costco, so this site never sees either -- there is
+   * nothing to encrypt, nothing to export as AYCD, and no address for a `vault_profile`
+   * row to carry.
+   *
+   * A login-only retailer stores exactly one row per member per login: a `vault_account`
+   * with no `vault_profile` behind it. That shape was already legal -- `VaultProfile` is
+   * optional on the account, and 11 accounts in the original import have no profile -- so
+   * nothing about the schema had to change to admit one.
+   *
+   * Defaults to true, and every other retailer relies on that: a new site that checks out
+   * for us needs the whole profile, and a retailer wrongly treated as login-only would
+   * quietly stop collecting the card its bot cannot run without.
+   *
+   * Implies `usesAccounts`: a site with no profile AND no login would store nothing at
+   * all. Pinned by a test rather than expressed in the type, because the two flags are
+   * independent facts that happen to constrain each other.
+   */
+  usesProfiles?: boolean;
 
   /**
    * Whether a profile here is unusable without a phone number.
@@ -157,6 +210,28 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     height: 2160,
     needsLightBacking: true,
   },
+  costco: {
+    label: "Costco",
+    tint: "#E31837",
+    logo: "/costco-logo.png",
+    width: 1571,
+    height: 1519,
+    // No tile: the mark measures 0.2% of pixels below 3:1 on the dark surface and 31.9%
+    // on white -- the counter of the C is opaque white, so a white plate is the one
+    // backing that would eat half of it.
+    //
+    // Login only. See usesProfiles: the order is placed by hand from the member's own
+    // Costco account, so we hold the credentials and nothing else.
+    usesProfiles: false,
+    // Nothing here reads a mailbox unattended -- the operator is at the login when a code
+    // is needed -- so an app password buys nothing and asking for one is a chore invented
+    // for a member. See usesEmailCodes.
+    usesEmailCodes: false,
+    // No bot loads these, so there is no gap between saving and being in use, and nothing
+    // for the operator to confirm. See changesApplyImmediately.
+    changesApplyImmediately: true,
+    selfServe: true,
+  },
 };
 
 /** Every retailer we can check out on, for the supported-sites section. */
@@ -165,13 +240,21 @@ export function supportedSites(): SiteStyle[] {
 }
 
 /**
- * Retailers to offer a member who has no profile there yet.
+ * Whether this is a retailer we know about at all.
  *
- * Read by the profiles page so the retailer picker is never limited to what a member
- * already owns. Declared on the retailer itself rather than listed in the page, so
- * bringing one online is a single edit next to its label instead of a second list
- * somewhere else that quietly falls out of step.
+ * THE ONE ALLOWLIST every write path checks. `saveProfile` and the AYCD import each kept
+ * their own hardcoded `Set` of five keys, which is the shape of duplication this file
+ * exists to avoid: adding Costco to the table would have left both of them rejecting it,
+ * and the failure is a member being told "Unknown retailer" about a chip the same code
+ * had just rendered for them.
+ *
+ * Deliberately NOT `siteStyle(site).logo !== ""` or any other property probe --
+ * `siteStyle` answers for every string on purpose, so a probe would accept anything.
  */
+export function isKnownSite(site: string | null | undefined): boolean {
+  return Object.hasOwn(SITES, siteKey(site));
+}
+
 /**
  * Whether this retailer has logins, and therefore passwords.
  *
@@ -180,6 +263,32 @@ export function supportedSites(): SiteStyle[] {
  */
 export function siteUsesAccounts(site: string | null | undefined): boolean {
   return siteStyle(site).usesAccounts !== false;
+}
+
+/**
+ * Whether this retailer stores a full checkout profile, or only a login.
+ *
+ * Read by every surface that assumes a card and an address exist: the member's profile
+ * form and save action, the AYCD export and import, and the admin table. See
+ * `usesProfiles` for what a login-only retailer stores instead.
+ */
+export function siteUsesProfiles(site: string | null | undefined): boolean {
+  return siteStyle(site).usesProfiles !== false;
+}
+
+/**
+ * Whether a change on this retailer is in use the moment it is saved.
+ *
+ * Read by `recordChange`, which stamps such a change applied on arrival rather than
+ * leaving it in the operator's queue. Declared on the retailer rather than passed in by
+ * each caller so a new write path cannot forget it -- see `changesApplyImmediately`.
+ *
+ * A null site (an app password, a forwarding rule) is NOT immediate: those do reach the
+ * bot, and they are the changes members most need to see confirmed.
+ */
+export function siteChangesApplyImmediately(site: string | null | undefined): boolean {
+  if (!site) return false;
+  return siteStyle(site).changesApplyImmediately === true;
 }
 
 /**
@@ -192,9 +301,30 @@ export function siteRequiresPhone(site: string | null | undefined): boolean {
   return siteStyle(site).requiresPhone === true;
 }
 
+/**
+ * Retailers to offer a member who has no profile there yet.
+ *
+ * Read by the profiles page so the retailer picker is never limited to what a member
+ * already owns. Declared on the retailer itself rather than listed in the page, so
+ * bringing one online is a single edit next to its label instead of a second list
+ * somewhere else that quietly falls out of step.
+ */
 export function selfServeSiteKeys(): string[] {
   return Object.entries(SITES)
     .filter(([, value]) => value.selfServe)
+    .map(([key]) => key);
+}
+
+/**
+ * Retailers where we hold a login and nothing else.
+ *
+ * The complement of "has profiles", derived from the same flag rather than listed
+ * separately, so a retailer cannot end up in one list and not the other. Read by the
+ * queries that go looking for accounts with no profile behind them.
+ */
+export function loginOnlySiteKeys(): string[] {
+  return Object.entries(SITES)
+    .filter(([, value]) => value.usesProfiles === false)
     .map(([key]) => key);
 }
 

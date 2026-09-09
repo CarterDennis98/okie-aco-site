@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
+import { isKnownSite, siteStyle, siteUsesProfiles } from "@/lib/sites";
 import { recordBulkChange, type ChangeRecord } from "@/lib/vault/audit";
 import {
   parseAccountList,
@@ -32,8 +33,6 @@ import { profileIdentity } from "@/lib/vault/profile-input";
  *   - Log or echo anything it decrypted or was handed. Failures name a profile, never a
  *     value.
  */
-
-const SITE_KEYS = new Set(["target", "walmart", "pokemon-center", "best-buy", "sams-club"]);
 
 /** A JSON profile export is a few KB per profile; this is far past 250 of them. */
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -93,7 +92,13 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
   const viewer = await requireMember();
 
   const siteKey = String(form.get("siteKey") ?? "");
-  if (!SITE_KEYS.has(siteKey)) return { ok: false, error: "Pick a retailer." };
+  if (!isKnownSite(siteKey)) return { ok: false, error: "Pick a retailer." };
+  // An AYCD export is a file of cards and addresses, and a login-only retailer stores
+  // neither -- so there is nothing here to import into. The picker already leaves those
+  // out; this is the half that holds for a crafted POST. See usesProfiles in sites.ts.
+  if (!siteUsesProfiles(siteKey)) {
+    return { ok: false, error: `${siteStyle(siteKey).label} stores a login only.` };
+  }
 
   let profilesText: string | null;
   let accountsText: string | null;

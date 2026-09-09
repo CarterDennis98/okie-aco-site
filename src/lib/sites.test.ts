@@ -10,6 +10,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  isKnownSite,
+  loginOnlySiteKeys,
+  siteChangesApplyImmediately,
   siteKey,
   siteMonogram,
   siteStyle,
@@ -18,6 +21,7 @@ import {
   supportedSites,
   siteRequiresPhone,
   siteUsesAccounts,
+  siteUsesProfiles,
 } from "@/lib/sites";
 
 describe("siteKey", () => {
@@ -53,7 +57,14 @@ describe("siteKey", () => {
 
 describe("siteStyle", () => {
   it("resolves every configured retailer to its logo", () => {
-    for (const name of ["Target", "Walmart", "Pokemon Center US", "Best Buy US", "Sam's Club"]) {
+    for (const name of [
+      "Target",
+      "Walmart",
+      "Pokemon Center US",
+      "Best Buy US",
+      "Sam's Club",
+      "Costco",
+    ]) {
       expect(siteStyle(name).logo, `${name} should have a logo`).not.toBe("");
     }
   });
@@ -83,8 +94,8 @@ describe("selfServeSiteKeys", () => {
    * live and that list was never updated, so a member with no Walmart profile saw no
    * Walmart chip -- and the chip is the only way to add one.
    */
-  it("offers the retailers whose bots read stored profiles", () => {
-    expect(selfServeSiteKeys().sort()).toEqual(["pokemon-center", "target", "walmart"]);
+  it("offers the retailers whose bots read stored credentials", () => {
+    expect(selfServeSiteKeys().sort()).toEqual(["costco", "pokemon-center", "target", "walmart"]);
   });
 
   it("never goes empty, which would strand every member with no profiles", () => {
@@ -119,6 +130,131 @@ describe("siteUsesAccounts", () => {
 
   it("accepts the raw vendor spelling, not just the key", () => {
     expect(siteUsesAccounts("Pokemon Center US")).toBe(false);
+  });
+});
+
+describe("siteUsesProfiles", () => {
+  /**
+   * Costco is login-only: the bot takes queue spots without signing in and the order is
+   * placed by hand from the member's own account, so the card and the address live at
+   * Costco rather than here. A `vault_profile` row for one would be invented placeholders,
+   * and the AYCD export of it would be a file of them.
+   */
+  it("is false for a login-only retailer", () => {
+    expect(siteUsesProfiles("costco")).toBe(false);
+  });
+
+  it("is true for retailers we check out on ourselves", () => {
+    expect(siteUsesProfiles("target")).toBe(true);
+    expect(siteUsesProfiles("walmart")).toBe(true);
+    // Guest checkout still needs the whole profile -- no login, but a card and an address.
+    expect(siteUsesProfiles("pokemon-center")).toBe(true);
+  });
+
+  it("defaults to true for an unknown retailer", () => {
+    // The safe direction: a new site treated as login-only would quietly stop collecting
+    // the card its bot cannot run without.
+    expect(siteUsesProfiles("some-new-store")).toBe(true);
+  });
+
+  it("accepts the raw vendor spelling", () => {
+    expect(siteUsesProfiles("https://www.costco.com")).toBe(false);
+  });
+});
+
+describe("usesEmailCodes", () => {
+  /**
+   * Two different reasons to be false, and the flag has to serve both: Pokemon Center
+   * sends no code at all, and Costco is signed into by hand -- the operator can read a
+   * code with the member, so a stored app password buys nothing and asking for one is a
+   * chore invented for them.
+   */
+  it("is false where nothing of ours reads the mailbox", () => {
+    expect(siteStyle("pokemon-center").usesEmailCodes).toBe(false);
+    expect(siteStyle("costco").usesEmailCodes).toBe(false);
+  });
+
+  it("is unset -- and therefore true -- where a bot reads the code", () => {
+    for (const key of ["target", "walmart", "best-buy", "sams-club"]) {
+      expect(siteStyle(key).usesEmailCodes, `${key} should read codes`).not.toBe(false);
+    }
+  });
+});
+
+describe("siteChangesApplyImmediately", () => {
+  /**
+   * Costco is loaded onto nothing: the operator reads the login at order time, so a saved
+   * edit is in use at once and there is nothing for anyone to confirm. Everywhere else a
+   * change waits for an export, which is what the member's "pending confirmation" chip and
+   * the operator's queue are both about.
+   */
+  it("is true only where no bot has to be loaded", () => {
+    expect(siteChangesApplyImmediately("costco")).toBe(true);
+    for (const key of ["target", "walmart", "pokemon-center", "best-buy", "sams-club"]) {
+      expect(siteChangesApplyImmediately(key), `${key} must wait`).toBe(false);
+    }
+  });
+
+  it("is false with no retailer, which is how app-password changes arrive", () => {
+    // Those do reach the bot, and they are the ones members most need confirmed.
+    expect(siteChangesApplyImmediately(null)).toBe(false);
+    expect(siteChangesApplyImmediately(undefined)).toBe(false);
+    expect(siteChangesApplyImmediately("")).toBe(false);
+  });
+
+  it("defaults to false for an unknown retailer", () => {
+    // The safe direction: claiming a change is live when it is sitting in a queue tells a
+    // member their new card is in use when it is not.
+    expect(siteChangesApplyImmediately("some-new-store")).toBe(false);
+  });
+
+  it("accepts the raw vendor spelling", () => {
+    expect(siteChangesApplyImmediately("Costco")).toBe(true);
+  });
+});
+
+describe("loginOnlySiteKeys", () => {
+  it("is the complement of siteUsesProfiles, not a second list", () => {
+    for (const key of supportedSites().map((s) => s.key)) {
+      expect(loginOnlySiteKeys().includes(key)).toBe(!siteUsesProfiles(key));
+    }
+  });
+
+  /**
+   * A site with no profile AND no login would store nothing at all -- the login-only form
+   * collects exactly an email and a password, so a retailer flagged both ways would render
+   * a form with one field and save a row with no credential in it.
+   */
+  it("only names retailers that have logins", () => {
+    for (const key of loginOnlySiteKeys()) expect(siteUsesAccounts(key)).toBe(true);
+  });
+});
+
+describe("isKnownSite", () => {
+  /**
+   * The bug this pins: `saveProfile` and the AYCD import each kept their own hardcoded set
+   * of five keys. A retailer added to the table but not to both of them renders a chip the
+   * member can fill in and then refuses the save as an "Unknown retailer".
+   */
+  it("accepts every retailer the picker can offer", () => {
+    for (const key of [...selfServeSiteKeys(), ...supportedSites().map((s) => s.key)]) {
+      expect(isKnownSite(key), `${key} should be writable`).toBe(true);
+    }
+  });
+
+  it("normalizes before matching, like every other lookup here", () => {
+    expect(isKnownSite("Sam's Club")).toBe(true);
+    expect(isKnownSite("Pokemon Center US")).toBe(true);
+    expect(isKnownSite("https://www.costco.com")).toBe(true);
+  });
+
+  it("rejects anything not in the table", () => {
+    // siteStyle answers for every string on purpose, so this cannot be a property probe.
+    expect(isKnownSite("some-new-store")).toBe(false);
+    expect(isKnownSite("")).toBe(false);
+    expect(isKnownSite(null)).toBe(false);
+    // Not a key, and not reachable through Object.hasOwn on a plain object literal.
+    expect(isKnownSite("toString")).toBe(false);
   });
 });
 

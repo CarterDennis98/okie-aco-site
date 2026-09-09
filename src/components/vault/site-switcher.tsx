@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import type { VaultProfileSummary } from "@/db/queries/vault";
-import { siteStyle } from "@/lib/sites";
+import type { VaultLoginSummary, VaultProfileSummary } from "@/db/queries/vault";
+import { siteStyle, siteUsesProfiles } from "@/lib/sites";
+import { LoginManager } from "@/components/vault/login-manager";
 import { ProfileManager } from "@/components/vault/profile-manager";
 
 /**
@@ -17,18 +18,29 @@ import { ProfileManager } from "@/components/vault/profile-manager";
  * place, and a round trip to re-render a list the browser already has would be slower
  * for no benefit. The selection resets on reload, which is fine -- there is no wrong
  * retailer to land on.
+ *
+ * A LOGIN-ONLY retailer gets LoginManager instead of ProfileManager -- Costco holds an
+ * email and a password and no card or address at all, so the profile list would be five
+ * empty columns. The chips are the same either way, and their count is whichever kind of
+ * row that retailer has; see `usesProfiles` in sites.ts.
  */
 export function SiteSwitcher({
   siteKeys,
   profilesBySite,
+  loginsBySite,
   nextNames,
   logos,
 }: {
   siteKeys: string[];
   profilesBySite: Record<string, VaultProfileSummary[]>;
+  loginsBySite: Record<string, VaultLoginSummary[]>;
   nextNames: Record<string, string>;
   logos: Record<string, string | null>;
 }) {
+  // What a chip counts, and what "most" means when picking which one opens.
+  const countFor = (key: string) =>
+    (siteUsesProfiles(key) ? profilesBySite[key]?.length : loginsBySite[key]?.length) ?? 0;
+
   // Open the retailer they actually use, not whichever sorts first. Every self-serve
   // retailer is listed now, including ones they have nothing on, so keying off position
   // would greet a Target-only member with an empty Pokémon Center tab. Ties break on the
@@ -37,7 +49,7 @@ export function SiteSwitcher({
     let best = siteKeys[0] ?? "";
     let most = -1;
     for (const key of siteKeys) {
-      const count = profilesBySite[key]?.length ?? 0;
+      const count = countFor(key);
       if (count > most) {
         most = count;
         best = key;
@@ -53,7 +65,7 @@ export function SiteSwitcher({
       <div className="flex flex-wrap items-center gap-2">
         {siteKeys.map((key) => {
           const style = siteStyle(key);
-          const count = profilesBySite[key]?.length ?? 0;
+          const count = countFor(key);
           const isActive = key === active;
           const logo = logos[key];
 
@@ -103,13 +115,22 @@ export function SiteSwitcher({
         })}
       </div>
 
-      <ProfileManager
-        key={active}
-        siteKey={active}
-        siteLogo={logos[active] ?? null}
-        profiles={profilesBySite[active] ?? []}
-        nextName={nextNames[active] ?? ""}
-      />
+      {siteUsesProfiles(active) ? (
+        <ProfileManager
+          key={active}
+          siteKey={active}
+          siteLogo={logos[active] ?? null}
+          profiles={profilesBySite[active] ?? []}
+          nextName={nextNames[active] ?? ""}
+        />
+      ) : (
+        <LoginManager
+          key={active}
+          siteKey={active}
+          siteLogo={logos[active] ?? null}
+          logins={loginsBySite[active] ?? []}
+        />
+      )}
     </section>
   );
 }

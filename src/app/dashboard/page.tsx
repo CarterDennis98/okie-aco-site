@@ -196,9 +196,19 @@ export default async function DashboardPage() {
               PAYMENT_URL && (
                 <a
                   href={PAYMENT_URL}
+                  // A NEW TAB, at a member's request: this points into Discord, so the old
+                  // behaviour replaced the dashboard with a channel and left them to find
+                  // their way back to the balance they were about to pay. `rel` is not
+                  // optional with `target="_blank"` -- without it the opened page gets a
+                  // `window.opener` handle back to this one.
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="rounded-lg bg-[var(--color-brand)] px-6 py-3 font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
                 >
                   Payment methods
+                  {/* Marks it as leaving the site, the same way the app-password links do.
+                      Hidden from assistive tech, which announces the new tab itself. */}
+                  <span aria-hidden> ↗</span>
                 </a>
               )
             ) : (

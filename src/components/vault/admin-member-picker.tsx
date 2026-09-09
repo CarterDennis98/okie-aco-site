@@ -121,18 +121,21 @@ export function AdminMemberPicker({
           ) : (
             <div className="flex flex-wrap gap-2">
               {/* The bot split is offered only where the retailer has a cap, matching the
-                  site-wide row above. Without one, "main" and "all" are the same file. */}
-              {style.profileSoftCap !== undefined ? (
-                <>
-                  <BulkLink
-                    href={bulkHref(`bot=main`)}
-                    label={`Profiles · main (${style.profileSoftCap})`}
-                  />
-                  <BulkLink href={bulkHref(`bot=backup`)} label="Profiles · backup" />
-                </>
-              ) : (
-                <BulkLink href={bulkHref(`bot=all`)} label="Profiles (AYCD)" />
-              )}
+                  site-wide row above. Without one, "main" and "all" are the same file.
+                  A login-only retailer has no profiles at all, so it gets neither -- see
+                  usesProfiles in sites.ts. */}
+              {style.usesProfiles !== false &&
+                (style.profileSoftCap !== undefined ? (
+                  <>
+                    <BulkLink
+                      href={bulkHref(`bot=main`)}
+                      label={`Profiles · main (${style.profileSoftCap})`}
+                    />
+                    <BulkLink href={bulkHref(`bot=backup`)} label="Profiles · backup" />
+                  </>
+                ) : (
+                  <BulkLink href={bulkHref(`bot=all`)} label="Profiles (AYCD)" />
+                ))}
               {/* No logins on a guest-checkout retailer, so no file. Same gating as the
                   site-wide row on the page.
 
@@ -150,7 +153,7 @@ export function AdminMemberPicker({
 
       {shown.length === 0 && (
         <p className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-8 text-center text-xs text-[var(--color-muted)]">
-          No {style.label} profiles match.
+          No {style.label} {style.usesProfiles === false ? "logins" : "profiles"} match.
         </p>
       )}
 

@@ -8,7 +8,7 @@ import { VaultEntity, type VaultAction } from "@/generated/prisma/enums";
 import { isExpired, maskedLabel } from "@/lib/vault/card";
 import { providerForEmail } from "@/lib/vault/email-providers";
 import { normalizePhone } from "@/lib/vault/profile-input";
-import { siteRequiresPhone, siteStyle } from "@/lib/sites";
+import { loginOnlySiteKeys, siteRequiresPhone, siteStyle, siteUsesProfiles } from "@/lib/sites";
 import { EMAIL_BUCKET } from "@/lib/vault/pending-filter";
 import {
   isProfileFilterActive,
@@ -69,6 +69,10 @@ export async function getMembersForSite(
   siteKey: string,
   filter?: ProfileFilter,
 ): Promise<AdminMemberRow[]> {
+  // A login-only retailer has no profiles to count, so the roster is built from its
+  // accounts instead. Same row shape either way -- see membersWithLogins.
+  if (!siteUsesProfiles(siteKey)) return membersWithLogins(siteKey, filter);
+
   const [profiles, members, coverage] = await Promise.all([
     prisma.vaultProfile.findMany({
       where: { siteKey },
@@ -143,6 +147,73 @@ export async function getMembersForSite(
                 .map((p) => p.account.email.toLowerCase())
                 .filter((e) => mailboxFor(coverage, e) === null),
             ).size,
+    });
+  }
+
+  return rows.sort((a, b) => collator.compare(a.username, b.username));
+}
+
+/**
+ * The roster on a login-only retailer, in the AdminMemberRow shape.
+ *
+ * `profileCount` and `activeCount` count LOGINS. The picker's line reads "2/3 active"
+ * either way, so a parallel type carrying the same two numbers under different names
+ * would only fork the component that renders them.
+ *
+ * The profile-shaped counts are zero because they cannot apply, not because they are
+ * unknown: a login has no card to expire, no phone to be missing, and no soft cap to run
+ * past -- nothing about a login belongs to one bot instance. `missingAppPasswords` is the
+ * one that still means something, and it means MORE here than elsewhere: the operator
+ * signs in to Costco by hand, so an address with nowhere to read a code from is a login
+ * somebody has to chase mid-drop.
+ */
+async function membersWithLogins(
+  siteKey: string,
+  filter?: ProfileFilter,
+): Promise<AdminMemberRow[]> {
+  const [accounts, members, coverage] = await Promise.all([
+    prisma.vaultAccount.findMany({
+      where: { siteKey },
+      select: { discordUserId: true, email: true, active: true },
+    }),
+    prisma.discordMember.findMany({
+      select: { discordUserId: true, username: true, globalName: true },
+    }),
+    loadMailboxCoverage(),
+  ]);
+
+  const nameById = new Map(members.map((m) => [m.discordUserId, m]));
+  const byMember = new Map<string, typeof accounts>();
+  for (const account of accounts) {
+    byMember.set(account.discordUserId, [...(byMember.get(account.discordUserId) ?? []), account]);
+  }
+
+  const usesEmailCodes = siteStyle(siteKey).usesEmailCodes !== false;
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+  const rows: AdminMemberRow[] = [];
+  for (const [discordUserId, list] of byMember) {
+    const member = nameById.get(discordUserId);
+    rows.push({
+      // The email stands in for the name: it is the only text a login has, and the same
+      // matcher then searches both surfaces identically -- see getMemberLoginsForAdmin.
+      matchCount:
+        filter && isProfileFilterActive(filter)
+          ? list.filter((a) => matchesProfileFilter({ name: a.email, ...a }, filter)).length
+          : list.length,
+      discordUserId,
+      username: member?.username ?? discordUserId,
+      displayName: member?.globalName ?? member?.username ?? discordUserId,
+      profileCount: list.length,
+      activeCount: list.filter((a) => a.active).length,
+      onBackup: 0,
+      expiredCards: 0,
+      missingPhone: 0,
+      missingAppPasswords: usesEmailCodes
+        ? new Set(
+            list.map((a) => a.email.toLowerCase()).filter((e) => mailboxFor(coverage, e) === null),
+          ).size
+        : 0,
     });
   }
 
@@ -235,6 +306,71 @@ export async function getMemberVaultForAdmin(
     ? rows.filter((_, i) =>
         matchesProfileFilter({ ...profiles[i], email: profiles[i].account.email }, filter),
       )
+    : rows;
+
+  return { rows: shown, total: rows.length };
+}
+
+export type AdminLoginRow = {
+  id: string;
+  email: string;
+  active: boolean;
+  /** Where this login's codes land: itself, another inbox, or nowhere. */
+  mailbox: string | null;
+  /**
+   * False when the row carries no password at all.
+   *
+   * Derived from `password_enc IS NULL` in the database -- the ciphertext is never
+   * selected, matching the rule at the top of this file. Worth surfacing because the
+   * export SKIPS a passwordless account rather than writing `email:` with nothing after
+   * it, so without this the row would simply be missing from the file with no explanation.
+   */
+  hasPassword: boolean;
+  updatedAt: Date;
+};
+
+/**
+ * One member's logins on a login-only retailer.
+ *
+ * The counterpart to `getMemberVaultForAdmin`, and deliberately a separate function
+ * rather than a mode of it: there is no card, no address, no name and no bot split here,
+ * so every column that one computes would be a null this one has to explain.
+ *
+ * `total` is the unfiltered count, so the table can say "showing 2 of 7" rather than
+ * presenting a search result as everything the member holds.
+ */
+export async function getMemberLoginsForAdmin(
+  siteKey: string,
+  discordUserId: string,
+  filter?: ProfileFilter,
+): Promise<{ rows: AdminLoginRow[]; total: number }> {
+  const [accounts, passwordless, coverage] = await Promise.all([
+    prisma.vaultAccount.findMany({
+      where: { siteKey, discordUserId },
+      orderBy: { email: "asc" },
+      select: { id: true, email: true, active: true, updatedAt: true },
+    }),
+    prisma.vaultAccount.findMany({
+      where: { siteKey, discordUserId, passwordEnc: null },
+      select: { id: true },
+    }),
+    loadMailboxCoverage(discordUserId),
+  ]);
+
+  const missing = new Set(passwordless.map((a) => a.id));
+  const rows = accounts.map((account) => ({
+    id: account.id,
+    email: account.email,
+    active: account.active,
+    mailbox: mailboxFor(coverage, account.email),
+    hasPassword: !missing.has(account.id),
+    updatedAt: account.updatedAt,
+  }));
+
+  // The same matcher the roster's counts come from, with the email standing in for the
+  // name. A row counted as matching there has to be a row that shows up here.
+  const shown = filter
+    ? rows.filter((row) => matchesProfileFilter({ name: row.email, ...row }, filter))
     : rows;
 
   return { rows: shown, total: rows.length };
@@ -708,13 +844,37 @@ export async function getPendingChanges(filter?: string): Promise<{
   };
 }
 
-/** Sites that actually have profiles, so the picker only offers real choices. */
-export async function getSitesWithProfiles(): Promise<{ siteKey: string; count: number }[]> {
-  const grouped = await prisma.vaultProfile.groupBy({
-    by: ["siteKey"],
-    _count: { _all: true },
-  });
-  return grouped
-    .map((g) => ({ siteKey: g.siteKey, count: g._count._all }))
+/**
+ * Sites that actually hold something, so the picker only offers real choices.
+ *
+ * Counts PROFILES on a normal retailer and LOGINS on a login-only one. Reading profiles
+ * alone would leave Costco out of the picker entirely -- it has accounts and no profiles
+ * by design -- and a retailer with no picker entry has no export button either, which is
+ * the operator's only way to get the credentials onto the bot.
+ */
+export async function getVaultSites(): Promise<{ siteKey: string; count: number }[]> {
+  const loginOnly = loginOnlySiteKeys();
+  const [profiles, logins] = await Promise.all([
+    prisma.vaultProfile.groupBy({ by: ["siteKey"], _count: { _all: true } }),
+    loginOnly.length > 0
+      ? prisma.vaultAccount.groupBy({
+          by: ["siteKey"],
+          where: { siteKey: { in: loginOnly } },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  // Summed per retailer rather than concatenated. The two queries cannot both return a
+  // row for the same site today -- a login-only retailer has no profiles -- but a site
+  // flipped to login-only AFTER it had them would, and two entries with one siteKey means
+  // two identical tabs in the picker and a duplicate React key behind them.
+  const total = new Map<string, number>();
+  for (const group of [...profiles, ...logins]) {
+    total.set(group.siteKey, (total.get(group.siteKey) ?? 0) + group._count._all);
+  }
+
+  return [...total.entries()]
+    .map(([siteKey, count]) => ({ siteKey, count }))
     .sort((a, b) => b.count - a.count);
 }

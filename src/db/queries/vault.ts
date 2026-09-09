@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { VaultEntity } from "@/generated/prisma/enums";
-import { siteStyle } from "@/lib/sites";
+import { loginOnlySiteKeys, siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
 import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
 import { nextProfileName, profileBaseFor } from "@/lib/vault/profile-input";
@@ -85,6 +85,30 @@ export type VaultProfileDetail = VaultProfileSummary & {
   billCountry: string | null;
   matchNameOnCardAndAddress: boolean;
   onlyCheckoutOnce: boolean;
+};
+
+/**
+ * One retailer login, on a site where that is all we hold.
+ *
+ * A `vault_account` with no `vault_profile` behind it -- see `usesProfiles` in sites.ts.
+ * There is no name, no card and no address here because none of those exist for Costco:
+ * the order is placed by hand from the member's own account, so the credentials are the
+ * whole record.
+ *
+ * Carries the same `mailbox` / `pendingSince` / `confirmedAt` trio a profile does, and for
+ * the same reasons -- a member needs to know where a verification code lands and whether
+ * the login they just changed has reached us yet.
+ */
+export type VaultLoginSummary = {
+  id: string;
+  siteKey: string;
+  email: string;
+  active: boolean;
+  /** The mailbox this login's verification codes land in, or null when nothing covers it. */
+  mailbox: string | null;
+  pendingSince: Date | null;
+  confirmedAt: Date | null;
+  updatedAt: Date;
 };
 
 export type EmailCredentialSummary = {
@@ -191,7 +215,7 @@ export async function getMemberProfiles(
   const [rows, coverage, changes] = await Promise.all([
     prisma.vaultProfile.findMany({ where: { discordUserId }, select: SUMMARY_SELECT }),
     loadMailboxCoverage(discordUserId),
-    loadProfileChangeState(discordUserId),
+    loadChangeState(discordUserId),
   ]);
 
   const bySite = new Map<string, VaultProfileSummary[]>();
@@ -213,18 +237,19 @@ export async function getMemberProfiles(
 }
 
 type ChangeState = {
-  /** Profile id -> when its OLDEST unconfirmed edit was made. */
+  /** Row id -> when its OLDEST unconfirmed edit was made. */
   pending: Map<string, Date>;
-  /** Profile id -> when its MOST RECENT confirmed change was confirmed. */
+  /** Row id -> when its MOST RECENT confirmed change was confirmed. */
   confirmed: Map<string, Date>;
 };
 
 /**
- * Per-profile confirmation state, in one query.
+ * Per-row confirmation state for one entity, in one query.
  *
- * Keyed on `entityId`, which for a VAULT_PROFILE change is the profile's own id. Only
- * profile changes are considered: a mailbox edit is real but it isn't something a profile
- * row can sensibly display.
+ * Keyed on `entityId`, which for a VAULT_PROFILE change is the profile's own id and for a
+ * VAULT_ACCOUNT change the login's. One entity at a time: a mailbox edit is real but it
+ * isn't something a profile row can sensibly display, and a login and the profile in front
+ * of it are separate rows with separate histories.
  *
  * The two maps take opposite ends of the ordering on purpose. Pending wants the oldest --
  * "waiting since 9am" is the useful sentence, not "since 4pm". Confirmed wants the newest,
@@ -235,9 +260,12 @@ type ChangeState = {
  * lookup simply never matches -- and deliberately not cleaned up, because the audit trail
  * outliving the row it describes is the entire point of an append-only log.
  */
-async function loadProfileChangeState(discordUserId: string): Promise<ChangeState> {
+async function loadChangeState(
+  discordUserId: string,
+  entity: VaultEntity = VaultEntity.VAULT_PROFILE,
+): Promise<ChangeState> {
   const rows = await prisma.vaultChange.findMany({
-    where: { ownerDiscordId: discordUserId, entity: VaultEntity.VAULT_PROFILE },
+    where: { ownerDiscordId: discordUserId, entity },
     orderBy: { at: "asc" },
     select: { entityId: true, at: true, appliedAt: true },
   });
@@ -311,7 +339,7 @@ export async function getMemberProfile(
   // for the next caller.
   const [coverage, changes] = await Promise.all([
     loadMailboxCoverage(discordUserId),
-    loadProfileChangeState(discordUserId),
+    loadChangeState(discordUserId),
   ]);
 
   return {
@@ -332,6 +360,54 @@ export async function getMemberProfile(
     matchNameOnCardAndAddress: row.matchNameOnCardAndAddress,
     onlyCheckoutOnce: row.onlyCheckoutOnce,
   };
+}
+
+/**
+ * A member's retailer logins on the sites where a login is all we hold, by retailer.
+ *
+ * ONLY login-only retailers. Every other site's accounts are reachable through the
+ * profile that owns them, and listing them here as well would show a member the same
+ * Target credential twice -- in a list that offers no card and no address to go with it.
+ *
+ * `password_enc` is not selected, like every other read in this file. Nothing shows a
+ * retailer password back, not even to its owner: unlike an app password there is no
+ * inbox to open with it, so a reveal would be a leak with no use behind it.
+ */
+export async function getMemberLogins(
+  discordUserId: string,
+): Promise<{ siteKey: string; logins: VaultLoginSummary[] }[]> {
+  const siteKeys = loginOnlySiteKeys();
+  if (siteKeys.length === 0) return [];
+
+  const [rows, coverage, changes] = await Promise.all([
+    prisma.vaultAccount.findMany({
+      where: { discordUserId, siteKey: { in: siteKeys } },
+      orderBy: { email: "asc" },
+      select: { id: true, siteKey: true, email: true, active: true, updatedAt: true },
+    }),
+    loadMailboxCoverage(discordUserId),
+    loadChangeState(discordUserId, VaultEntity.VAULT_ACCOUNT),
+  ]);
+
+  const bySite = new Map<string, VaultLoginSummary[]>();
+  for (const row of rows) {
+    const list = bySite.get(row.siteKey) ?? [];
+    list.push({
+      id: row.id,
+      siteKey: row.siteKey,
+      email: row.email,
+      active: row.active,
+      mailbox: mailboxFor(coverage, row.email),
+      pendingSince: changes.pending.get(row.id) ?? null,
+      confirmedAt: changes.confirmed.get(row.id) ?? null,
+      updatedAt: row.updatedAt,
+    });
+    bySite.set(row.siteKey, list);
+  }
+
+  return [...bySite.entries()]
+    .map(([siteKey, logins]) => ({ siteKey, logins }))
+    .sort((a, b) => a.siteKey.localeCompare(b.siteKey));
 }
 
 /**

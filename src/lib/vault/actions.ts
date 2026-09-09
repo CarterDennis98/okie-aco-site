@@ -5,7 +5,7 @@ import { prisma } from "@/db/client";
 import { getMemberProfile, type VaultProfileDetail } from "@/db/queries/vault";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
-import { siteUsesAccounts } from "@/lib/sites";
+import { isKnownSite, siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import { changedFields, recordBulkChange, recordChange } from "@/lib/vault/audit";
 import { detectBrand, last4, normalizePan } from "@/lib/vault/card";
 import { encrypt } from "@/lib/vault/crypto";
@@ -117,8 +117,6 @@ export async function testOwnEmailCredential(form: FormData): Promise<ImapTestOu
   return outcome;
 }
 
-const SITE_KEYS = new Set(["target", "walmart", "pokemon-center", "best-buy", "sams-club"]);
-
 // ---------------------------------------------------------------------------
 
 export async function saveProfile(form: FormData): Promise<ActionResult> {
@@ -126,7 +124,13 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
 
   const profileId = text(form, "profileId");
   const siteKey = text(form, "siteKey");
-  if (!SITE_KEYS.has(siteKey)) return { ok: false, error: "Unknown retailer." };
+  if (!isKnownSite(siteKey)) return { ok: false, error: "Unknown retailer." };
+  // A login-only retailer has no card and no address to store, so a `vault_profile` row
+  // here would be a row of invented placeholders. `saveLogin` is the write path for
+  // those; this refusal is what holds when the form is bypassed. See usesProfiles.
+  if (!siteUsesProfiles(siteKey)) {
+    return { ok: false, error: `${siteStyle(siteKey).label} stores a login only.` };
+  }
 
   // siteKey is passed only after the check above: the phone rule is per-retailer, and an
   // unknown key would silently mean "no rule".
@@ -438,11 +442,6 @@ export async function setProfilesActive(
   return { ok: true, changed: profiles.length };
 }
 
-// ---------------------------------------------------------------------------
-// Email app passwords
-// ---------------------------------------------------------------------------
-
-/** Sensible IMAP defaults so a member never has to know what a host is. */
 /**
  * Remove several profiles at once.
  *
@@ -489,6 +488,236 @@ export async function deleteProfiles(form: FormData): Promise<ActionResult & { r
   revalidatePath("/dashboard/profiles");
   return { ok: true, removed: profiles.length };
 }
+
+// ---------------------------------------------------------------------------
+// Retailer logins, on the sites where a login is all we hold
+// ---------------------------------------------------------------------------
+
+/** The stored row a login form is editing. Never carries the password ciphertext. */
+type ExistingLogin = { id: string; email: string; active: boolean };
+
+/**
+ * The retailer and the row the form names, or a message saying why it can't apply.
+ *
+ * Shared by all three login actions so the "is this a login-only retailer" rule is
+ * decided once. Every one of them is an individually-addressable POST, so each has to
+ * check it -- and checking it three different ways is how they would drift.
+ *
+ * Returns the row itself rather than just its id, so the callers work from what is
+ * actually stored: whether the email changed, and whether the toggle would be a no-op,
+ * are both questions about the row they just loaded.
+ */
+async function loginTarget(
+  form: FormData,
+  discordUserId: string,
+): Promise<
+  { ok: true; siteKey: string; login: ExistingLogin | null } | { ok: false; error: string }
+> {
+  const siteKey = text(form, "siteKey");
+  if (!isKnownSite(siteKey)) return { ok: false, error: "Unknown retailer." };
+  // The mirror of the refusal in `saveProfile`: a retailer we hold full profiles for has
+  // a card and an address that a login-only form would leave behind, so an account saved
+  // through here would be half a profile with no way to finish it.
+  if (siteUsesProfiles(siteKey)) {
+    return { ok: false, error: `${siteStyle(siteKey).label} needs a full checkout profile.` };
+  }
+
+  const loginId = text(form, "loginId");
+  if (!loginId) return { ok: true, siteKey, login: null };
+
+  // Both predicates, as everywhere else: an id belonging to somebody else reads as
+  // missing rather than as a refusal that would confirm it exists.
+  const login = await prisma.vaultAccount.findFirst({
+    where: { id: loginId, discordUserId, siteKey },
+    select: { id: true, email: true, active: true },
+  });
+  if (!login) return { ok: false, error: "Login not found." };
+  return { ok: true, siteKey, login };
+}
+
+/**
+ * Add or update one retailer login.
+ *
+ * The whole record on a login-only retailer: an email and a password, and no card or
+ * address because the order is placed by hand from the member's own account. See
+ * `usesProfiles` in sites.ts.
+ *
+ * The password is WRITE-ONLY like every other secret -- blank on an edit means "leave it
+ * alone", and can never mean "clear it", because nothing can read the stored value back
+ * to confirm that was the intent.
+ */
+export async function saveLogin(form: FormData): Promise<ActionResult> {
+  const viewer = await requireMember();
+
+  const target = await loginTarget(form, viewer.discordUserId);
+  if (!target.ok) return target;
+  const { siteKey, login } = target;
+
+  const email = text(form, "email").toLowerCase();
+  if (!EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid account email." };
+
+  const password = text(form, "accountPassword");
+  if (!login && !password) {
+    return { ok: false, error: `Enter the password for that ${siteStyle(siteKey).label} account.` };
+  }
+
+  try {
+    // Checked BEFORE the write, though `(site_key, email)` is unique in the database
+    // anyway: reaching the constraint throws, and the generic "couldn't save that" it
+    // surfaces as does not tell the member that the address is the problem.
+    //
+    // Their OWN row is not a collision -- an edit that leaves the email alone has to save.
+    const taken = await prisma.vaultAccount.findUnique({
+      where: { siteKey_email: { siteKey, email } },
+      select: { id: true, discordUserId: true },
+    });
+    if (taken && taken.id !== login?.id) {
+      return {
+        ok: false,
+        error:
+          taken.discordUserId === viewer.discordUserId
+            ? `You already have a ${siteStyle(siteKey).label} login for that email.`
+            : "That account email is already in use.",
+      };
+    }
+
+    if (!login) {
+      const created = await prisma.vaultAccount.create({
+        data: {
+          siteKey,
+          email,
+          discordUserId: viewer.discordUserId,
+          passwordEnc: encrypt(password, { entity: "vault_account", field: "password" }),
+        },
+        select: { id: true },
+      });
+
+      await recordChange(
+        {
+          actorDiscordId: viewer.discordUserId,
+          ownerDiscordId: viewer.discordUserId,
+          entity: VaultEntity.VAULT_ACCOUNT,
+          entityId: created.id,
+          action: VaultAction.CREATE,
+          siteKey,
+          label: email,
+        },
+        viewer.displayName,
+      );
+    } else {
+      const changed = [
+        ...(login.email !== email ? ["account email"] : []),
+        ...(password ? ["account password"] : []),
+      ];
+
+      await prisma.vaultAccount.update({
+        where: { id: login.id },
+        data: {
+          email,
+          ...(password
+            ? { passwordEnc: encrypt(password, { entity: "vault_account", field: "password" }) }
+            : {}),
+        },
+      });
+
+      // Nothing to record when the member reopened the form and saved it unchanged: an
+      // audit row claiming an edit that didn't happen puts the login back in the
+      // operator's queue and tells them to reload a password that never moved.
+      if (changed.length) {
+        await recordChange(
+          {
+            actorDiscordId: viewer.discordUserId,
+            ownerDiscordId: viewer.discordUserId,
+            entity: VaultEntity.VAULT_ACCOUNT,
+            entityId: login.id,
+            action: VaultAction.UPDATE,
+            siteKey,
+            label: email,
+            fields: changed,
+          },
+          viewer.displayName,
+        );
+      }
+    }
+  } catch (error) {
+    // Never the raw error: it can echo the submitted row back to the browser.
+    console.error("vault: saveLogin failed", error instanceof Error ? error.message : "unknown");
+    return { ok: false, error: "Couldn't save that. Check the email isn't already in use." };
+  }
+
+  revalidatePath("/dashboard/profiles");
+  return { ok: true };
+}
+
+/** Park a login without deleting it, so the credentials survive a break from a retailer. */
+export async function setLoginActive(form: FormData): Promise<ActionResult> {
+  const viewer = await requireMember();
+
+  const target = await loginTarget(form, viewer.discordUserId);
+  if (!target.ok) return target;
+  const login = target.login;
+  if (!login) return { ok: false, error: "Login not found." };
+
+  const active = bool(form, "active");
+  // Already there: not an error, and not worth an audit row claiming a change either.
+  if (login.active === active) return { ok: true };
+
+  await prisma.vaultAccount.update({ where: { id: login.id }, data: { active } });
+
+  await recordChange(
+    {
+      actorDiscordId: viewer.discordUserId,
+      ownerDiscordId: viewer.discordUserId,
+      entity: VaultEntity.VAULT_ACCOUNT,
+      entityId: login.id,
+      action: active ? VaultAction.ACTIVATE : VaultAction.DEACTIVATE,
+      siteKey: target.siteKey,
+      label: login.email,
+    },
+    viewer.displayName,
+  );
+
+  revalidatePath("/dashboard/profiles");
+  return { ok: true };
+}
+
+/**
+ * Remove one login for good.
+ *
+ * One at a time, unlike `deleteProfiles`: a member has a handful of logins on a
+ * login-only retailer rather than the ninety profiles that made a bulk selection worth
+ * building, and the row's own two-step confirm is the whole safeguard.
+ */
+export async function deleteLogin(form: FormData): Promise<ActionResult> {
+  const viewer = await requireMember();
+
+  const target = await loginTarget(form, viewer.discordUserId);
+  if (!target.ok) return target;
+  const login = target.login;
+  if (!login) return { ok: false, error: "Login not found." };
+
+  await prisma.vaultAccount.delete({ where: { id: login.id } });
+
+  await recordChange(
+    {
+      actorDiscordId: viewer.discordUserId,
+      ownerDiscordId: viewer.discordUserId,
+      entity: VaultEntity.VAULT_ACCOUNT,
+      entityId: login.id,
+      action: VaultAction.DELETE,
+      siteKey: target.siteKey,
+      label: login.email,
+    },
+    viewer.displayName,
+  );
+
+  revalidatePath("/dashboard/profiles");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Email app passwords
+// ---------------------------------------------------------------------------
 
 export async function saveEmailCredential(form: FormData): Promise<ActionResult> {
   const viewer = await requireMember();

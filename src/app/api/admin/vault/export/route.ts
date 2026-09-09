@@ -1,6 +1,6 @@
 import { prisma } from "@/db/client";
 import { requireAdmin } from "@/lib/auth/guard";
-import { siteStyle, siteUsesAccounts } from "@/lib/sites";
+import { siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { toAccountList, toAycdProfile } from "@/lib/vault/aycd";
 import { decrypt } from "@/lib/vault/crypto";
@@ -26,6 +26,10 @@ import { decrypt } from "@/lib/vault/crypto";
  * `vault_exports` row before the body is produced -- ONE PER MEMBER when several were
  * selected, so the table can still say whose credentials left. If credentials ever surface
  * somewhere they shouldn't, that table is the trail.
+ *
+ * LOGIN-ONLY RETAILERS (Costco) have accounts and no profiles, so `format=accounts` reads
+ * the accounts directly and `format=aycd` is refused rather than answered with `[]`. No
+ * bot split applies: a login does not belong to one bot instance. See usesProfiles.
  *
  * BOT SPLIT: each retailer has a soft cap on how many of a member's profiles the main
  * bot runs. `bot=main` yields the first N active profiles per member, `bot=backup` the
@@ -86,9 +90,32 @@ export async function GET(request: Request) {
       },
     );
   }
+  // Two reasons a retailer can be flagged that way -- guest checkout emails no code at
+  // all, and a login we sign into by hand needs no stored password to read one -- so the
+  // message says what holds for both rather than picking one and being wrong on the other.
   if (format === "imap" && siteKey && siteStyle(siteKey).usesEmailCodes === false) {
     return new Response(
-      `${siteStyle(siteKey).label} never emails a verification code — no app password applies.`,
+      `Nothing reads mail for ${siteStyle(siteKey).label} — no app password applies.`,
+      { status: 400 },
+    );
+  }
+  // A login-only retailer holds accounts and no profiles, so its AYCD file would come out
+  // as `[]` -- which reads as "nobody has saved anything" rather than "this retailer
+  // stores no cards". `accounts` and `imap` both still work here: on Costco the login IS
+  // the record, and the order is placed by hand from the member's own account.
+  const loginOnly = Boolean(siteKey) && !siteUsesProfiles(siteKey);
+  if (loginOnly && format === "aycd") {
+    return new Response(
+      `${siteStyle(siteKey).label} stores a login only — there are no checkout profiles to export.`,
+      { status: 400 },
+    );
+  }
+  // A hand-typed `bot=backup` here would otherwise hand back every login under a filename
+  // saying "backup", which is the export failure that costs the most to find: a file whose
+  // name says one thing and whose contents say another.
+  if (loginOnly && bot !== "all") {
+    return new Response(
+      `${siteStyle(siteKey).label} logins aren't split between bots — drop the bot parameter.`,
       { status: 400 },
     );
   }
@@ -114,7 +141,33 @@ export async function GET(request: Request) {
     });
   type ProfileRow = Awaited<ReturnType<typeof loadProfiles>>[number];
 
-  const rows: ProfileRow[] = everyMailbox ? [] : await loadProfiles();
+  const rows: ProfileRow[] = everyMailbox || loginOnly ? [] : await loadProfiles();
+
+  // The whole record on a login-only retailer, straight off the accounts: there is no
+  // profile to reach them through and no bot cap to split them by, because nothing about
+  // a login belongs to one bot instance.
+  //
+  // Inactive logins are left out, for the same reason an inactive profile is: a member who
+  // switched one off has asked us not to use it.
+  const logins = loginOnly
+    ? await prisma.vaultAccount.findMany({
+        where: {
+          siteKey,
+          active: true,
+          ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
+        },
+        orderBy: { email: "asc" },
+        select: { email: true, passwordEnc: true, discordUserId: true },
+      })
+    : [];
+
+  const loginsByMember = new Map<string, typeof logins>();
+  for (const login of logins) {
+    loginsByMember.set(login.discordUserId, [
+      ...(loginsByMember.get(login.discordUserId) ?? []),
+      login,
+    ]);
+  }
 
   // Apply the soft cap PER MEMBER, in the same name order the UI shows.
   const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
@@ -167,13 +220,20 @@ export async function GET(request: Request) {
     }
   } else if (format === "imap") {
     const coverage = await loadMailboxCoverage();
-    for (const row of selected) {
-      const box = mailboxFor(coverage, row.account.email);
+    // The addresses in scope, from whichever table holds them on this retailer. A
+    // login-only site has no profiles to resolve through, and its logins are exactly as
+    // likely to need a code read out of an inbox -- the operator signs in by hand.
+    const addresses = loginOnly
+      ? logins.map((login) => ({ email: login.email, discordUserId: login.discordUserId }))
+      : selected.map((row) => ({ email: row.account.email, discordUserId: row.discordUserId }));
+
+    for (const { email, discordUserId } of addresses) {
+      const box = mailboxFor(coverage, email);
       if (!box) continue;
       mailboxes.add(box.toLowerCase());
-      const mine = mailboxesByMember.get(row.discordUserId) ?? new Set<string>();
+      const mine = mailboxesByMember.get(discordUserId) ?? new Set<string>();
       mine.add(box.toLowerCase());
-      mailboxesByMember.set(row.discordUserId, mine);
+      mailboxesByMember.set(discordUserId, mine);
     }
   }
 
@@ -184,9 +244,12 @@ export async function GET(request: Request) {
     selectedByMember.set(row.discordUserId, list);
   }
 
-  const countsFor = (profiles: typeof selected, boxes: number) => ({
+  // `accounts` is passed separately from `profiles` because on a login-only retailer the
+  // two disagree: there are no profiles, and counting the file's credentials as 0 would
+  // leave `vault_exports` claiming an empty export of the one thing that did leave.
+  const countsFor = (profiles: typeof selected, accounts: number, boxes: number) => ({
     profileCount: format === "aycd" ? profiles.length : 0,
-    accountCount: format === "aycd" ? 0 : format === "imap" ? boxes : profiles.length,
+    accountCount: format === "aycd" ? 0 : format === "imap" ? boxes : accounts,
   });
 
   // Audited BEFORE the secrets are decrypted, so a crash mid-export still leaves the
@@ -207,9 +270,13 @@ export async function GET(request: Request) {
   // On the site-less path the members are whoever holds a credential, not whoever has a
   // profile -- `selectedByMember` is empty there, and using it would write no audit row at
   // all for an export of everybody's passwords.
+  // On a login-only retailer the members in the file are whoever holds a login, for the
+  // same reason: `selectedByMember` is built from profiles and is empty there.
   const auditMembers: [string, ProfileRow[]][] = everyMailbox
     ? [...mailboxesByMember.keys()].map((id) => [id, []])
-    : [...selectedByMember.entries()];
+    : loginOnly
+      ? [...loginsByMember.keys()].map((id) => [id, []])
+      : [...selectedByMember.entries()];
 
   if (memberIds.length > 1) {
     await prisma.vaultExport.createMany({
@@ -219,7 +286,11 @@ export async function GET(request: Request) {
         format,
         scope: "members",
         targetDiscordId: discordUserId,
-        ...countsFor(profiles, mailboxesByMember.get(discordUserId)?.size ?? 0),
+        ...countsFor(
+          profiles,
+          loginOnly ? (loginsByMember.get(discordUserId)?.length ?? 0) : profiles.length,
+          mailboxesByMember.get(discordUserId)?.size ?? 0,
+        ),
       })),
     });
   } else {
@@ -230,7 +301,7 @@ export async function GET(request: Request) {
         format,
         scope: memberIds.length === 1 ? "member" : everyMailbox ? "all" : "site",
         targetDiscordId: memberIds[0] ?? null,
-        ...countsFor(selected, mailboxes.size),
+        ...countsFor(selected, loginOnly ? logins.length : selected.length, mailboxes.size),
       },
     });
   }
@@ -282,15 +353,21 @@ export async function GET(request: Request) {
   }
 
   if (format === "accounts") {
+    // One shape from either table: a login-only retailer's accounts stand alone, and
+    // everywhere else they hang off the profile that was selected and split by bot.
+    const accounts = loginOnly
+      ? logins
+      : selected.map((row) => ({ email: row.account.email, passwordEnc: row.account.passwordEnc }));
+
     // Accounts with no password are skipped rather than emitted with a blank one: on a
     // guest-checkout retailer there is no login to hand a bot, and "email:" with nothing
     // after it reads as a credential that failed to decrypt.
     const body = toAccountList(
-      selected
-        .filter((row) => row.account.passwordEnc)
-        .map((row) => ({
-          email: row.account.email,
-          password: decrypt(row.account.passwordEnc!, {
+      accounts
+        .filter((account) => account.passwordEnc)
+        .map((account) => ({
+          email: account.email,
+          password: decrypt(account.passwordEnc!, {
             entity: "vault_account",
             field: "password",
           }),

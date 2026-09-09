@@ -2,17 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
+  getMemberLoginsForAdmin,
   getMemberVaultForAdmin,
   getMembersForSite,
   getPendingChanges,
-  getSitesWithProfiles,
+  getVaultSites,
 } from "@/db/queries/admin-vault";
 import { AdminMemberPicker } from "@/components/vault/admin-member-picker";
 import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { requireAdmin } from "@/lib/auth/guard";
 import { count, plural } from "@/lib/format";
-import { siteStyle, siteUsesAccounts } from "@/lib/sites";
+import { siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import {
   PROFILE_STATUSES,
   isProfileFilterActive,
@@ -68,7 +69,7 @@ export default async function AdminProfilesPage({
   const search = params.q?.trim() || undefined;
 
   const [sites, pending, changes] = await Promise.all([
-    getSitesWithProfiles(),
+    getVaultSites(),
     getPendingConfirmationCount(),
     getPendingChanges(changeFilter),
   ]);
@@ -91,13 +92,25 @@ export default async function AdminProfilesPage({
   // control on this page is gated on these -- see the export row below.
   const usesAccounts = siteUsesAccounts(siteKey);
   const usesEmailCodes = style.usesEmailCodes !== false;
+  // Costco: an email and a password, and no card or address at all, because the order is
+  // placed by hand from the member's own account. Every column and every export below
+  // that assumes a checkout profile is gated on this. See usesProfiles in sites.ts.
+  const usesProfiles = siteUsesProfiles(siteKey);
+  const noun = usesProfiles ? "profile" : "login";
   // The FULL roster, filter or no filter: `?member=` is validated against it, so a search
   // that happens to exclude whoever is open must not 404 the page out from under you.
   const members = await getMembersForSite(siteKey, filter);
   const selected = member && members.some((m) => m.discordUserId === member) ? member : null;
-  const profiles = selected
-    ? await getMemberVaultForAdmin(siteKey, selected, filter)
-    : { rows: [], total: 0 };
+  const profiles =
+    selected && usesProfiles
+      ? await getMemberVaultForAdmin(siteKey, selected, filter)
+      : { rows: [], total: 0 };
+  const logins =
+    selected && !usesProfiles
+      ? await getMemberLoginsForAdmin(siteKey, selected, filter)
+      : { rows: [], total: 0 };
+  // Whichever kind of row this retailer has, for the counts the page states in prose.
+  const held = usesProfiles ? profiles : logins;
   const selectedMember = members.find((m) => m.discordUserId === selected);
 
   if (member && !selected) notFound();
@@ -211,24 +224,28 @@ export default async function AdminProfilesPage({
         {/* --- site-wide export --- */}
         <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-4">
           <span className="mr-1 text-sm text-[var(--color-fg)]">Export all {style.label}:</span>
-          {style.profileSoftCap !== undefined ? (
-            <>
-              <ExportLink
-                href={`${exportBase}&bot=main`}
-                label={`Main bot (first ${style.profileSoftCap})`}
-              />
-              <ExportLink href={`${exportBase}&bot=backup`} label="Backup bot" />
-            </>
-          ) : (
-            <ExportLink href={`${exportBase}&bot=all`} label="Profiles (AYCD)" />
-          )}
+          {/* No AYCD file on a login-only retailer: there are no cards or addresses to put
+              in one, and the route refuses it rather than returning an empty array. */}
+          {usesProfiles &&
+            (style.profileSoftCap !== undefined ? (
+              <>
+                <ExportLink
+                  href={`${exportBase}&bot=main`}
+                  label={`Main bot (first ${style.profileSoftCap})`}
+                />
+                <ExportLink href={`${exportBase}&bot=backup`} label="Backup bot" />
+              </>
+            ) : (
+              <ExportLink href={`${exportBase}&bot=all`} label="Profiles (AYCD)" />
+            ))}
           {/* Meaningless on a guest-checkout retailer: Pokémon Center has no logins to list,
               so the file came out empty and the button implied credentials that do not
-              exist. */}
+              exist. On a login-only retailer this is the ONLY export -- the file is the
+              whole record. */}
           {usesAccounts && (
             <ExportLink href={`${exportBase}&format=accounts`} label="Accounts (user:pass)" />
           )}
-          <span className="text-xs text-[var(--color-muted)]">Active profiles only.</span>
+          <span className="text-xs text-[var(--color-muted)]">Active {noun}s only.</span>
           {/* The IMAP export used to sit in this row, one file per retailer. A mailbox is
               not a per-retailer thing, so it now lives on its own page and exports once. */}
           {usesEmailCodes && (
@@ -251,13 +268,15 @@ export default async function AdminProfilesPage({
           {changeFilter && <input type="hidden" name="changes" value={changeFilter} />}
           <div>
             <label htmlFor="q" className="mb-1 block text-xs font-medium text-[var(--color-muted)]">
-              Search {style.label} profiles
+              Search {style.label} {noun}s
             </label>
             <input
               id="q"
               name="q"
               defaultValue={search ?? ""}
-              placeholder="name, email, city, phone"
+              // A login has an email and nothing else, so offering "city, phone" there
+              // would advertise fields the matcher has no columns for.
+              placeholder={usesProfiles ? "name, email, city, phone" : "email"}
               className={`${field} w-64`}
             />
           </div>
@@ -297,7 +316,7 @@ export default async function AdminProfilesPage({
                 ? `Nothing matches on ${style.label}.`
                 : `${count(matchedProfiles)} of ${count(allProfiles)} ${plural(
                     allProfiles,
-                    "profile",
+                    noun,
                   )} · ${count(matchedMembers.length)} ${plural(matchedMembers.length, "member")}`}
             </span>
           )}
@@ -327,7 +346,7 @@ export default async function AdminProfilesPage({
           <div>
             {!selectedMember ? (
               <p className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-5 py-12 text-center text-sm text-[var(--color-muted)]">
-                Pick a member to see their profiles.
+                Pick a member to see their {noun}s.
               </p>
             ) : (
               <>
@@ -339,18 +358,17 @@ export default async function AdminProfilesPage({
                           presented as the whole list is how you conclude a member has one
                           profile when they have thirty. */}
                       {filtering
-                        ? `${profiles.rows.length} of ${profiles.total} ${plural(
-                            profiles.total,
-                            "profile",
-                          )}`
-                        : `${profiles.total} ${plural(profiles.total, "profile")}`}
+                        ? `${held.rows.length} of ${held.total} ${plural(held.total, noun)}`
+                        : `${held.total} ${plural(held.total, noun)}`}
                     </span>
                   </h2>
                   <div className="flex flex-wrap gap-2">
-                    <ExportLink
-                      href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all`}
-                      label="Export profiles"
-                    />
+                    {usesProfiles && (
+                      <ExportLink
+                        href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all`}
+                        label="Export profiles"
+                      />
+                    )}
                     {usesAccounts && (
                       <ExportLink
                         href={`${exportBase}&member=${selectedMember.discordUserId}&format=accounts`}
@@ -368,15 +386,57 @@ export default async function AdminProfilesPage({
                   </div>
                 </div>
 
-                {profiles.rows.length === 0 ? (
+                {held.rows.length === 0 ? (
                   <p className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-5 py-12 text-center text-sm text-[var(--color-muted)]">
-                    {profiles.total === 0
-                      ? `No ${style.label} profiles for this member.`
-                      : `None of their ${profiles.total} ${style.label} ${plural(
-                          profiles.total,
-                          "profile",
+                    {held.total === 0
+                      ? `No ${style.label} ${noun}s for this member.`
+                      : `None of their ${held.total} ${style.label} ${plural(
+                          held.total,
+                          noun,
                         )} match.`}
                   </p>
+                ) : !usesProfiles ? (
+                  /* A login has one column of substance, so it gets its own narrow table
+                     rather than the profile table with four empty columns in it. */
+                  <div className="overflow-x-auto rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
+                    <table className="w-full min-w-[28rem] text-sm">
+                      <thead>
+                        <tr className="border-b border-[var(--color-edge)] text-[11px] tracking-[0.1em] text-[var(--color-muted)] uppercase">
+                          <th className={cell}>Login</th>
+                          {/* Dropped entirely rather than left empty where no code is ever
+                              read -- on Costco the operator is at the login. A header over
+                              a blank column reads as data that failed to load. */}
+                          {usesEmailCodes && <th className={cell}>Codes land in</th>}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--color-edge)]">
+                        {logins.rows.map((l) => (
+                          <tr key={l.id} className={l.active ? "" : "opacity-50"}>
+                            <td className={cell}>
+                              <span className="font-medium break-all text-white">{l.email}</span>
+                              <span className="mt-1 flex flex-wrap gap-1">
+                                {!l.active && <Tag>disabled</Tag>}
+                                {/* The export skips a passwordless row rather than writing
+                                    "email:" with nothing after it, so this is the only
+                                    place that absence is visible. */}
+                                {!l.hasPassword && <Tag tone="warn">no password</Tag>}
+                              </span>
+                            </td>
+                            {usesEmailCodes && (
+                              <td className={cell}>
+                                <RevealAppPassword
+                                  email={l.email}
+                                  mailbox={l.mailbox}
+                                  usesEmailCodes={usesEmailCodes}
+                                  action={revealAppPasswordForAdmin}
+                                />
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 ) : (
                   <div className="overflow-x-auto rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
                     <table className="w-full min-w-[52rem] text-sm">

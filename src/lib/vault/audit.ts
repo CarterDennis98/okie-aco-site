@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
-import { siteStyle } from "@/lib/sites";
+import { siteChangesApplyImmediately, siteStyle } from "@/lib/sites";
 
 /**
  * Change recording and operator notification.
@@ -23,6 +23,37 @@ import { siteStyle } from "@/lib/sites";
 
 const WEBHOOK_URL = process.env.DISCORD_VAULT_WEBHOOK_URL;
 const WEBHOOK_TIMEOUT_MS = 5_000;
+
+/**
+ * What `applied_by` says when nobody confirmed a change because nothing had to.
+ *
+ * A word rather than null: `applied_at` set with `applied_by` null could not happen before
+ * -- only `markChangesApplied` ever wrote the pair -- so a null there would read as a bug
+ * to whoever next queries this table by hand. Discord ids are numeric, so this cannot
+ * collide with a real operator.
+ */
+const AUTO_APPLIED_BY = "auto";
+
+/**
+ * When a change is already live, and by whom.
+ *
+ * On most retailers, never: an edit reaches the bot through an export, and until an
+ * operator says so the honest answer to "is this in use" is no. On a retailer nothing
+ * loads -- Costco, where the operator reads the login at order time -- there is no such
+ * step, so the change is applied the instant it is written and the queue should never see
+ * it. See `changesApplyImmediately` in sites.ts.
+ *
+ * Decided HERE rather than at the call sites so a new write path gets the rule for free.
+ * A caller that had to remember to pass a flag is a caller that will eventually put a
+ * Costco login into a queue nobody is working through.
+ */
+export function appliedStamp(siteKey: string | null | undefined): {
+  appliedAt: Date | null;
+  appliedBy: string | null;
+} {
+  if (!siteChangesApplyImmediately(siteKey)) return { appliedAt: null, appliedBy: null };
+  return { appliedAt: new Date(), appliedBy: AUTO_APPLIED_BY };
+}
 
 export type ChangeRecord = {
   actorDiscordId: string;
@@ -124,6 +155,8 @@ export async function recordChange(change: ChangeRecord, actorName: string): Pro
         siteKey: change.siteKey ?? null,
         label: change.label ?? null,
         fields: change.fields ?? [],
+        // Applied on arrival where there is nothing to load it onto. See appliedStamp.
+        ...appliedStamp(change.siteKey),
       },
       select: { id: true },
     });
@@ -189,6 +222,9 @@ export async function recordBulkChange(
       siteKey: change.siteKey ?? null,
       label: change.label ?? null,
       fields: change.fields ?? [],
+      // Per row, not per batch: a bulk change is one gesture but its rows can span
+      // retailers, and only some of those have a bot step to wait for.
+      ...appliedStamp(change.siteKey),
     }));
     await prisma.vaultChange.createMany({ data: rows });
     ids = rows.map((r) => r.id);
