@@ -13,7 +13,7 @@ import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { requireAdmin } from "@/lib/auth/guard";
 import { count, plural } from "@/lib/format";
-import { siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
+import { siteStoresCardCvv, siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import {
   PROFILE_STATUSES,
   isProfileFilterActive,
@@ -97,6 +97,9 @@ export default async function AdminProfilesPage({
   // that assumes a checkout profile is gated on this. See usesProfiles in sites.ts.
   const usesProfiles = siteUsesProfiles(siteKey);
   const noun = usesProfiles ? "profile" : "login";
+  // Costco prompts for the security code on a saved card, so a login without one is a
+  // gap worth showing. See storesCardCvv.
+  const storesCardCvv = siteStoresCardCvv(siteKey);
   // The FULL roster, filter or no filter: `?member=` is validated against it, so a search
   // that happens to exclude whoever is open must not 404 the page out from under you.
   const members = await getMembersForSite(siteKey, filter);
@@ -420,6 +423,9 @@ export default async function AdminProfilesPage({
                                     "email:" with nothing after it, so this is the only
                                     place that absence is visible. */}
                                 {!l.hasPassword && <Tag tone="warn">no password</Tag>}
+                                {/* Warn, not neutral: this login signs in fine and then
+                                    fails the order that asks for a code it hasn't got. */}
+                                {storesCardCvv && !l.hasCvv && <Tag tone="warn">no CVV</Tag>}
                               </span>
                             </td>
                             {usesEmailCodes && (

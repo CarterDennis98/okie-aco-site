@@ -8,7 +8,13 @@ import { VaultEntity, type VaultAction } from "@/generated/prisma/enums";
 import { isExpired, maskedLabel } from "@/lib/vault/card";
 import { providerForEmail } from "@/lib/vault/email-providers";
 import { normalizePhone } from "@/lib/vault/profile-input";
-import { loginOnlySiteKeys, siteRequiresPhone, siteStyle, siteUsesProfiles } from "@/lib/sites";
+import {
+  loginOnlySiteKeys,
+  siteRequiresPhone,
+  siteStoresCardCvv,
+  siteStyle,
+  siteUsesProfiles,
+} from "@/lib/sites";
 import { EMAIL_BUCKET } from "@/lib/vault/pending-filter";
 import {
   isProfileFilterActive,
@@ -47,6 +53,17 @@ export type AdminMemberRow = {
    * the existing ones only get fixed if somebody can see them.
    */
   missingPhone: number;
+  /**
+   * Logins with no security code, on a retailer that asks for one at checkout.
+   *
+   * The login-only counterpart to `missingPhone`, and the same kind of problem: the row
+   * looks healthy and then fails an order by hand, mid-drop, when Costco decides to ask.
+   * Counted over ACTIVE logins only -- a disabled one isn't being used, so it isn't the
+   * thing to chase.
+   *
+   * Always 0 where the retailer stores no CVV, which is everywhere but Costco today.
+   */
+  missingCvv: number;
   /**
    * How many of this member's profiles match the search / active filter.
    *
@@ -136,6 +153,9 @@ export async function getMembersForSite(
       missingPhone: siteRequiresPhone(siteKey)
         ? active.filter((p) => !normalizePhone(p.phone)).length
         : 0,
+      // A profile always carries a CVV -- the form has required one since the first
+      // version -- so this is only ever a login-only retailer's gap. See membersWithLogins.
+      missingCvv: 0,
       // Counts addresses with nowhere to read a code from. An address that forwards into
       // a mailbox with a password is covered, so it is not missing one -- and a retailer
       // that never sends a code has nothing to miss.
@@ -171,16 +191,30 @@ async function membersWithLogins(
   siteKey: string,
   filter?: ProfileFilter,
 ): Promise<AdminMemberRow[]> {
-  const [accounts, members, coverage] = await Promise.all([
+  const [accounts, cvvless, members, coverage] = await Promise.all([
     prisma.vaultAccount.findMany({
       where: { siteKey },
-      select: { discordUserId: true, email: true, active: true },
+      // `cardCvvEnc` and `passwordEnc` are NOT selected -- see the header. Whether a code
+      // exists is answered by the NULL filter beside this, so no ciphertext is loaded to
+      // settle a yes/no question.
+      select: { id: true, discordUserId: true, email: true, active: true },
     }),
+    // ACTIVE logins with no code on file. Grouped in the database so this is a count per
+    // member rather than a set of ids to tally in memory.
+    siteStoresCardCvv(siteKey)
+      ? prisma.vaultAccount.groupBy({
+          by: ["discordUserId"],
+          where: { siteKey, active: true, cardCvvEnc: null },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
     prisma.discordMember.findMany({
       select: { discordUserId: true, username: true, globalName: true },
     }),
     loadMailboxCoverage(),
   ]);
+
+  const cvvlessByMember = new Map(cvvless.map((g) => [g.discordUserId, g._count._all]));
 
   const nameById = new Map(members.map((m) => [m.discordUserId, m]));
   const byMember = new Map<string, typeof accounts>();
@@ -209,6 +243,7 @@ async function membersWithLogins(
       onBackup: 0,
       expiredCards: 0,
       missingPhone: 0,
+      missingCvv: cvvlessByMember.get(discordUserId) ?? 0,
       missingAppPasswords: usesEmailCodes
         ? new Set(
             list.map((a) => a.email.toLowerCase()).filter((e) => mailboxFor(coverage, e) === null),
@@ -326,6 +361,15 @@ export type AdminLoginRow = {
    * it, so without this the row would simply be missing from the file with no explanation.
    */
   hasPassword: boolean;
+  /**
+   * Whether a security code is on file, on a retailer that asks for one.
+   *
+   * Same NULL-filter derivation as `hasPassword`, and worth surfacing for the same
+   * reason: Costco prompts for the CVV only sometimes, so a login missing one looks
+   * perfectly healthy right up until the order it fails. Always false where the retailer
+   * stores none -- check `storesCardCvv` before reading it as a gap.
+   */
+  hasCvv: boolean;
   updatedAt: Date;
 };
 
@@ -344,7 +388,7 @@ export async function getMemberLoginsForAdmin(
   discordUserId: string,
   filter?: ProfileFilter,
 ): Promise<{ rows: AdminLoginRow[]; total: number }> {
-  const [accounts, passwordless, coverage] = await Promise.all([
+  const [accounts, passwordless, cvvless, coverage] = await Promise.all([
     prisma.vaultAccount.findMany({
       where: { siteKey, discordUserId },
       orderBy: { email: "asc" },
@@ -354,16 +398,22 @@ export async function getMemberLoginsForAdmin(
       where: { siteKey, discordUserId, passwordEnc: null },
       select: { id: true },
     }),
+    prisma.vaultAccount.findMany({
+      where: { siteKey, discordUserId, cardCvvEnc: null },
+      select: { id: true },
+    }),
     loadMailboxCoverage(discordUserId),
   ]);
 
   const missing = new Set(passwordless.map((a) => a.id));
+  const missingCvv = new Set(cvvless.map((a) => a.id));
   const rows = accounts.map((account) => ({
     id: account.id,
     email: account.email,
     active: account.active,
     mailbox: mailboxFor(coverage, account.email),
     hasPassword: !missing.has(account.id),
+    hasCvv: !missingCvv.has(account.id),
     updatedAt: account.updatedAt,
   }));
 

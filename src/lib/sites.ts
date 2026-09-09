@@ -75,6 +75,25 @@ export type SiteStyle = {
   usesEmailCodes?: boolean;
 
   /**
+   * Whether a login here carries the card's security code.
+   *
+   * Costco prompts for the CVV at checkout even when the card on the account is already
+   * saved -- not every time, which is exactly what makes a missing one expensive: it
+   * surfaces mid-order, by hand, with a queue pass running down. Nothing else about the
+   * card is stored for such a retailer, because nothing else has to be; the member's own
+   * account supplies the number, the expiry and the address, and this is the one field it
+   * cannot fill in for them.
+   *
+   * The code is 3 digits, or 4 on Amex -- and unlike a profile, there is no card number
+   * here to detect the brand from, so both lengths are accepted. See `isPlausibleCvv`.
+   *
+   * Defaults to false. Somewhere between "PCI says don't store this" and "the order fails
+   * without it" there is a line, and it is drawn per retailer that genuinely asks rather
+   * than collected everywhere by default.
+   */
+  storesCardCvv?: boolean;
+
+  /**
    * Whether an edit here is live the moment it is saved.
    *
    * Everywhere else a change has to be exported and loaded onto a bot before it takes
@@ -227,6 +246,9 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // is needed -- so an app password buys nothing and asking for one is a chore invented
     // for a member. See usesEmailCodes.
     usesEmailCodes: false,
+    // Costco asks for the security code at checkout even on a card it already has saved.
+    // See storesCardCvv.
+    storesCardCvv: true,
     // No bot loads these, so there is no gap between saving and being in use, and nothing
     // for the operator to confirm. See changesApplyImmediately.
     changesApplyImmediately: true,
@@ -274,6 +296,17 @@ export function siteUsesAccounts(site: string | null | undefined): boolean {
  */
 export function siteUsesProfiles(site: string | null | undefined): boolean {
   return siteStyle(site).usesProfiles !== false;
+}
+
+/**
+ * Whether a login on this retailer carries the card's security code.
+ *
+ * Read by BOTH the login form and the save action, for the reason every other flag here
+ * says twice: the form decides what to render, and the action is the one a crafted POST
+ * has to get past. See `storesCardCvv`.
+ */
+export function siteStoresCardCvv(site: string | null | undefined): boolean {
+  return siteStyle(site).storesCardCvv === true;
 }
 
 /**

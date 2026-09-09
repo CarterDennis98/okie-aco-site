@@ -269,7 +269,23 @@ export function toAycdProfile(profile: ExportableProfile): AycdProfile {
   };
 }
 
-/** `<username>:<password>` per line, the format the bots take for accounts. */
-export function toAccountList(accounts: { email: string; password: string }[]): string {
-  return accounts.map((a) => `${a.email}:${a.password}`).join("\n");
+/**
+ * `<username>:<password>` per line, the format the bots take for accounts.
+ *
+ * A THIRD FIELD IS APPENDED when the account carries a card security code, giving
+ * `<username>:<password>:<cvv>`. Only a login-only retailer has one -- Costco, where the
+ * order is placed by hand and the site prompts for the code on an already-saved card --
+ * and nothing loads that file into a bot, so the extra column costs no compatibility.
+ *
+ * Every other retailer's file keeps exactly two fields. That matters: a bot splitting on
+ * ":" and reading `parts[1]` as the password is unaffected, and a trailing empty field
+ * (`email:password:`) would look like a credential that failed to decrypt -- which is why
+ * an absent code omits the separator rather than emitting it bare.
+ */
+export function toAccountList(
+  accounts: { email: string; password: string; cvv?: string | null }[],
+): string {
+  return accounts
+    .map((a) => (a.cvv ? `${a.email}:${a.password}:${a.cvv}` : `${a.email}:${a.password}`))
+    .join("\n");
 }

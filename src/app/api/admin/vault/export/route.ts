@@ -31,6 +31,11 @@ import { decrypt } from "@/lib/vault/crypto";
  * the accounts directly and `format=aycd` is refused rather than answered with `[]`. No
  * bot split applies: a login does not belong to one bot instance. See usesProfiles.
  *
+ * Their accounts file gains a third field, `email:password:cvv`, where a security code is
+ * stored -- Costco prompts for one on an already-saved card. This route is the ONLY way
+ * that code comes back out: a CVV is deliberately not revealable on a page, so the file
+ * an operator downloads mid-order is the audited door it leaves by. See reveal.ts.
+ *
  * BOT SPLIT: each retailer has a soft cap on how many of a member's profiles the main
  * bot runs. `bot=main` yields the first N active profiles per member, `bot=backup` the
  * rest, `bot=all` ignores the cap. Splitting here rather than by hand afterwards is the
@@ -157,7 +162,11 @@ export async function GET(request: Request) {
           ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
         },
         orderBy: { email: "asc" },
-        select: { email: true, passwordEnc: true, discordUserId: true },
+        // `cardCvvEnc` is read HERE and nowhere else. This route is the only door a stored
+        // secret leaves by -- a CVV is deliberately not revealable on a page (see
+        // reveal.ts: an app password is revocable in a click, a card code is not), so the
+        // audited export is how the operator gets it at order time.
+        select: { email: true, passwordEnc: true, cardCvvEnc: true, discordUserId: true },
       })
     : [];
 
@@ -354,10 +363,16 @@ export async function GET(request: Request) {
 
   if (format === "accounts") {
     // One shape from either table: a login-only retailer's accounts stand alone, and
-    // everywhere else they hang off the profile that was selected and split by bot.
+    // everywhere else they hang off the profile that was selected and split by bot. Only
+    // the login-only side can carry a security code, so the profile side pins it null
+    // rather than reaching for a column its rows do not select.
     const accounts = loginOnly
       ? logins
-      : selected.map((row) => ({ email: row.account.email, passwordEnc: row.account.passwordEnc }));
+      : selected.map((row) => ({
+          email: row.account.email,
+          passwordEnc: row.account.passwordEnc,
+          cardCvvEnc: null,
+        }));
 
     // Accounts with no password are skipped rather than emitted with a blank one: on a
     // guest-checkout retailer there is no login to hand a bot, and "email:" with nothing
@@ -371,6 +386,11 @@ export async function GET(request: Request) {
             entity: "vault_account",
             field: "password",
           }),
+          // Absent on most rows, and omitted from the line entirely when it is -- see
+          // toAccountList. A login saved before the code was asked for has none.
+          cvv: account.cardCvvEnc
+            ? decrypt(account.cardCvvEnc, { entity: "vault_account", field: "card_cvv" })
+            : null,
         })),
     );
     return fileResponse(body, `okie-accounts-${suffix}.txt`, "text/plain; charset=utf-8");

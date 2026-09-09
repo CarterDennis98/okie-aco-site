@@ -110,6 +110,23 @@ export function isValidCvv(cvv: string, brand: CardBrand): boolean {
 }
 
 /**
+ * Whether a code is acceptable when THE BRAND IS UNKNOWABLE.
+ *
+ * A login-only retailer stores no card number, so there is nothing to run `detectBrand`
+ * against -- the card lives in the member's own account at the retailer and all we hold
+ * is the code it asks for. Three digits or four, which is exactly `isValidCvv`'s own
+ * "Unknown" branch, expressed as its own function so a caller cannot reach that
+ * behaviour by passing a brand it merely failed to detect.
+ *
+ * NOT a looser rule than the profile path: a 4-digit code on a Visa is refused there
+ * because the number proves it is a Visa. Here nothing proves anything, and refusing an
+ * Amex member's real code would be inventing a rule out of missing information.
+ */
+export function isPlausibleCvv(cvv: string): boolean {
+  return /^\d{3,4}$/.test(String(cvv ?? "").trim());
+}
+
+/**
  * Expiry as stored: two-digit month, four-digit year, both TEXT.
  *
  * Leading zeros are load-bearing -- "09" must not become "9" -- so this pads rather

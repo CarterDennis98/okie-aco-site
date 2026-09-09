@@ -491,6 +491,18 @@ model VaultAccount {
   // "password unknown" -- a site that needs one and lacks it shows as missing in admin.
   passwordEnc String? @map("password_enc")
 
+  // Write-only, and only on a retailer that asks for it at a saved-card checkout.
+  //
+  // Costco prompts for the security code even when the card on the account is already
+  // saved -- not every time, which is what makes a missing one expensive: it surfaces
+  // mid-order, by hand, with a queue pass burning. There is no card number and no expiry
+  // here on purpose; those live in the member's own Costco account. This is the one digit
+  // group that account cannot supply for them.
+  //
+  // Nullable because most retailers store nothing here: null means "not applicable or not
+  // supplied", and `storesCardCvv` on the retailer is what says which of the two it is.
+  cardCvvEnc String? @map("card_cvv_enc")
+
   discordUserId String  @map("discord_user_id")
   active        Boolean @default(true)
   note          String?

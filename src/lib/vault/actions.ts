@@ -5,9 +5,15 @@ import { prisma } from "@/db/client";
 import { getMemberProfile, type VaultProfileDetail } from "@/db/queries/vault";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
-import { isKnownSite, siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
+import {
+  isKnownSite,
+  siteStoresCardCvv,
+  siteStyle,
+  siteUsesAccounts,
+  siteUsesProfiles,
+} from "@/lib/sites";
 import { changedFields, recordBulkChange, recordChange } from "@/lib/vault/audit";
-import { detectBrand, last4, normalizePan } from "@/lib/vault/card";
+import { detectBrand, isPlausibleCvv, last4, normalizePan } from "@/lib/vault/card";
 import { encrypt } from "@/lib/vault/crypto";
 import { domainOf, unsupportedMessage } from "@/lib/vault/email-providers";
 import { resolveMailProvider } from "@/lib/vault/email-mx";
@@ -538,13 +544,15 @@ async function loginTarget(
 /**
  * Add or update one retailer login.
  *
- * The whole record on a login-only retailer: an email and a password, and no card or
- * address because the order is placed by hand from the member's own account. See
- * `usesProfiles` in sites.ts.
+ * The whole record on a login-only retailer: an email, a password, and on a retailer that
+ * asks for it at checkout the card's security code. No card number, no expiry and no
+ * address -- those live in the member's own account at the retailer, which is where the
+ * order is placed from. See `usesProfiles` and `storesCardCvv` in sites.ts.
  *
- * The password is WRITE-ONLY like every other secret -- blank on an edit means "leave it
+ * Both secrets are WRITE-ONLY like every other -- blank on an edit means "leave it
  * alone", and can never mean "clear it", because nothing can read the stored value back
- * to confirm that was the intent.
+ * to confirm that was the intent. Clearing a CVV that a retailer needs would also be a
+ * silent way to break every future order on that login.
  */
 export async function saveLogin(form: FormData): Promise<ActionResult> {
   const viewer = await requireMember();
@@ -559,6 +567,25 @@ export async function saveLogin(form: FormData): Promise<ActionResult> {
   const password = text(form, "accountPassword");
   if (!login && !password) {
     return { ok: false, error: `Enter the password for that ${siteStyle(siteKey).label} account.` };
+  }
+
+  // Only where the retailer actually asks for one. Anything submitted for a retailer that
+  // doesn't is DISCARDED rather than stored -- the same rule guest checkout gets for a
+  // password it cannot use, and it keeps a code out of a row nothing would ever read it
+  // from.
+  const wantsCvv = siteStoresCardCvv(siteKey);
+  const cvv = wantsCvv ? text(form, "cardCvv") : "";
+  if (cvv && !isPlausibleCvv(cvv)) {
+    return { ok: false, error: "The security code is 3 digits — 4 on American Express." };
+  }
+  // Required to create, like the password: a login that cannot answer the CVV prompt fails
+  // mid-order, by hand, at the one moment nobody can fix it. On an EDIT a blank field means
+  // "keep the stored one", so a member changing their password is not made to retype it.
+  if (!login && wantsCvv && !cvv) {
+    return {
+      ok: false,
+      error: `${siteStyle(siteKey).label} asks for the card's security code at checkout — add it to save.`,
+    };
   }
 
   try {
@@ -588,6 +615,9 @@ export async function saveLogin(form: FormData): Promise<ActionResult> {
           email,
           discordUserId: viewer.discordUserId,
           passwordEnc: encrypt(password, { entity: "vault_account", field: "password" }),
+          // Bound to this entity and field by the AAD, so a ciphertext moved between
+          // columns or tables fails to decrypt rather than quietly returning a value.
+          cardCvvEnc: cvv ? encrypt(cvv, { entity: "vault_account", field: "card_cvv" }) : null,
         },
         select: { id: true },
       });
@@ -608,6 +638,7 @@ export async function saveLogin(form: FormData): Promise<ActionResult> {
       const changed = [
         ...(login.email !== email ? ["account email"] : []),
         ...(password ? ["account password"] : []),
+        ...(cvv ? ["card CVV"] : []),
       ];
 
       await prisma.vaultAccount.update({
@@ -616,6 +647,10 @@ export async function saveLogin(form: FormData): Promise<ActionResult> {
           email,
           ...(password
             ? { passwordEnc: encrypt(password, { entity: "vault_account", field: "password" }) }
+            : {}),
+          // Absent means unchanged, never cleared -- see the note on this function.
+          ...(cvv
+            ? { cardCvvEnc: encrypt(cvv, { entity: "vault_account", field: "card_cvv" }) }
             : {}),
         },
       });

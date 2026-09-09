@@ -223,6 +223,11 @@ export function AdminMemberPicker({
                 {m.missingPhone > 0 && (
                   <span className="text-[var(--color-brand)]"> · {m.missingPhone} no phone</span>
                 )}
+                {/* Same red, same reason: an order that hits the CVV prompt with nothing
+                    stored stalls in the operator's hands mid-drop. */}
+                {m.missingCvv > 0 && (
+                  <span className="text-[var(--color-brand)]"> · {m.missingCvv} no CVV</span>
+                )}
               </p>
             </Link>
           </li>

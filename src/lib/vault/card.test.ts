@@ -12,6 +12,7 @@ import {
   expectedCvvLength,
   isExpired,
   isLuhnValid,
+  isPlausibleCvv,
   isValidCvv,
   last4,
   maskedLabel,
@@ -122,6 +123,43 @@ describe("isValidCvv", () => {
   it("keeps a leading zero meaningful", () => {
     // "037" is a real stored code. Treating it as the number 37 fails checkout.
     expect(isValidCvv("037", "Visa")).toBe(true);
+  });
+});
+
+describe("isPlausibleCvv", () => {
+  /**
+   * A login-only retailer stores no card number, so nothing can say which brand the code
+   * belongs to. Costco prompts for it on an already-saved card; the member's own account
+   * holds everything else. Both lengths have to pass, or an Amex member cannot save the
+   * real code their card carries.
+   */
+  it("accepts both lengths, because the brand is unknowable here", () => {
+    expect(isPlausibleCvv("123")).toBe(true);
+    expect(isPlausibleCvv("1234")).toBe(true);
+  });
+
+  it("rejects anything that isn't 3 or 4 digits", () => {
+    expect(isPlausibleCvv("12")).toBe(false);
+    expect(isPlausibleCvv("12345")).toBe(false);
+    expect(isPlausibleCvv("12a")).toBe(false);
+    expect(isPlausibleCvv("")).toBe(false);
+  });
+
+  it("keeps a leading zero meaningful", () => {
+    // Same rule as isValidCvv: "037" is a real code, and reading it as 37 fails checkout.
+    expect(isPlausibleCvv("037")).toBe(true);
+    expect(isPlausibleCvv("0000")).toBe(true);
+  });
+
+  it("tolerates surrounding whitespace, which a paste brings with it", () => {
+    expect(isPlausibleCvv(" 123 ")).toBe(true);
+    // Not INSIDE, though -- that isn't a typo to forgive, it's two values.
+    expect(isPlausibleCvv("1 23")).toBe(false);
+  });
+
+  it("survives a missing value rather than throwing", () => {
+    expect(isPlausibleCvv(undefined as unknown as string)).toBe(false);
+    expect(isPlausibleCvv(null as unknown as string)).toBe(false);
   });
 });
 

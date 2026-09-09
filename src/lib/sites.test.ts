@@ -20,6 +20,7 @@ import {
   selfServeSiteKeys,
   supportedSites,
   siteRequiresPhone,
+  siteStoresCardCvv,
   siteUsesAccounts,
   siteUsesProfiles,
 } from "@/lib/sites";
@@ -178,6 +179,42 @@ describe("usesEmailCodes", () => {
     for (const key of ["target", "walmart", "best-buy", "sams-club"]) {
       expect(siteStyle(key).usesEmailCodes, `${key} should read codes`).not.toBe(false);
     }
+  });
+});
+
+describe("siteStoresCardCvv", () => {
+  /**
+   * Costco asks for the security code at checkout even on a card already saved to the
+   * account -- and only sometimes, which is what makes a missing one expensive: it
+   * surfaces mid-order, by hand, with a queue pass running down.
+   */
+  it("is true only where the retailer prompts for a code", () => {
+    expect(siteStoresCardCvv("costco")).toBe(true);
+    for (const key of ["target", "walmart", "pokemon-center", "best-buy", "sams-club"]) {
+      expect(siteStoresCardCvv(key), `${key} stores no account CVV`).toBe(false);
+    }
+  });
+
+  it("defaults to false for an unknown retailer", () => {
+    // The safe direction by a wide margin: asking every new retailer for a card code we
+    // have no use for is the one default that cannot be undone once members have typed it.
+    expect(siteStoresCardCvv("some-new-store")).toBe(false);
+    expect(siteStoresCardCvv(null)).toBe(false);
+  });
+
+  /**
+   * A code on a site we hold full profiles for would be the SECOND place a CVV lives for
+   * the same member, with nothing keeping the two in step. The profile's own card owns
+   * that field; this flag is for retailers where no card is stored at all.
+   */
+  it("only ever applies to a login-only retailer", () => {
+    for (const key of supportedSites().map((s) => s.key)) {
+      if (siteStoresCardCvv(key)) expect(siteUsesProfiles(key)).toBe(false);
+    }
+  });
+
+  it("accepts the raw vendor spelling", () => {
+    expect(siteStoresCardCvv("https://www.costco.com")).toBe(true);
   });
 });
 

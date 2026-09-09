@@ -106,6 +106,19 @@ export type VaultLoginSummary = {
   active: boolean;
   /** The mailbox this login's verification codes land in, or null when nothing covers it. */
   mailbox: string | null;
+  /**
+   * Whether a security code is stored, on a retailer that asks for one.
+   *
+   * WHETHER, not what. Derived from `card_cvv_enc IS NULL` in the database -- the
+   * ciphertext is never selected, matching the rule at the top of this file, and a CVV is
+   * not revealable even to its owner (see reveal.ts on why app passwords are the only
+   * exception). The member needs to know one is on file so they can tell a blank field
+   * meaning "keep it" from a blank field meaning "there is none".
+   *
+   * Always false on a retailer that stores none, which is what `storesCardCvv` is for --
+   * do not read this as "missing" without checking that first.
+   */
+  hasCvv: boolean;
   pendingSince: Date | null;
   confirmedAt: Date | null;
   updatedAt: Date;
@@ -379,15 +392,24 @@ export async function getMemberLogins(
   const siteKeys = loginOnlySiteKeys();
   if (siteKeys.length === 0) return [];
 
-  const [rows, coverage, changes] = await Promise.all([
+  const [rows, withoutCvv, coverage, changes] = await Promise.all([
     prisma.vaultAccount.findMany({
       where: { discordUserId, siteKey: { in: siteKeys } },
       orderBy: { email: "asc" },
       select: { id: true, siteKey: true, email: true, active: true, updatedAt: true },
     }),
+    // A filter on NULL rather than a projection: this is how "is a code on file" gets
+    // answered without the ciphertext ever leaving the database. Same trick as
+    // `getMemberLoginsForAdmin`'s passwordless set.
+    prisma.vaultAccount.findMany({
+      where: { discordUserId, siteKey: { in: siteKeys }, cardCvvEnc: null },
+      select: { id: true },
+    }),
     loadMailboxCoverage(discordUserId),
     loadChangeState(discordUserId, VaultEntity.VAULT_ACCOUNT),
   ]);
+
+  const missingCvv = new Set(withoutCvv.map((row) => row.id));
 
   const bySite = new Map<string, VaultLoginSummary[]>();
   for (const row of rows) {
@@ -398,6 +420,7 @@ export async function getMemberLogins(
       email: row.email,
       active: row.active,
       mailbox: mailboxFor(coverage, row.email),
+      hasCvv: !missingCvv.has(row.id),
       pendingSince: changes.pending.get(row.id) ?? null,
       confirmedAt: changes.confirmed.get(row.id) ?? null,
       updatedAt: row.updatedAt,

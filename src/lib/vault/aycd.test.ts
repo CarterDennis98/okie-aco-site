@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toAycdProfile, type ExportableProfile } from "@/lib/vault/aycd";
+import { toAccountList, toAycdProfile, type ExportableProfile } from "@/lib/vault/aycd";
 import { BOT_SENTINEL_PHONE } from "@/lib/vault/profile-input";
 
 /**
@@ -91,5 +91,53 @@ describe("toAycdProfile postcode", () => {
     // fixed. Truncating to five digits would throw away real address precision.
     const out = toAycdProfile({ ...base, shipPostalCode: "15001-2908" });
     expect(out.shippingAddress.postCode).toBe("15001-2908");
+  });
+});
+
+/**
+ * The account list, which the bots read for retailer logins.
+ *
+ * The two-field shape is a CONTRACT with anything that splits on ":" and takes `parts[1]`
+ * as the password. A Costco login also carries the security code its checkout prompts for,
+ * so those lines gain a third field -- and nothing else may.
+ */
+describe("toAccountList", () => {
+  it("writes email:password, one per line", () => {
+    const out = toAccountList([
+      { email: "a@example.com", password: "hunter2" },
+      { email: "b@example.com", password: "correct horse" },
+    ]);
+    expect(out).toBe("a@example.com:hunter2\nb@example.com:correct horse");
+  });
+
+  it("appends the security code as a third field when there is one", () => {
+    const out = toAccountList([{ email: "a@example.com", password: "hunter2", cvv: "123" }]);
+    expect(out).toBe("a@example.com:hunter2:123");
+  });
+
+  /**
+   * The trailing-separator case, and the reason `cvv` is checked for truthiness rather
+   * than for being present: "email:password:" reads as a code that failed to decrypt, and
+   * an operator would go looking for a key problem that doesn't exist.
+   */
+  it("omits the separator entirely when no code is stored", () => {
+    for (const cvv of [null, undefined, ""]) {
+      const out = toAccountList([{ email: "a@example.com", password: "hunter2", cvv }]);
+      expect(out, `cvv ${JSON.stringify(cvv)} should not add a separator`).toBe(
+        "a@example.com:hunter2",
+      );
+    }
+  });
+
+  it("mixes both shapes in one file, since a login may predate the code", () => {
+    const out = toAccountList([
+      { email: "a@example.com", password: "p1", cvv: "4321" },
+      { email: "b@example.com", password: "p2", cvv: null },
+    ]);
+    expect(out.split("\n")).toEqual(["a@example.com:p1:4321", "b@example.com:p2"]);
+  });
+
+  it("is empty rather than a stray newline when nothing qualifies", () => {
+    expect(toAccountList([])).toBe("");
   });
 });
