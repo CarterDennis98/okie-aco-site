@@ -13,6 +13,8 @@
  *   - Walmart and Sam's Club are both corporate blue, and deliberately so.
  *   - Target red (2.34:1) and Walmart blue (2.79:1) don't even clear 3:1 as UI shapes
  *     on a dark surface, so they can't be chip fills or chip text.
+ *   - Crunchyroll #FF8D0E is the one tint clear of all the others -- the nearest is
+ *     Pokémon Center yellow at ΔE2000 22.1 -- which fixes nothing about the rest.
  *
  * No arrangement of these hues passes. The LOGO and the site NAME carry identity; the
  * tint is decorative reinforcement used at low alpha behind readable text, so it gates
@@ -58,7 +60,7 @@ export type SiteStyle = {
   /**
    * Whether WE need to read an emailed verification code here.
    *
-   * Two different reasons it can be false, and both end in the same place -- no app
+   * Three different reasons it can be false, and all end in the same place -- no app
    * password is wanted, so nothing should nag a member for one:
    *
    *   - Pokémon Center checks out as a guest. There is no login, so no code is ever sent
@@ -67,6 +69,8 @@ export type SiteStyle = {
    *     at the login and can read it out of the member's inbox with them -- there is no
    *     bot mid-drop that has to open the mailbox unattended, which is the only thing a
    *     stored app password buys.
+   *   - Crunchyroll has a login and a bot, but the bot never reads a code out of the inbox,
+   *     so a stored app password would sit there unused.
    *
    * Defaults to true: a new retailer almost certainly mails a code to something automated,
    * and being nagged about a password you don't need is a smaller failure than silently
@@ -180,6 +184,22 @@ export type SiteStyle = {
    * blocking a save over a field the retailer doesn't need would be inventing a rule.
    */
   requiresPhone?: boolean;
+
+  /**
+   * Whether the bot that loads this retailer's AYCD file makes up a phone number itself
+   * when it is handed "0".
+   *
+   * That is a VALOR convention -- see BOT_SENTINEL_PHONE -- and Valor runs Pokémon Center
+   * and Best Buy. Every other bot takes "0" at face value, as a phone number that isn't
+   * one, so on their retailers the export writes a generated number wherever a profile has
+   * none. Target and Crunchyroll are the ones this is for: both leave the phone optional,
+   * and neither bot would know what to do with a "0".
+   *
+   * Defaults to false, the direction that works on any bot. A generated number imports and
+   * checks out on Valor too -- it is used rather than replaced -- while a "0" handed to
+   * anything else is an order that fails mid-drop with nobody watching.
+   */
+  botGeneratesPhone?: boolean;
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -212,6 +232,9 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // Guest checkout: no account, so no password and no verification code to read.
     usesAccounts: false,
     usesEmailCodes: false,
+    // Runs on Valor, so a profile with no phone keeps exporting as "0" for Valor to fill
+    // in at checkout. See botGeneratesPhone.
+    botGeneratesPhone: true,
     selfServe: true,
   },
   "best-buy": {
@@ -220,6 +243,8 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     logo: "/best-buy-logo.png",
     width: 1573,
     height: 1008,
+    // Valor as well. See botGeneratesPhone.
+    botGeneratesPhone: true,
   },
   "sams-club": {
     label: "Sam's Club",
@@ -252,6 +277,27 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // No bot loads these, so there is no gap between saving and being in use, and nothing
     // for the operator to confirm. See changesApplyImmediately.
     changesApplyImmediately: true,
+    selfServe: true,
+  },
+  crunchyroll: {
+    label: "Crunchyroll",
+    // Sampled from the logo itself, so the chip's tint and the mark sitting on it agree.
+    tint: "#FF8D0E",
+    logo: "/crunchyroll-logo.png",
+    width: 3840,
+    height: 2160,
+    // No tile. 12.6% of the mark is below 3:1 on the dark surface, and all of it is the
+    // grey wordmark, which is too small to read at chip size on any backing; the orange
+    // symbol that carries the identity clears it. On white it flips to 87.4% -- the
+    // orange washes out -- so a plate would sink the part that matters to lift the part
+    // that doesn't.
+    //
+    // Profiled like Target -- a login plus a full checkout profile, phone optional -- but
+    // with no profileSoftCap: the main bot runs every one.
+    //
+    // Its bot never reads a code out of the inbox, so an app password would do nothing.
+    // See usesEmailCodes.
+    usesEmailCodes: false,
     selfServe: true,
   },
 };
@@ -332,6 +378,14 @@ export function siteChangesApplyImmediately(site: string | null | undefined): bo
  */
 export function siteRequiresPhone(site: string | null | undefined): boolean {
   return siteStyle(site).requiresPhone === true;
+}
+
+/**
+ * Whether a profile here with no phone exports as Valor's "0" rather than a generated
+ * number. Read by the AYCD export -- see `botGeneratesPhone`.
+ */
+export function siteBotGeneratesPhone(site: string | null | undefined): boolean {
+  return siteStyle(site).botGeneratesPhone === true;
 }
 
 /**

@@ -42,6 +42,9 @@ export function bool(form: FormData, key: string): boolean {
  *
  * NOT accepted where the retailer requires a real number: `siteRequiresPhone` rejects it,
  * because a generated number cannot receive the call or text Walmart makes.
+ *
+ * And ONLY VALOR READS IT. Any other bot would take "0" as the number itself, so the AYCD
+ * export swaps it for a generated one on those retailers. See `botGeneratesPhone`.
  */
 export const BOT_SENTINEL_PHONE = "0";
 

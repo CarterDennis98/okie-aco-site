@@ -1,5 +1,6 @@
 /**
- * Random shipping identities for the profile editor.
+ * Random shipping identities for the profile editor -- and for the AYCD export, which draws
+ * a phone for a profile saved without one wherever the bot won't make one up itself.
  *
  * WHY THIS EXISTS: retailers throttle and cancel orders that look like one person
  * checking out five times, and the signal they key on is repeated name and phone across
@@ -127,6 +128,29 @@ export type Rng = () => number;
 
 function pick<T>(items: readonly T[], random: Rng): T {
   return items[Math.floor(random() * items.length)];
+}
+
+/**
+ * A repeatable `Rng`: one seed, one sequence, every time.
+ *
+ * For values that are generated but have to hold still. The export seeds a missing phone
+ * with the profile's id, so a profile goes out with the same number in every file -- as if
+ * the member had clicked the die and saved -- instead of a new one each time it's loaded.
+ *
+ * FNV-1a folds the seed to 32 bits and mulberry32 runs from there. Not cryptographic, and
+ * it doesn't need to be: it picks a plausible phone number, not a secret.
+ */
+export function seededRandom(seed: string): Rng {
+  let state = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    state = Math.imul(state ^ seed.charCodeAt(i), 0x01000193);
+  }
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), state | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 export type TakenName = { firstName: string; lastName: string };

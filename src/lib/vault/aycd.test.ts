@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { toAccountList, toAycdProfile, type ExportableProfile } from "@/lib/vault/aycd";
-import { BOT_SENTINEL_PHONE } from "@/lib/vault/profile-input";
+import { BOT_SENTINEL_PHONE, normalizePhone } from "@/lib/vault/profile-input";
 
 /**
  * What the export is allowed to put in the phone field.
@@ -13,9 +13,16 @@ import { BOT_SENTINEL_PHONE } from "@/lib/vault/profile-input";
  * first is legitimate and must keep passing through untouched. Valor's own store holds 173
  * profiles with punctuated phones and 2 with a ZIP+4, so normalizing those would be
  * mangling good data to fix a problem they never caused.
+ *
+ * And the fix for Valor is Valor's alone. Its "0" sentinel went out to every retailer, so
+ * a Target profile saved without a phone reached a bot that doesn't read the convention
+ * with "0" as its number. Off Valor a missing phone has to become a real-looking one.
  */
 
 const base: ExportableProfile = {
+  id: "cm0a1b2c3d4e5f6g7h8i9j0k",
+  // A Valor retailer, so the sentinel cases below read as they always have.
+  siteKey: "pokemon-center",
   name: "carter - 3",
   email: "buyer@example.com",
   firstName: "Jane",
@@ -48,13 +55,19 @@ const base: ExportableProfile = {
 const phoneOf = (over: Partial<ExportableProfile>) =>
   toAycdProfile({ ...base, ...over }).shippingAddress.phone;
 
-describe("toAycdProfile phone", () => {
+describe("toAycdProfile phone on a Valor retailer", () => {
   it("never writes an empty phone, whatever the column holds", () => {
     // All three are "we have no number for this member" as stored by the different
     // write paths -- the form nulls a blank field, an AYCD import can leave "".
     expect(phoneOf({ phone: null })).toBe(BOT_SENTINEL_PHONE);
     expect(phoneOf({ phone: "" })).toBe(BOT_SENTINEL_PHONE);
     expect(phoneOf({ phone: "   " })).toBe(BOT_SENTINEL_PHONE);
+  });
+
+  it("hands Valor its sentinel on every retailer it runs", () => {
+    for (const siteKey of ["pokemon-center", "best-buy"]) {
+      expect(phoneOf({ siteKey, phone: null }), siteKey).toBe(BOT_SENTINEL_PHONE);
+    }
   });
 
   it("writes the same value into both addresses", () => {
@@ -82,6 +95,65 @@ describe("toAycdProfile phone", () => {
 
   it("passes the sentinel through rather than treating it as missing", () => {
     expect(phoneOf({ phone: BOT_SENTINEL_PHONE })).toBe(BOT_SENTINEL_PHONE);
+  });
+});
+
+describe("toAycdProfile phone on any other bot", () => {
+  const offValor = (over: Partial<ExportableProfile>) =>
+    phoneOf({ siteKey: "target", phone: null, ...over });
+
+  it("writes a real number instead of Valor's sentinel", () => {
+    for (const siteKey of ["target", "crunchyroll"]) {
+      for (const phone of [null, "", "   "]) {
+        const out = offValor({ siteKey, phone });
+        // Ten digits `normalizePhone` would store unchanged -- the same bar the die meets.
+        expect(normalizePhone(out), `${siteKey} with ${JSON.stringify(phone)}`).toBe(out);
+      }
+    }
+  });
+
+  it("treats a stored sentinel as missing, since nothing here will read it", () => {
+    const out = offValor({ phone: BOT_SENTINEL_PHONE });
+    expect(out).not.toBe(BOT_SENTINEL_PHONE);
+    expect(normalizePhone(out)).toBe(out);
+  });
+
+  it("defaults to a real number on a retailer it doesn't know", () => {
+    // The direction that works on any bot, Valor included. See botGeneratesPhone.
+    const out = offValor({ siteKey: "some-new-store" });
+    expect(normalizePhone(out)).toBe(out);
+  });
+
+  it("takes the area code from the shipping state, as the form's die does", () => {
+    expect(["405", "580", "918"]).toContain(offValor({ shipState: "OK" }).slice(0, 3));
+    expect(["303", "719", "970"]).toContain(offValor({ shipState: "CO" }).slice(0, 3));
+  });
+
+  it("holds still: the same profile exports the same number every time", () => {
+    expect(offValor({})).toBe(offValor({}));
+    // ...while another profile gets its own, rather than the whole file sharing one.
+    expect(offValor({ id: "cm9z8y7x6w5v4u3t2s1r0q9p" })).not.toBe(offValor({}));
+  });
+
+  it("writes the same number into both addresses", () => {
+    const out = toAycdProfile({
+      ...base,
+      siteKey: "crunchyroll",
+      phone: null,
+      sameBillingAndShipping: false,
+      billLine1: "9 Other St",
+      billCity: "Tulsa",
+      billState: "OK",
+      billPostalCode: "74103",
+      billCountry: "US",
+    });
+    expect(normalizePhone(out.shippingAddress.phone)).toBe(out.shippingAddress.phone);
+    expect(out.billingAddress.phone).toBe(out.shippingAddress.phone);
+  });
+
+  it("leaves a number the member typed alone, punctuation included", () => {
+    expect(offValor({ phone: "4055550123" })).toBe("4055550123");
+    expect(offValor({ phone: "330-607-9000" })).toBe("330-607-9000");
   });
 });
 

@@ -75,7 +75,14 @@ describe("appliedStamp", () => {
   });
 
   it("leaves a change pending everywhere an export has to reach a bot", () => {
-    for (const site of ["target", "walmart", "pokemon-center", "best-buy", "sams-club"]) {
+    for (const site of [
+      "target",
+      "walmart",
+      "pokemon-center",
+      "best-buy",
+      "sams-club",
+      "crunchyroll",
+    ]) {
       expect(appliedStamp(site), `${site} must wait to be confirmed`).toEqual({
         appliedAt: null,
         appliedBy: null,

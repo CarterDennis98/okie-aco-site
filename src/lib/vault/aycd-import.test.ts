@@ -15,6 +15,8 @@ import { toAycdProfile } from "@/lib/vault/aycd";
  */
 
 const profile = {
+  id: "cm0a1b2c3d4e5f6g7h8i9j0k",
+  siteKey: "target",
   name: "carter - 3",
   email: "buyer@example.com",
   firstName: "Jane",

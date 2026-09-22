@@ -16,8 +16,10 @@
  * here reads the database or touches the keyring, so it can be tested directly.
  */
 
+import { siteBotGeneratesPhone } from "@/lib/sites";
 import { toAycdCardType, type CardBrand } from "@/lib/vault/card";
 import { BOT_SENTINEL_PHONE } from "@/lib/vault/profile-input";
+import { randomPhone, seededRandom } from "@/lib/vault/random-identity";
 
 /** Two-letter code to the full name AYCD writes. */
 const STATE_NAMES: Record<string, string> = {
@@ -139,6 +141,10 @@ export type AycdProfile = {
 
 /** Everything one profile needs, with secrets already decrypted by the caller. */
 export type ExportableProfile = {
+  /** Seeds the number a profile with no phone goes out with -- see exportPhone. */
+  id: string;
+  /** Whose bot the file is for, which decides what a missing phone becomes. */
+  siteKey: string;
   name: string;
   email: string;
   firstName: string;
@@ -195,28 +201,47 @@ function address(parts: {
   };
 }
 
+/**
+ * The phone field. NEVER "", and what goes in its place depends on the bot.
+ *
+ * Valor's profile importer rejects the WHOLE FILE -- "invalid profile list", naming no
+ * row -- if any profile carries an empty phone. One member with a blank phone therefore
+ * takes down the export for everybody in it, which is exactly what happened to the
+ * Pokémon Center batch: two profiles, one blank phone, nothing imported.
+ *
+ * Established by bisecting the failing file against Valor's own store. Everything else
+ * suspected first turned out to be fine and is deliberately NOT normalized here --
+ * punctuated phones ("330-607-9000") and ZIP+4 ("15001-2908") both import, and 173 and
+ * 2 live profiles respectively carry them.
+ *
+ * VALOR gets "0", which it reads as "generate one at checkout" -- the honest way to say
+ * we don't have one. See BOT_SENTINEL_PHONE.
+ *
+ * EVERY OTHER BOT would take "0" as the number itself, so there a missing phone becomes a
+ * generated one, drawn exactly as the form's die draws it: a real area code for the
+ * shipping state and an exchange that can be assigned. A stored "0" counts as missing
+ * too -- it is an instruction for a bot that will never read it. Which retailer is which
+ * is declared in sites.ts; see botGeneratesPhone.
+ *
+ * Walmart gets a generated number as well, and it is a placeholder, not a fix: Walmart
+ * calls or texts the number, so a made-up one reaches nobody. Only a profile saved before
+ * `siteRequiresPhone` existed can arrive here without one, and the admin roster already
+ * counts those as missing.
+ *
+ * Seeded by the profile id rather than drawn fresh, so the number holds still: a profile
+ * exports with the same phone every time, and two exports of the same data are the same
+ * file.
+ */
+function exportPhone(profile: ExportableProfile): string {
+  const stored = profile.phone?.trim() ?? "";
+  if (siteBotGeneratesPhone(profile.siteKey)) return stored || BOT_SENTINEL_PHONE;
+  if (stored && stored !== BOT_SENTINEL_PHONE) return stored;
+  return randomPhone(profile.shipState, seededRandom(profile.id));
+}
+
 export function toAycdProfile(profile: ExportableProfile): AycdProfile {
   const shippingName = `${profile.firstName} ${profile.lastName}`.trim();
-
-  /**
-   * A MISSING PHONE EXPORTS AS THE SENTINEL, NEVER AS "".
-   *
-   * Valor's profile importer rejects the WHOLE FILE -- "invalid profile list", naming no
-   * row -- if any profile carries an empty phone. One member with a blank phone therefore
-   * takes down the export for everybody in it, which is exactly what happened to the
-   * Pokémon Center batch: two profiles, one blank phone, nothing imported.
-   *
-   * Established by bisecting the failing file against Valor's own store. Everything else
-   * suspected first turned out to be fine and is deliberately NOT normalized here --
-   * punctuated phones ("330-607-9000") and ZIP+4 ("15001-2908") both import, and 173 and
-   * 2 live profiles respectively carry them.
-   *
-   * "0" rather than a made-up number: Valor reads a bare zero as "generate one at
-   * checkout", which is the honest way to say we don't have one. See BOT_SENTINEL_PHONE,
-   * and note `siteRequiresPhone` already stops a blank phone being saved at all on the
-   * one retailer where a generated number cannot work.
-   */
-  const phone = profile.phone?.trim() || BOT_SENTINEL_PHONE;
+  const phone = exportPhone(profile);
 
   const shippingAddress = address({
     name: shippingName,

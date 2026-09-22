@@ -45,8 +45,9 @@ export type AdminMemberRow = {
    * Profiles with no USABLE phone number, on a retailer that cannot check out without one.
    *
    * Counts a bot placeholder like "0" as missing, which it is here specifically: Walmart
-   * calls or texts the number, so one Valor invents at checkout is no better than none.
-   * The same value on Pokémon Center is correct and deliberate -- see BOT_SENTINEL_PHONE.
+   * calls or texts the number, so a made-up one -- including the one the AYCD export
+   * writes in place of a missing phone -- is no better than none. The same "0" on Pokémon
+   * Center is correct and deliberate -- see BOT_SENTINEL_PHONE.
    *
    * Always 0 elsewhere. These are the profiles that were saved before the phone became
    * required and have been failing every order since -- the form now blocks new ones, but

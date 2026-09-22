@@ -12,9 +12,10 @@
  * bisecting a real failure against Valor's own profile store -- not a guess at what a
  * strict parser might dislike:
  *
- *   - A BLANK PHONE fails the import. `toAycdProfile` now substitutes the "0" sentinel,
- *     so this no longer breaks an export; it is still listed, because "0" tells the bot
- *     to invent a number and on some retailers a real one is wanted.
+ *   - A BLANK PHONE fails the import. `toAycdProfile` fills it in -- the "0" sentinel on a
+ *     Valor retailer, a generated number everywhere else -- so this no longer breaks an
+ *     export; it is still listed, because either way nobody chose that number, and on
+ *     some retailers a real one is wanted.
  *   - A POSTAL CODE that is neither 5-digit nor ZIP+4 is junk that nothing can fix
  *     automatically -- inventing the missing digits would ship an order to the wrong
  *     place -- so it needs a human and is reported as a failure.
@@ -26,6 +27,7 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { siteBotGeneratesPhone } from "../src/lib/sites";
 import { isValidPostalCode } from "../src/lib/vault/profile-input";
 
 const prisma = new PrismaClient({
@@ -55,7 +57,10 @@ async function main() {
   for (const row of rows) {
     const where = `${row.siteKey} · ${row.name}${row.active ? "" : " (disabled)"}`;
 
-    if (!row.phone?.trim()) blankPhone.push(where);
+    if (!row.phone?.trim()) {
+      const fill = siteBotGeneratesPhone(row.siteKey) ? `"0"` : "a generated number";
+      blankPhone.push(`${where} — exports ${fill}`);
+    }
 
     // Billing columns are null when the member said billing matches shipping; that is
     // the flag doing its job, not a missing value.
@@ -75,12 +80,12 @@ async function main() {
   }
 
   console.log(`Checked ${rows.length} vault profiles.\n`);
-  console.log(`  no phone on file (exports as the "0" sentinel) : ${blankPhone.length}`);
+  console.log(`  no phone on file (filled in on export)         : ${blankPhone.length}`);
   console.log(`  postal code that is not a US ZIP               : ${badPostcode.length}`);
   console.log(`  state that is not a two-letter code            : ${badState.length}`);
 
   if (blankPhone.length) {
-    console.log(`\nNo phone on file — imports fine, but the bot will generate a number:`);
+    console.log(`\nNo phone on file — imports fine, with a number nobody typed:`);
     for (const line of blankPhone.slice(0, 40)) console.log(`  ${line}`);
     if (blankPhone.length > 40) console.log(`  … and ${blankPhone.length - 40} more`);
   }

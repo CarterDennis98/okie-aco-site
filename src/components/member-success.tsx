@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import Image from "next/image";
+import { connection } from "next/server";
 
 /**
  * Member hauls, from the success channel.
@@ -11,7 +12,9 @@ import Image from "next/image";
  * section. Dropping a file into public/success/ and pushing is the whole workflow, and
  * pushing is already how the site deploys.
  *
- * Ordered by FILENAME, so a numeric prefix controls the layout: 01-, 02-, and so on.
+ * SHUFFLED ON EVERY PAGE LOAD, so the filename no longer decides the layout. A numeric
+ * prefix like 01- is still stripped from the caption, which keeps the existing names
+ * reading cleanly, but it orders nothing.
  *
  * Renders nothing at all when the directory is empty or missing. The section has to be
  * able to not exist -- otherwise the page ships with an empty heading and a hole in it.
@@ -27,15 +30,35 @@ function captionFrom(file: string): string {
   return words ? `Member haul — ${words}` : "Member haul";
 }
 
-function photos(): { file: string; caption: string }[] {
-  if (!existsSync(DIR)) return [];
-  return readdirSync(DIR)
-    .filter((file) => EXTENSIONS.test(file))
-    .sort()
-    .map((file) => ({ file, caption: captionFrom(file) }));
+/**
+ * Fisher-Yates, so every order is equally likely. The usual one-liner,
+ * `sort(() => Math.random() - 0.5)`, is not: it favours some orders over others, so the
+ * same few photos would keep landing first.
+ */
+function shuffled<T>(items: T[]): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }
 
-export function MemberSuccess() {
+function photos(): { file: string; caption: string }[] {
+  if (!existsSync(DIR)) return [];
+  return shuffled(readdirSync(DIR).filter((file) => EXTENSIONS.test(file))).map((file) => ({
+    file,
+    caption: captionFrom(file),
+  }));
+}
+
+export async function MemberSuccess() {
+  // The shuffle has to run per request, never at build. The home page is force-dynamic
+  // today, so this changes nothing yet -- but a prerendered page would bake ONE order into
+  // the build and serve it to everyone until the next deploy, which looks exactly like
+  // the shuffle working on the first load and then never again.
+  await connection();
+
   const images = photos();
   if (images.length === 0) return null;
 
@@ -68,8 +91,10 @@ export function MemberSuccess() {
               // max-width container -- so the largest a tile ever renders is ~1/3 of it.
               sizes="(max-width: 640px) 50vw, 33vw"
               className="object-cover"
-              // Only the first row is likely above the fold; the rest can wait.
-              priority={index < 3}
+              // Only the first row is likely above the fold -- whichever photos the shuffle
+              // put there -- so the rest can wait. `preload` rather than `priority`, which
+              // Next 16 deprecated in its favour: same behaviour, new name.
+              preload={index < 3}
             />
           </li>
         ))}

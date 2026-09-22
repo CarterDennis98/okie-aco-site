@@ -19,6 +19,7 @@ import {
   onTint,
   selfServeSiteKeys,
   supportedSites,
+  siteBotGeneratesPhone,
   siteRequiresPhone,
   siteStoresCardCvv,
   siteUsesAccounts,
@@ -29,6 +30,7 @@ describe("siteKey", () => {
   it("matches the plain retailer names the bots report", () => {
     expect(siteKey("Target")).toBe("target");
     expect(siteKey("Walmart")).toBe("walmart");
+    expect(siteKey("Crunchyroll")).toBe("crunchyroll");
   });
 
   it("strips the US/USA region suffix", () => {
@@ -65,6 +67,7 @@ describe("siteStyle", () => {
       "Best Buy US",
       "Sam's Club",
       "Costco",
+      "Crunchyroll",
     ]) {
       expect(siteStyle(name).logo, `${name} should have a logo`).not.toBe("");
     }
@@ -85,6 +88,7 @@ describe("onTint", () => {
     expect(onTint("#0071CE")).toBe("#FFFFFF"); // Walmart blue
     expect(onTint("#FFCB05")).toBe("#121212"); // Pokemon Center yellow
     expect(onTint("#FFE000")).toBe("#121212"); // Best Buy yellow
+    expect(onTint("#FF8D0E")).toBe("#121212"); // Crunchyroll orange
   });
 });
 
@@ -96,7 +100,13 @@ describe("selfServeSiteKeys", () => {
    * Walmart chip -- and the chip is the only way to add one.
    */
   it("offers the retailers whose bots read stored credentials", () => {
-    expect(selfServeSiteKeys().sort()).toEqual(["costco", "pokemon-center", "target", "walmart"]);
+    expect(selfServeSiteKeys().sort()).toEqual([
+      "costco",
+      "crunchyroll",
+      "pokemon-center",
+      "target",
+      "walmart",
+    ]);
   });
 
   it("never goes empty, which would strand every member with no profiles", () => {
@@ -165,14 +175,15 @@ describe("siteUsesProfiles", () => {
 
 describe("usesEmailCodes", () => {
   /**
-   * Two different reasons to be false, and the flag has to serve both: Pokemon Center
-   * sends no code at all, and Costco is signed into by hand -- the operator can read a
+   * Three different reasons to be false, and the flag has to serve all of them: Pokemon
+   * Center sends no code at all, Costco is signed into by hand -- the operator can read a
    * code with the member, so a stored app password buys nothing and asking for one is a
-   * chore invented for them.
+   * chore invented for them -- and Crunchyroll's bot has a login but never opens the inbox.
    */
   it("is false where nothing of ours reads the mailbox", () => {
     expect(siteStyle("pokemon-center").usesEmailCodes).toBe(false);
     expect(siteStyle("costco").usesEmailCodes).toBe(false);
+    expect(siteStyle("crunchyroll").usesEmailCodes).toBe(false);
   });
 
   it("is unset -- and therefore true -- where a bot reads the code", () => {
@@ -190,7 +201,14 @@ describe("siteStoresCardCvv", () => {
    */
   it("is true only where the retailer prompts for a code", () => {
     expect(siteStoresCardCvv("costco")).toBe(true);
-    for (const key of ["target", "walmart", "pokemon-center", "best-buy", "sams-club"]) {
+    for (const key of [
+      "target",
+      "walmart",
+      "pokemon-center",
+      "best-buy",
+      "sams-club",
+      "crunchyroll",
+    ]) {
       expect(siteStoresCardCvv(key), `${key} stores no account CVV`).toBe(false);
     }
   });
@@ -227,7 +245,14 @@ describe("siteChangesApplyImmediately", () => {
    */
   it("is true only where no bot has to be loaded", () => {
     expect(siteChangesApplyImmediately("costco")).toBe(true);
-    for (const key of ["target", "walmart", "pokemon-center", "best-buy", "sams-club"]) {
+    for (const key of [
+      "target",
+      "walmart",
+      "pokemon-center",
+      "best-buy",
+      "sams-club",
+      "crunchyroll",
+    ]) {
       expect(siteChangesApplyImmediately(key), `${key} must wait`).toBe(false);
     }
   });
@@ -304,6 +329,8 @@ describe("siteRequiresPhone", () => {
     expect(siteRequiresPhone("walmart")).toBe(true);
     expect(siteRequiresPhone("target")).toBe(false);
     expect(siteRequiresPhone("pokemon-center")).toBe(false);
+    // Profiled like Target: optional, with the die, and filled in on export if left blank.
+    expect(siteRequiresPhone("crunchyroll")).toBe(false);
   });
 
   it("defaults to false for an unknown retailer", () => {
@@ -314,5 +341,32 @@ describe("siteRequiresPhone", () => {
 
   it("accepts the raw vendor spelling", () => {
     expect(siteRequiresPhone("https://www.walmart.com")).toBe(true);
+  });
+});
+
+describe("siteBotGeneratesPhone", () => {
+  /**
+   * The bug this pins: the export wrote Valor's "0" for a missing phone on EVERY retailer,
+   * so a Target profile saved without one reached a bot that isn't Valor with "0" as its
+   * phone number. Only Valor reads that as "make one up".
+   */
+  it("is true only on the retailers Valor runs", () => {
+    expect(siteBotGeneratesPhone("pokemon-center")).toBe(true);
+    expect(siteBotGeneratesPhone("best-buy")).toBe(true);
+    for (const key of ["target", "crunchyroll", "walmart", "sams-club"]) {
+      expect(siteBotGeneratesPhone(key), `${key} needs a real number`).toBe(false);
+    }
+  });
+
+  it("defaults to false for an unknown retailer", () => {
+    // The direction that works on any bot: a generated number imports on Valor too, while
+    // a "0" anywhere else is a phone number that isn't one.
+    expect(siteBotGeneratesPhone("some-new-store")).toBe(false);
+    expect(siteBotGeneratesPhone(null)).toBe(false);
+  });
+
+  it("accepts the raw vendor spelling", () => {
+    expect(siteBotGeneratesPhone("Pokemon Center US")).toBe(true);
+    expect(siteBotGeneratesPhone("Best Buy USA")).toBe(true);
   });
 });

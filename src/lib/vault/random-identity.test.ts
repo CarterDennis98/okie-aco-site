@@ -8,7 +8,12 @@
  */
 import { describe, expect, it } from "vitest";
 import { normalizePhone } from "@/lib/vault/profile-input";
-import { randomFirstName, randomLastName, randomPhone } from "@/lib/vault/random-identity";
+import {
+  randomFirstName,
+  randomLastName,
+  randomPhone,
+  seededRandom,
+} from "@/lib/vault/random-identity";
 
 /** A deterministic rng cycling through the given fractions. */
 function rngOf(...values: number[]): () => number {
@@ -50,6 +55,42 @@ describe("randomPhone", () => {
     // 211, 311, ... 911 are never assigned, and a retailer's validator rejects them.
     for (let i = 0; i < 300; i++) {
       expect(randomPhone("CA").slice(3, 6)).not.toMatch(/11$/);
+    }
+  });
+});
+
+describe("seededRandom", () => {
+  /**
+   * What the export relies on: a profile with no phone goes out with the SAME generated
+   * number in every file, so its seed has to replay exactly.
+   */
+  it("replays the same sequence for the same seed", () => {
+    const a = seededRandom("cm0a1b2c3d4e5f6g7h8i9j0k");
+    const b = seededRandom("cm0a1b2c3d4e5f6g7h8i9j0k");
+    for (let i = 0; i < 20; i++) expect(a()).toBe(b());
+  });
+
+  it("gives different seeds different numbers", () => {
+    const phones = new Set(
+      Array.from({ length: 200 }, (_, i) => randomPhone("OK", seededRandom(`profile-${i}`))),
+    );
+    // Not a uniqueness guarantee -- a collision is possible, just not in this fixed set.
+    expect(phones.size).toBe(200);
+  });
+
+  it("stays inside [0, 1), which every pick() indexes by", () => {
+    const next = seededRandom("range");
+    for (let i = 0; i < 5000; i++) {
+      const value = next();
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThan(1);
+    }
+  });
+
+  it("still yields a number the vault will store", () => {
+    for (let i = 0; i < 500; i++) {
+      const phone = randomPhone("TX", seededRandom(`seed-${i}`));
+      expect(normalizePhone(phone), `seed-${i} produced ${phone}`).toBe(phone);
     }
   });
 });
