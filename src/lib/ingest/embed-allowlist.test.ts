@@ -63,6 +63,42 @@ describe("sanitizeEmbed", () => {
     expect(dropped).toEqual([]);
   });
 
+  it("keeps Stellar's own spellings and drops its credentials", () => {
+    // Stellar names quantity "Qty" and exposes a "SKU"; both were dropped before it was
+    // added, which cost nothing but made the stored embed less recoverable than the rest.
+    const { embed, dropped, droppedSensitive } = sanitizeEmbed({
+      title: "**Checked Out!**",
+      url: "https://www.crunchyroll.com/store/products/p/196214158801",
+      fields: [
+        { name: "Site", value: "crunchyroll" },
+        { name: "Mode", value: "normal" },
+        {
+          name: "Product",
+          value: "Pokemon - 30th Celebration Trading Card Game Elite Trainer Box",
+        },
+        { name: "SKU", value: "196214158801" },
+        { name: "Qty", value: "2" },
+        { name: "Price", value: "99.98 USD" },
+        { name: "Profile", value: "||carter - 3||" },
+        { name: "Order ID", value: "||US00000001||" },
+        { name: "Account", value: "buyer@example.com:hunter2" },
+        { name: "Proxy", value: "1.2.3.4:8080:user:pass" },
+      ],
+    });
+    expect((embed?.fields as { name: string }[]).map((f) => f.name)).toEqual([
+      "Site",
+      "Mode",
+      "Product",
+      "SKU",
+      "Qty",
+      "Price",
+      "Profile",
+      "Order ID",
+    ]);
+    expect(dropped.sort()).toEqual(["Account", "Proxy"]);
+    expect(droppedSensitive.sort()).toEqual(["Account", "Proxy"]);
+  });
+
   it("keeps every spelling of the order field", () => {
     for (const name of ["Order Number", "Order ID", "Order #"]) {
       const { embed, dropped } = sanitizeEmbed({ fields: [{ name, value: "4471983" }] });

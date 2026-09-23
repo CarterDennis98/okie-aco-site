@@ -18,7 +18,13 @@ const snowflake = z.string().regex(/^\d{15,25}$/, "not a Discord snowflake");
 
 export const checkoutInput = z
   .object({
-    sourceBot: z.enum(["valor", "shikari", "refract", "swft", "hidden"]),
+    /**
+     * A new vendor lands HERE FIRST, deployed before the bot starts sending it. The bot's
+     * outbox holds a batch the server rejects and stops flushing until it is accepted, so
+     * one checkout from a vendor this list doesn't know stalls every checkout behind it --
+     * every vendor, mid-drop. ingest.test.ts checks this list against the mirror's fixtures.
+     */
+    sourceBot: z.enum(["valor", "shikari", "refract", "swft", "hidden", "stellar"]),
     discordMessageId: snowflake,
     discordChannelId: snowflake,
     /** Null for vendors that omit it, and for declines that never got one. */

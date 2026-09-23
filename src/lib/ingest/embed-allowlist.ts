@@ -27,6 +27,10 @@ const ALLOWED_FIELDS = new Set([
   "product",
   "item",
   "quantity",
+  // Stellar's spelling of quantity, and its product id -- both there for recoverability,
+  // like the rest of this list.
+  "qty",
+  "sku",
   "profile",
   "price",
   "total",
