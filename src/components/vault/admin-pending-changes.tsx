@@ -5,7 +5,7 @@ import { useActionState } from "react";
 import type { PendingChangeGroup, PendingChangeRow } from "@/db/queries/admin-vault";
 import { CHANGE_FILTER_PARAM, EMAIL_BUCKET } from "@/lib/vault/pending-filter";
 import { relativeTime } from "@/lib/format";
-import { markChangesApplied } from "@/lib/vault/admin-actions";
+import { markChangesApplied } from "@/lib/vault/site-admin-actions";
 
 /**
  * Edits members have made that nobody has confirmed yet.

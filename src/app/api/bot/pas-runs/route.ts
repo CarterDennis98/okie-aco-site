@@ -32,7 +32,12 @@ function deliveryStatusOf(status: string | undefined): DeliveryStatus {
  *
  * IDEMPOTENT ON `sessionId`. A retry, a bot restart mid-post, or the outbox re-flushing
  * must never produce a second set of bills, because that reads to a member as being
- * charged twice. The run upserts and its bills upsert on (run, member).
+ * charged twice. The run upserts and its bills upsert on (run, member, payee).
+ *
+ * ONE BILL PER PERSON OWED. A member who hit Crunchyroll and Target in the same window owes
+ * Chess for one and the operator for the other, so the bot sends two bills for them and each
+ * is stored with its own `payeeId`. A bill without one is the operator's: the run's
+ * `operatorId` is who every bill was owed to before payees existed.
  *
  * AMOUNTS ARE A SNAPSHOT. `feeCents` and the totals are stored exactly as the bot
  * computed them and are never recalculated here. `computeBills` rounds the OG discount
@@ -133,7 +138,10 @@ export async function POST(request: Request) {
     if (owned.every((p) => !p.billable)) nonBillableUsers.add(userId);
   }
 
-  const deliveryByUser = new Map(input.delivery.map((d) => [d.userId, d]));
+  // Keyed per BILL, not per member, now that one member can hold two bills in a run.
+  const payeeOf = (entry: { payeeId?: string }) => entry.payeeId ?? input.operatorId;
+  const billKey = (userId: string, payeeId: string) => `${userId}:${payeeId}`;
+  const deliveryByBill = new Map(input.delivery.map((d) => [billKey(d.userId, payeeOf(d)), d]));
 
   const run = await prisma.pasRun.upsert({
     where: { sessionId: input.sessionId },
@@ -165,8 +173,11 @@ export async function POST(request: Request) {
       continue;
     }
 
+    const payeeId = payeeOf(bill);
     const before = await prisma.pasBill.findUnique({
-      where: { pasRunId_discordUserId: { pasRunId: run.id, discordUserId: bill.userId } },
+      where: {
+        pasRunId_discordUserId_payeeId: { pasRunId: run.id, discordUserId: bill.userId, payeeId },
+      },
       select: { id: true },
     });
     if (before) {
@@ -174,11 +185,12 @@ export async function POST(request: Request) {
       continue;
     }
 
-    const delivery = deliveryByUser.get(bill.userId);
+    const delivery = deliveryByBill.get(billKey(bill.userId, payeeId));
     await prisma.pasBill.create({
       data: {
         pasRunId: run.id,
         discordUserId: bill.userId,
+        payeeId,
         subtotalCents: bill.subtotalCents,
         discountCents: bill.discountCents,
         totalCents: bill.totalCents,

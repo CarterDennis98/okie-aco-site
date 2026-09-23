@@ -8,10 +8,12 @@ import { getPendingChangeCount } from "@/db/queries/admin-vault";
 import { getMemberDropCheckouts } from "@/db/queries/drop-checkouts";
 import { getMemberDashboard } from "@/db/queries/member";
 import { getEmailsNeedingAppPassword, getMemberProfiles } from "@/db/queries/vault";
+import { otherPayee, payHint } from "@/lib/billing/payees";
 import { count, plural } from "@/lib/format";
 import { money } from "@/lib/money";
 import { signOutOfSite } from "@/lib/auth/actions";
-import { requireMember } from "@/lib/auth/guard";
+import { ALL_SITES, hasAdminArea } from "@/lib/auth/admin-scope";
+import { chargeScopeOf, requireMember } from "@/lib/auth/guard";
 
 // Never a build-time artifact and never cached: this is one member's private data.
 export const dynamic = "force-dynamic";
@@ -33,14 +35,19 @@ export default async function DashboardPage() {
   // The guard lives in the page, not the layout, and its return value is the ONLY
   // source of the id below. Nothing here reads an id from the URL.
   const viewer = await requireMember();
+  // Full admins and site admins both get the admin links; each badge counts only what that
+  // admin handles -- a site admin's own retailers' changes, and the charges owed to them.
+  const showAdmin = hasAdminArea(viewer.adminSites);
   const [data, profileGroups, needingAppPassword, pendingConfirmation, pendingChanges, drops] =
     await Promise.all([
       getMemberDashboard(viewer.discordUserId),
       getMemberProfiles(viewer.discordUserId),
       getEmailsNeedingAppPassword(viewer.discordUserId),
-      // Only the operator sees these badges, and only they pay for the queries.
-      viewer.isAdmin ? getPendingConfirmationCount() : Promise.resolve(0),
-      viewer.isAdmin ? getPendingChangeCount() : Promise.resolve(0),
+      // Only admins see these badges, and only they pay for the queries.
+      showAdmin ? getPendingConfirmationCount(chargeScopeOf(viewer)) : Promise.resolve(0),
+      showAdmin
+        ? getPendingChangeCount(viewer.adminSites === ALL_SITES ? undefined : viewer.adminSites)
+        : Promise.resolve(0),
       // The operator's house profiles are never billed, so they have no charges and no
       // per-drop breakdown. This is that breakdown, and it replaces the balance box they
       // could only ever see $0 in.
@@ -50,6 +57,12 @@ export default async function DashboardPage() {
   const allProfiles = profileGroups.flatMap((g) => g.profiles);
   const activeProfiles = allProfiles.filter((p) => p.active).length;
   const expiredCards = allProfiles.filter((p) => p.cardExpired).length;
+
+  // Who they owe besides the operator. When anyone is, the balance box says how much goes to
+  // whom: one total and one payment button would send Chess's Crunchyroll fees to the
+  // operator. The operator's share keeps its Discord payment link, exactly as before.
+  const owedToOthers = data.owedByPayee.some((entry) => otherPayee(entry.payeeId));
+  const owesOperator = data.owedByPayee.some((entry) => !otherPayee(entry.payeeId));
 
   return (
     <>
@@ -97,7 +110,7 @@ export default async function DashboardPage() {
             >
               Profiles
             </Link>
-            {viewer.isAdmin && (
+            {showAdmin && (
               <>
                 <Link
                   href="/admin/charges"
@@ -138,13 +151,16 @@ export default async function DashboardPage() {
                 {/* App passwords, which belong to people rather than retailers -- see
                     /admin/imap. Its own entry because it is where drop-day "their codes
                     aren't arriving" starts, and hunting for it under a retailer cost time
-                    at exactly the wrong moment. */}
-                <Link
-                  href="/admin/imap"
-                  className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
-                >
-                  IMAP
-                </Link>
+                    at exactly the wrong moment. A full admin's only: there is no
+                    one-retailer slice of a mailbox to give a site admin. */}
+                {viewer.isAdmin && (
+                  <Link
+                    href="/admin/imap"
+                    className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
+                  >
+                    IMAP
+                  </Link>
+                )}
               </>
             )}
             <form action={signOutOfSite}>
@@ -190,9 +206,32 @@ export default async function DashboardPage() {
                   ? "You're all settled up."
                   : `Across ${data.unpaidCount} unpaid ${plural(data.unpaidCount, "charge")} — see the breakdown below.`}
               </p>
+              {owedToOthers && (
+                <ul className="mt-3 space-y-1.5 text-sm text-[var(--color-fg)]">
+                  {data.owedByPayee.map((entry) => {
+                    const payee = otherPayee(entry.payeeId);
+                    return (
+                      <li key={entry.payeeId}>
+                        <span className="font-semibold text-white tabular-nums">
+                          {money(entry.cents)}
+                        </span>{" "}
+                        to {payee ? payee.name : "Okie ACO"}
+                        {payee && (
+                          <span className="block text-xs text-[var(--color-muted)]">
+                            {payHint(payee)}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
 
             {data.unpaidCount > 0 ? (
+              // The operator's payment channel, and only for what is owed to the operator.
+              // A member who owes nobody but Chess has his handles on the left instead.
+              owesOperator &&
               PAYMENT_URL && (
                 <a
                   href={PAYMENT_URL}
@@ -205,7 +244,9 @@ export default async function DashboardPage() {
                   rel="noopener noreferrer"
                   className="rounded-lg bg-[var(--color-brand)] px-6 py-3 font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)]"
                 >
-                  Payment methods
+                  {/* Named when there is someone else to pay, so it can't be taken for "how
+                      to pay everything above". */}
+                  {owedToOthers ? "Okie ACO payment methods" : "Payment methods"}
                   {/* Marks it as leaving the site, the same way the app-password links do.
                       Hidden from assistive tech, which announces the new tab itself. */}
                   <span aria-hidden> ↗</span>
@@ -278,6 +319,13 @@ export default async function DashboardPage() {
                         ) : (
                           <span className="inline-flex items-center rounded-full bg-[var(--color-brand)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase">
                             Unpaid
+                          </span>
+                        )}
+                        {/* Who it goes to, when it isn't the operator: the one thing that
+                            changes where the money is sent. */}
+                        {otherPayee(charge.payeeId) && (
+                          <span className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase">
+                            to {otherPayee(charge.payeeId)!.name}
                           </span>
                         )}
                       </p>

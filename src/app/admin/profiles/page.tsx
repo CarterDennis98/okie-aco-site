@@ -11,7 +11,8 @@ import {
 import { AdminMemberPicker } from "@/components/vault/admin-member-picker";
 import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
-import { requireAdmin } from "@/lib/auth/guard";
+import { ALL_SITES } from "@/lib/auth/admin-scope";
+import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
 import { count, plural } from "@/lib/format";
 import { siteStoresCardCvv, siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import {
@@ -25,9 +26,13 @@ import { RevealAppPassword } from "@/components/vault/reveal-app-password";
 /**
  * Site -> member -> everything about their profiles.
  *
- * `requireAdmin()` is called here, in the page, not in a layout: a layout doesn't
+ * `requireAnyAdmin()` is called here, in the page, not in a layout: a layout doesn't
  * re-render on client navigation and doesn't wrap Server Actions. It 404s rather than
  * 403s, so a non-admin can't tell this route exists.
+ *
+ * A SITE ADMIN sees their own retailers and nothing else: the picker, the change queue and
+ * every read below are scoped to `viewer.adminSites`, and the export route checks the same
+ * list on its own. Mailbox controls stay full-admin-only -- see requireAnyAdmin.
  *
  * Card brand, last four, and expiry only -- never a card number or CVV. The one secret
  * readable here is an app password, behind an explicit reveal that writes a
@@ -58,7 +63,7 @@ export default async function AdminProfilesPage({
     status?: string;
   }>;
 }) {
-  const viewer = await requireAdmin();
+  const viewer = await requireAnyAdmin();
   const params = await searchParams;
   const { site, member, changes: changeFilter } = params;
 
@@ -68,11 +73,20 @@ export default async function AdminProfilesPage({
   const filtering = isProfileFilterActive(filter);
   const search = params.q?.trim() || undefined;
 
-  const [sites, pending, changes] = await Promise.all([
-    getVaultSites(),
-    getPendingConfirmationCount(),
-    getPendingChanges(changeFilter),
+  // A site admin's retailers, or undefined for a full admin -- handed to every read that
+  // spans retailers, so nothing outside them is fetched at all.
+  const scope = viewer.adminSites === ALL_SITES ? undefined : viewer.adminSites;
+
+  const [sitesHeld, pending, changes] = await Promise.all([
+    getVaultSites(scope),
+    getPendingConfirmationCount(chargeScopeOf(viewer)),
+    getPendingChanges(changeFilter, scope),
   ]);
+  // A site admin always sees their own retailers, even before anyone has saved a profile
+  // there: a page that opened on "nothing imported yet" would read as having no access.
+  const sites = scope
+    ? scope.map((key) => sitesHeld.find((s) => s.siteKey === key) ?? { siteKey: key, count: 0 })
+    : sitesHeld;
   if (sites.length === 0) {
     return (
       <>
@@ -91,7 +105,9 @@ export default async function AdminProfilesPage({
   // Guest checkout means no login and no emailed code. Every "account" and "app password"
   // control on this page is gated on these -- see the export row below.
   const usesAccounts = siteUsesAccounts(siteKey);
-  const usesEmailCodes = style.usesEmailCodes !== false;
+  // App passwords are a FULL admin's: a mailbox serves every retailer its owner uses, so the
+  // reveals and the IMAP links stay off for a site admin even where the retailer reads codes.
+  const usesEmailCodes = style.usesEmailCodes !== false && viewer.isAdmin;
   // Costco: an email and a password, and no card or address at all, because the order is
   // placed by hand from the member's own account. Every column and every export below
   // that assumes a checkout profile is gated on this. See usesProfiles in sites.ts.
@@ -170,12 +186,14 @@ export default async function AdminProfilesPage({
               </span>
             )}
           </Link>
-          <Link
-            href="/admin/imap"
-            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
-          >
-            IMAP
-          </Link>
+          {viewer.isAdmin && (
+            <Link
+              href="/admin/imap"
+              className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            >
+              IMAP
+            </Link>
+          )}
         </div>
 
         <h1 className="mt-5 text-3xl font-black tracking-tight text-white">Profiles</h1>

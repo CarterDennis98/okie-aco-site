@@ -142,6 +142,14 @@ crafted header skipping middleware outright.
 - **The session carries identity and nothing else.** `isOg` is re-read from the database
   and `isAdmin` from `ADMIN_DISCORD_IDS` on every request, so a role change takes effect
   immediately instead of when a cookie expires.
+- **Site admins** (`SITE_ADMIN_DISCORD_IDS`, `site:id` pairs) run one retailer's bot and
+  administer that retailer only: its profiles and exports, its profile changes, and the
+  charges owed to them. They pass `requireAnyAdmin()` — never `requireAdmin()`, which still
+  means a full admin — and every page and action that admits them narrows what it reads by
+  `viewer.adminSites`, or by who a charge is owed to. IMAP and app passwords stay
+  full-admin only. Like `ADMIN_DISCORD_IDS` it is an env allowlist, never a Discord role.
+  On Cloud Run it is set by hand, like the other service config:
+  `gcloud run services update okie-aco-site --region us-central1 --update-env-vars SITE_ADMIN_DISCORD_IDS=crunchyroll:<id>`.
 - Member queries take `discordUserId` as a **required first argument**, sourced only
   from the guard's return value. Resource lookups carry both predicates
   (`where: { id, discordUserId }`) rather than fetch-then-compare, which is what makes a

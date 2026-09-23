@@ -60,22 +60,31 @@ describe.skipIf(!canConnect)("member queries", () => {
       },
     });
 
+    // Owed to the run's operator, as every bill is unless the bot names another payee.
     const [alice, bob, aliceDry] = await Promise.all([
       prisma.pasBill.create({
         data: {
           pasRunId: realRun.id,
           discordUserId: ALICE,
+          payeeId: ALICE,
           subtotalCents: 1600,
           totalCents: 1600,
         },
       }),
       prisma.pasBill.create({
-        data: { pasRunId: realRun.id, discordUserId: BOB, subtotalCents: 800, totalCents: 800 },
+        data: {
+          pasRunId: realRun.id,
+          discordUserId: BOB,
+          payeeId: ALICE,
+          subtotalCents: 800,
+          totalCents: 800,
+        },
       }),
       prisma.pasBill.create({
         data: {
           pasRunId: dryRun.id,
           discordUserId: ALICE,
+          payeeId: ALICE,
           subtotalCents: 5000,
           totalCents: 5000,
         },

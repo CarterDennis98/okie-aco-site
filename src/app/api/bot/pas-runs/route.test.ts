@@ -25,8 +25,11 @@ const MIXED = "999900000000000022";
 const NORMAL = "999900000000000023";
 // Billed for the first time; no profile rows here yet.
 const STRANGER = "999900000000000024";
+// Somebody other than the operator a member can owe -- Chess, for Crunchyroll.
+const PAYEE = "999900000000000025";
 
 const SESSION = "test-pas-run-billable";
+const SPLIT_SESSION = "test-pas-run-split";
 
 function post(body: unknown): Promise<Response> {
   return POST(
@@ -91,10 +94,30 @@ describe.skipIf(!canRun)("POST /api/bot/pas-runs", () => {
 
     await prisma.profile.createMany({
       data: [
-        { profileKey: "test-house-a", displayName: "house a", discordUserId: OPERATOR, billable: false },
-        { profileKey: "test-house-b", displayName: "house b", discordUserId: OPERATOR, billable: false },
-        { profileKey: "test-mixed-off", displayName: "mixed off", discordUserId: MIXED, billable: false },
-        { profileKey: "test-mixed-on", displayName: "mixed on", discordUserId: MIXED, billable: true },
+        {
+          profileKey: "test-house-a",
+          displayName: "house a",
+          discordUserId: OPERATOR,
+          billable: false,
+        },
+        {
+          profileKey: "test-house-b",
+          displayName: "house b",
+          discordUserId: OPERATOR,
+          billable: false,
+        },
+        {
+          profileKey: "test-mixed-off",
+          displayName: "mixed off",
+          discordUserId: MIXED,
+          billable: false,
+        },
+        {
+          profileKey: "test-mixed-on",
+          displayName: "mixed on",
+          discordUserId: MIXED,
+          billable: true,
+        },
         { profileKey: "test-normal", displayName: "normal", discordUserId: NORMAL, billable: true },
       ],
     });
@@ -134,6 +157,51 @@ describe.skipIf(!canRun)("POST /api/bot/pas-runs", () => {
     const billed = await billedUserIds();
     expect(billed).not.toContain(OPERATOR);
   });
+
+  it("stores a bill with no payee as the operator's -- how every bill arrived before payees", async () => {
+    const bills = await prisma.pasBill.findMany({
+      where: { run: { sessionId: SESSION } },
+      select: { payeeId: true },
+    });
+    expect(bills.length).toBeGreaterThan(0);
+    expect(bills.every((bill) => bill.payeeId === OPERATOR)).toBe(true);
+  });
+
+  /**
+   * One member, two people owed, one run: a Target checkout owed to the operator and a
+   * Crunchyroll one owed to Chess. They are two bills with two DMs, and each has to keep its
+   * own delivery result -- matching deliveries by member alone would stamp one bill with the
+   * other's outcome.
+   */
+  it("stores one bill per person owed, each with its own delivery", async () => {
+    const split = {
+      ...payload,
+      sessionId: SPLIT_SESSION,
+      bills: [billFor(NORMAL), { ...billFor(NORMAL), payeeId: PAYEE }],
+      delivery: [
+        { userId: NORMAL, status: "sent", messageId: "1537826897604386826" },
+        { userId: NORMAL, payeeId: PAYEE, status: "dms-closed", messageId: null },
+      ],
+    };
+
+    const response = await post(split);
+    expect(response.status).toBe(200);
+    expect((await response.json()).billsCreated).toBe(2);
+
+    const bills = await prisma.pasBill.findMany({
+      where: { run: { sessionId: SPLIT_SESSION } },
+      select: { payeeId: true, discordUserId: true, deliveryStatus: true },
+    });
+    const byPayee = new Map(bills.map((bill) => [bill.payeeId, bill]));
+    expect(byPayee.get(OPERATOR)?.deliveryStatus).toBe("SENT");
+    expect(byPayee.get(PAYEE)?.deliveryStatus).toBe("DMS_CLOSED");
+    expect(bills.every((bill) => bill.discordUserId === NORMAL)).toBe(true);
+
+    // Idempotent on (run, member, payee): the re-post finds both and creates neither.
+    const again = await (await post(split)).json();
+    expect(again.billsCreated).toBe(0);
+    expect(again.billsAlreadyPresent).toBe(2);
+  });
 });
 
 async function billedUserIds(): Promise<string[]> {
@@ -145,7 +213,7 @@ async function billedUserIds(): Promise<string[]> {
 }
 
 async function cleanup() {
-  await prisma.pasRun.deleteMany({ where: { sessionId: SESSION } });
+  await prisma.pasRun.deleteMany({ where: { sessionId: { in: [SESSION, SPLIT_SESSION] } } });
   await prisma.profile.deleteMany({ where: { profileKey: { startsWith: "test-" } } });
   await prisma.item.deleteMany({ where: { productKey: "test-billable-product" } });
   await prisma.discordMember.deleteMany({

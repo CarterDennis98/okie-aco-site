@@ -1,5 +1,6 @@
 import { prisma } from "@/db/client";
-import { requireAdmin } from "@/lib/auth/guard";
+import { coversSite } from "@/lib/auth/admin-scope";
+import { requireAnyAdmin } from "@/lib/auth/guard";
 import { siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { toAccountList, toAycdProfile } from "@/lib/vault/aycd";
@@ -22,10 +23,16 @@ import { decrypt } from "@/lib/vault/crypto";
  * current, so the site-less form is now the one the UI links to. `site` is still accepted
  * there for the old links.
  *
- * Guarded by `requireAdmin`, which 404s rather than 403s, and every call writes a
+ * Guarded by `requireAnyAdmin`, which 404s rather than 403s, and every call writes a
  * `vault_exports` row before the body is produced -- ONE PER MEMBER when several were
  * selected, so the table can still say whose credentials left. If credentials ever surface
  * somewhere they shouldn't, that table is the trail.
+ *
+ * A SITE ADMIN exports their own retailers and nothing else: Chess gets the Crunchyroll
+ * profiles his bot runs on, and a hand-typed `?site=target` is a 404 exactly as it is for a
+ * member. `format=imap` is refused outright -- a mailbox serves every retailer its owner
+ * uses, so there is no one-retailer slice of those app passwords to hand over. Checked here
+ * rather than trusted from the page, because this route is where the secrets are.
  *
  * LOGIN-ONLY RETAILERS (Costco) have accounts and no profiles, so `format=accounts` reads
  * the accounts directly and `format=aycd` is refused rather than answered with `[]`. No
@@ -52,11 +59,20 @@ type BotScope = "main" | "backup" | "all";
 const MAX_MEMBERS = 200;
 
 export async function GET(request: Request) {
-  // Throws NEXT_NOT_FOUND for anyone who isn't an admin.
-  const viewer = await requireAdmin();
+  // Throws NEXT_NOT_FOUND for anyone who isn't an admin of some kind.
+  const viewer = await requireAnyAdmin();
 
   const url = new URL(request.url);
   const siteKey = url.searchParams.get("site") ?? "";
+
+  // Before anything else is parsed, let alone read: outside a site admin's retailers this
+  // route does not exist for them.
+  if (!viewer.isAdmin) {
+    const format = url.searchParams.get("format") ?? "aycd";
+    if (format === "imap" || !coversSite(viewer.adminSites, siteKey)) {
+      return new Response("Not found", { status: 404 });
+    }
+  }
   // REPEATABLE: `&member=a&member=b` exports both in one file. Deduped, because the picker
   // can send the same id twice and `in: [x, x]` would be a silent no-op to debug.
   const memberIds = [

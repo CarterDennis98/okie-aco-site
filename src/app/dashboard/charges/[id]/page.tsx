@@ -7,6 +7,7 @@ import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getMemberCharge } from "@/db/queries/member";
 import { count, plural } from "@/lib/format";
 import { methodLabel } from "@/lib/billing/methods";
+import { otherPayee, payHint } from "@/lib/billing/payees";
 import { money } from "@/lib/money";
 import { requireMember } from "@/lib/auth/guard";
 
@@ -40,6 +41,10 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
   // from one that doesn't exist -- 404, never 403.
   const charge = await getMemberCharge(viewer.discordUserId, id);
   if (!charge) notFound();
+
+  // Someone other than the operator, when this charge is owed to them. The operator's own
+  // charges are paid through the Discord channel linked from the dashboard, as always.
+  const payee = otherPayee(charge.payeeId);
 
   return (
     <>
@@ -162,6 +167,31 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
             </tfoot>
           </table>
         </div>
+
+        {/* Before the claim form, because it answers the question the form assumes is
+            settled: who the money goes to. Paying the operator for a charge that is Chess's
+            is the mistake this exists to prevent. Hidden once settled -- nothing to send. */}
+        {payee && !charge.paidAt && (
+          <section className="mt-8 rounded-xl border border-[var(--color-brand)]/40 bg-[var(--color-brand)]/10 px-5 py-4">
+            <h2 className="text-sm font-bold text-white">Pay {payee.name}</h2>
+            <p className="mt-1 text-sm text-[var(--color-muted)]">
+              This charge is paid to {payee.name}, not to Okie ACO.
+            </p>
+            {payee.handles.length > 0 ? (
+              <ul className="mt-3 space-y-1 text-sm">
+                {payee.handles.map((handle) => (
+                  <li key={`${handle.method}:${handle.value}`} className="text-[var(--color-fg)]">
+                    <span className="text-[var(--color-muted)]">{methodLabel(handle.method)}</span>{" "}
+                    <span className="font-semibold text-white select-all">{handle.value}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-sm text-[var(--color-fg)]">{payHint(payee)}</p>
+            )}
+          </section>
+        )}
+
         <ClaimPayment
           billId={charge.id}
           totalCents={charge.totalCents}

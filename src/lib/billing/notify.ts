@@ -28,6 +28,11 @@ export type PaymentClaim = {
   dropLabel: string;
   method: string;
   note: string | null;
+  /**
+   * Who the money went to, when it isn't the operator. This channel is the operator's, so
+   * a claim on a charge owed to Chess has to say so -- it is his account to check, not theirs.
+   */
+  payeeName?: string | null;
 };
 
 function money(cents: number): string {
@@ -38,8 +43,9 @@ export async function notifyPaymentClaim(claim: PaymentClaim): Promise<void> {
   if (!WEBHOOK_URL) return;
 
   const note = claim.note ? `\n-# reference: ${claim.note}` : "";
+  const to = claim.payeeName ? ` to **${claim.payeeName}**` : "";
   const content =
-    `**${claim.memberName}** says they've sent ${money(claim.amountCents)} ` +
+    `**${claim.memberName}** says they've sent ${money(claim.amountCents)}${to} ` +
     `for ${claim.dropLabel} via ${claim.method}.${note}`;
 
   try {

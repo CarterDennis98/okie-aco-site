@@ -60,6 +60,8 @@ type RawCheckout = {
 
 type SessionBill = {
   userId: string;
+  /** Who the member pays. Absent on sessions from before payees: the operator, then. */
+  payeeId?: string;
   lines: {
     productKey: string;
     label: string;
@@ -84,7 +86,11 @@ type Session = {
   products: Record<string, { key: string; label: string; feeCents: number | null }>;
   profiles: Record<string, { key: string; userId: string | null }>;
   bills: Record<string, SessionBill>;
-  delivery: { results: { userId: string; status: string; messageId?: string; at: number }[] };
+  delivery: {
+    // `billKey` names which of a member's bills a delivery was. Absent on sessions from
+    // before payees, where a member had one bill and its key was their id.
+    results: { userId: string; billKey?: string; status: string; messageId?: string; at: number }[];
+  };
 };
 
 // timezone=UTC for the same reason as src/db/client.ts: Prisma sends naive timestamps
@@ -332,7 +338,8 @@ async function main() {
       supersededRuns++;
       continue;
     }
-    const deliveryByUser = new Map(session.delivery.results.map((r) => [r.userId, r]));
+    // Per BILL: one run can hold two bills for a member, one per payee.
+    const deliveryByBill = new Map(session.delivery.results.map((r) => [r.billKey ?? r.userId, r]));
 
     const run = await prisma.pasRun.upsert({
       where: { sessionId: session.id },
@@ -349,21 +356,29 @@ async function main() {
       update: {},
     });
 
-    for (const bill of Object.values(session.bills)) {
+    for (const [key, bill] of Object.entries(session.bills)) {
       // Every profile this member owns is non-billable -- the charge is a replay
       // artifact from before the flag existed, not a debt. See `billableUserIds`.
       if (!billableUserIds.has(bill.userId)) {
         staleBills++;
         continue;
       }
-      const delivery = deliveryByUser.get(bill.userId);
+      const payeeId = bill.payeeId ?? session.operatorId;
+      const delivery = deliveryByBill.get(key);
       const lines = bill.lines.filter((line) => itemIdByKey.has(line.productKey));
 
       await prisma.pasBill.upsert({
-        where: { pasRunId_discordUserId: { pasRunId: run.id, discordUserId: bill.userId } },
+        where: {
+          pasRunId_discordUserId_payeeId: {
+            pasRunId: run.id,
+            discordUserId: bill.userId,
+            payeeId,
+          },
+        },
         create: {
           pasRunId: run.id,
           discordUserId: bill.userId,
+          payeeId,
           subtotalCents: bill.subtotalCents,
           discountCents: bill.discountCents,
           totalCents: bill.totalCents,

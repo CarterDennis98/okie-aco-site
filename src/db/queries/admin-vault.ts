@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
+import type { Prisma } from "@/generated/prisma/client";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 // VaultEntity as a VALUE, not just a type: the mailbox query filters on it. The generated
 // module exports a const and a matching type under each name, so this covers both uses.
@@ -30,7 +31,21 @@ import {
  * guard on the page. Same split as the member queries: reads never decrypt, and the
  * `*_enc` columns are not selected at all. The only decryption in the system is the
  * export route.
+ *
+ * The exceptions are the reads the profiles page makes, which also serve a SITE admin
+ * behind `requireAnyAdmin()`: those take the viewer's retailers as `sites` and MUST be
+ * given them, and the per-retailer reads are only ever called with a retailer the page
+ * has already checked is one of them.
  */
+
+/**
+ * A site admin's slice of the change queue: their retailers, and never the mailbox bucket.
+ * An app password serves every retailer its owner uses, so it belongs to no one retailer's
+ * admin. `undefined` is a full admin, and means no restriction at all.
+ */
+function inSites(sites: readonly string[] | undefined): Prisma.VaultChangeWhereInput {
+  return sites ? { siteKey: { in: [...sites] } } : {};
+}
 
 export type AdminMemberRow = {
   discordUserId: string;
@@ -801,8 +816,8 @@ export type PendingChangeRow = {
 export type PendingChangeGroup = { siteKey: string | null; siteLabel: string; count: number };
 
 /** Just the number, for the nav badge. Cheap enough to call on every admin page. */
-export async function getPendingChangeCount(): Promise<number> {
-  return prisma.vaultChange.count({ where: { appliedAt: null } });
+export async function getPendingChangeCount(sites?: readonly string[]): Promise<number> {
+  return prisma.vaultChange.count({ where: { appliedAt: null, ...inSites(sites) } });
 }
 
 /**
@@ -815,7 +830,10 @@ export async function getPendingChangeCount(): Promise<number> {
  */
 const PENDING_LIMIT = 200;
 
-export async function getPendingChanges(filter?: string): Promise<{
+export async function getPendingChanges(
+  filter?: string,
+  sites?: readonly string[],
+): Promise<{
   rows: PendingChangeRow[];
   /** ALWAYS every bucket, with unfiltered counts -- these are the filter tabs. */
   groups: PendingChangeGroup[];
@@ -832,20 +850,25 @@ export async function getPendingChanges(filter?: string): Promise<{
   const [grouped, total] = await Promise.all([
     prisma.vaultChange.groupBy({
       by: ["siteKey"],
-      where: { appliedAt: null },
+      where: { appliedAt: null, ...inSites(sites) },
       _count: { _all: true },
     }),
-    getPendingChangeCount(),
+    getPendingChangeCount(sites),
   ]);
 
   const buckets = new Set(grouped.map((g) => g.siteKey ?? EMAIL_BUCKET));
   const active = filter && buckets.has(filter) ? filter : null;
 
   const changes = await prisma.vaultChange.findMany({
+    // AND rather than spreading both into one object: the scope and the tab each set
+    // `siteKey`, and a spread would let the second silently replace the first.
     where: {
-      appliedAt: null,
-      // Null is a real value here, not "no filter", so the email bucket needs its own token.
-      ...(active === EMAIL_BUCKET ? { siteKey: null } : active ? { siteKey: active } : {}),
+      AND: [
+        { appliedAt: null },
+        inSites(sites),
+        // Null is a real value here, not "no filter", so the email bucket needs its own token.
+        active === EMAIL_BUCKET ? { siteKey: null } : active ? { siteKey: active } : {},
+      ],
     },
     orderBy: { at: "desc" },
     take: PENDING_LIMIT,
@@ -903,10 +926,16 @@ export async function getPendingChanges(filter?: string): Promise<{
  * by design -- and a retailer with no picker entry has no export button either, which is
  * the operator's only way to get the credentials onto the bot.
  */
-export async function getVaultSites(): Promise<{ siteKey: string; count: number }[]> {
-  const loginOnly = loginOnlySiteKeys();
+export async function getVaultSites(
+  sites?: readonly string[],
+): Promise<{ siteKey: string; count: number }[]> {
+  const loginOnly = loginOnlySiteKeys().filter((key) => !sites || sites.includes(key));
   const [profiles, logins] = await Promise.all([
-    prisma.vaultProfile.groupBy({ by: ["siteKey"], _count: { _all: true } }),
+    prisma.vaultProfile.groupBy({
+      by: ["siteKey"],
+      where: sites ? { siteKey: { in: [...sites] } } : {},
+      _count: { _all: true },
+    }),
     loginOnly.length > 0
       ? prisma.vaultAccount.groupBy({
           by: ["siteKey"],

@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
-import { requireAdmin, requireMember } from "@/lib/auth/guard";
+import { chargeScopeOf, requireAnyAdmin, requireMember, type Viewer } from "@/lib/auth/guard";
 import { isPaymentMethod, methodLabel } from "@/lib/billing/methods";
 import { notifyPaymentClaim } from "@/lib/billing/notify";
+import { otherPayee } from "@/lib/billing/payees";
 import { money, parseCents } from "@/lib/money";
 
 /**
@@ -27,6 +28,10 @@ import { money, parseCents } from "@/lib/money";
  *   - Member actions take the owner id from the guard and carry both predicates, so a
  *     member cannot touch another's bill by editing the hidden input.
  *   - Dry-run bills are not payable. Nobody was DMed and nobody owes anything.
+ *   - Only whoever a bill is OWED TO confirms it, or a full admin. Chess sees Crunchyroll
+ *     money land in his own account, not the operator's, so he confirms those charges and
+ *     none of the operator's -- and the predicate is in the query, so a guessed id reads
+ *     exactly like one that doesn't exist.
  *
  * PARTIAL PAYMENTS
  *
@@ -71,6 +76,12 @@ function requestedCents(
   return { cents };
 }
 
+/** The payee predicate for an admin action: nothing for a full admin, their own id otherwise. */
+function owedToViewer(viewer: Viewer): { payeeId?: string } {
+  const payeeId = chargeScopeOf(viewer);
+  return payeeId ? { payeeId } : {};
+}
+
 function note(form: FormData, key: string): string | null {
   const value = String(form.get(key) ?? "")
     .trim()
@@ -97,6 +108,7 @@ export async function claimBillPaid(form: FormData): Promise<BillingResult> {
       paidAt: true,
       totalCents: true,
       paidCents: true,
+      payeeId: true,
       run: { select: { dropLabel: true } },
     },
   });
@@ -137,6 +149,8 @@ export async function claimBillPaid(form: FormData): Promise<BillingResult> {
     dropLabel: bill.run.dropLabel,
     method: methodLabel(method),
     note: claimNote,
+    // Named when it isn't the operator's money, so the ping says whose account to check.
+    payeeName: otherPayee(bill.payeeId)?.name ?? null,
   });
 
   revalidatePath("/dashboard");
@@ -184,11 +198,11 @@ export async function unclaimBillPaid(form: FormData): Promise<BillingResult> {
  * behaviour.
  */
 export async function confirmBillPaid(form: FormData): Promise<BillingResult> {
-  const viewer = await requireAdmin();
+  const viewer = await requireAnyAdmin();
   const billId = String(form.get("billId") ?? "");
 
   const bill = await prisma.pasBill.findFirst({
-    where: { id: billId, run: { dryRun: false } },
+    where: { id: billId, run: { dryRun: false }, ...owedToViewer(viewer) },
     select: {
       id: true,
       totalCents: true,
@@ -272,12 +286,17 @@ export async function confirmBillPaid(form: FormData): Promise<BillingResult> {
  * never marked at all, and only the first is honest.
  */
 export async function reopenBill(form: FormData): Promise<BillingResult> {
-  const viewer = await requireAdmin();
+  const viewer = await requireAnyAdmin();
   const billId = String(form.get("billId") ?? "");
 
-  const bill = await prisma.pasBill.findUnique({
-    where: { id: billId },
-    select: { id: true, paidAt: true, paidCents: true, payments: { select: { amountCents: true } } },
+  const bill = await prisma.pasBill.findFirst({
+    where: { id: billId, ...owedToViewer(viewer) },
+    select: {
+      id: true,
+      paidAt: true,
+      paidCents: true,
+      payments: { select: { amountCents: true } },
+    },
   });
   if (!bill) return { ok: false, error: "Not found." };
 

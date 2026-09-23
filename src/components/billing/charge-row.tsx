@@ -37,7 +37,17 @@ function formatWindow(start: Date, end: Date): string {
   return from === to ? from : `${from} – ${to}`;
 }
 
-export function ChargeRow({ row }: { row: AdminChargeRow }) {
+export function ChargeRow({
+  row,
+  owedTo = null,
+}: {
+  row: AdminChargeRow;
+  /**
+   * Who the member pays, when it isn't the admin looking. Set only on a full admin's
+   * everyone-view, so a charge owed to Chess is never read as money the operator is chasing.
+   */
+  owedTo?: string | null;
+}) {
   const [open, setOpen] = useState(false);
   const [checkouts, setCheckouts] = useState<BillCheckouts | null>(null);
   const [failed, setFailed] = useState(false);
@@ -62,6 +72,13 @@ export function ChargeRow({ row }: { row: AdminChargeRow }) {
       <tr>
         <td className={cell}>
           <span className="font-medium text-white">{row.username}</span>
+          {owedTo && (
+            <span className="mt-1 block">
+              <span className="inline-flex items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase">
+                owed to {owedTo}
+              </span>
+            </span>
+          )}
         </td>
         <td className={cell}>
           <span className="text-[var(--color-fg)]">{row.dropLabel}</span>

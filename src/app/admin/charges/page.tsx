@@ -5,20 +5,28 @@ import {
   PAGE_SIZE,
   getAdminChargeTotals,
   getAdminCharges,
+  getChargePayees,
   getDropDates,
   type ChargeFilter,
 } from "@/db/queries/admin-charges";
 import { getPendingChangeCount } from "@/db/queries/admin-vault";
-import { requireAdmin } from "@/lib/auth/guard";
+import { ALL_SITES } from "@/lib/auth/admin-scope";
+import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
+import { payeeLabel } from "@/lib/billing/payees";
 import { count, plural } from "@/lib/format";
 import { money } from "@/lib/money";
 
 /**
  * Charges, and the queue of payments waiting to be confirmed.
  *
- * `requireAdmin()` is called here, in the page, not in a layout: a layout doesn't
+ * `requireAnyAdmin()` is called here, in the page, not in a layout: a layout doesn't
  * re-render on client navigation and doesn't wrap Server Actions. It 404s rather than
  * 403s, so a non-admin can't tell this route exists.
+ *
+ * SCOPED BY WHO IS OWED. A site admin sees only the charges owed to them -- Chess, his
+ * Crunchyroll fees -- with no way to widen it: the payee comes from the guard, never the
+ * URL. A full admin sees everyone's, and can narrow to one payee, which is how the operator
+ * checks what Chess is owed after a drop.
  *
  * The default view is `claimed` -- the rows that need a decision -- rather than every
  * charge ever billed. A queue that opens on 85 rows is a list; one that opens on the
@@ -49,9 +57,10 @@ export default async function AdminChargesPage({
     from?: string;
     to?: string;
     page?: string;
+    payee?: string;
   }>;
 }) {
-  const viewer = await requireAdmin();
+  const viewer = await requireAnyAdmin();
   const params = await searchParams;
   const filter: ChargeFilter = FILTERS.some((f) => f.key === params.filter)
     ? (params.filter as ChargeFilter)
@@ -62,19 +71,35 @@ export default async function AdminChargesPage({
   const to = ISO_DATE.test(params.to ?? "") ? params.to : undefined;
   const page = Math.max(1, Number.parseInt(params.page ?? "1", 10) || 1);
 
+  // A site admin's scope is fixed by the guard. A full admin's `?payee=` is honoured only
+  // when somebody is actually owed under it -- an unknown value falls back to everyone,
+  // the same rule the status filter applies.
+  const scoped = chargeScopeOf(viewer);
+  const payees = scoped ? [] : await getChargePayees();
+  const payee =
+    scoped ?? (params.payee && payees.includes(params.payee) ? params.payee : undefined);
+
   const [result, totals, drops, pendingChanges] = await Promise.all([
-    getAdminCharges({ filter, search, from, to, page }),
-    getAdminChargeTotals(),
-    getDropDates(),
-    getPendingChangeCount(),
+    getAdminCharges({ filter, search, from, to, page, payeeId: payee }),
+    getAdminChargeTotals(payee),
+    getDropDates(payee),
+    getPendingChangeCount(viewer.adminSites === ALL_SITES ? undefined : viewer.adminSites),
   ]);
   const rows = result.rows;
 
   // Carried onto the filter tabs and the pager so one control never silently clears
-  // another.
+  // another. The payee rides along only for a full admin; a site admin's is never a param.
   const carry = (over: Record<string, string | number | undefined>) => {
     const next = new URLSearchParams();
-    const merged = { filter, q: search, from, to, page, ...over };
+    const merged = {
+      filter,
+      q: search,
+      from,
+      to,
+      page,
+      payee: scoped ? undefined : payee,
+      ...over,
+    };
     for (const [key, value] of Object.entries(merged)) {
       if (value === undefined || value === "" || (key === "page" && value === 1)) continue;
       next.set(key, String(value));
@@ -113,19 +138,47 @@ export default async function AdminChargesPage({
               </span>
             )}
           </Link>
-          <Link
-            href="/admin/imap"
-            className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
-          >
-            IMAP
-          </Link>
+          {/* Mailboxes serve every retailer their owner uses, so there is no one-retailer
+              slice of that page to give a site admin. */}
+          {viewer.isAdmin && (
+            <Link
+              href="/admin/imap"
+              className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            >
+              IMAP
+            </Link>
+          )}
         </div>
 
         <h1 className="mt-5 text-3xl font-black tracking-tight text-white">Charges</h1>
         <p className="mt-2 text-sm text-[var(--color-muted)]">
-          Signed in as {viewer.displayName}. Marking a charge received writes a receipt — the
-          bill&rsquo;s own amounts are never changed.
+          Signed in as {viewer.displayName}.{" "}
+          {scoped ? "These are the charges members owe you. " : ""}Marking a charge received writes
+          a receipt — the bill&rsquo;s own amounts are never changed.
         </p>
+
+        {/* --- who it is owed to --- */}
+        {/* Only when there is a choice: with one payee on record the tabs would be a single
+            button that does nothing. */}
+        {payees.length > 1 && (
+          <div className="mt-6 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-xs font-medium text-[var(--color-muted)]">Owed to</span>
+            {[undefined, ...payees].map((id) => (
+              <Link
+                key={id ?? "everyone"}
+                href={carry({ payee: id, page: 1 })}
+                className={
+                  "rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors " +
+                  (id === payee
+                    ? "border-[var(--color-brand)] bg-[var(--color-brand)]/10 text-white"
+                    : "border-[var(--color-edge)] text-[var(--color-muted)] hover:text-[var(--color-fg)]")
+                }
+              >
+                {id ? payeeLabel(id, viewer.discordUserId) : "Everyone"}
+              </Link>
+            ))}
+          </div>
+        )}
 
         {/* --- totals --- */}
         <div className="mt-8 grid gap-3 sm:grid-cols-3">
@@ -173,6 +226,7 @@ export default async function AdminChargesPage({
             doesn't silently drop you back to the default tab. */}
         <form method="get" action="/admin/charges" className="mt-4 flex flex-wrap items-end gap-3">
           <input type="hidden" name="filter" value={filter} />
+          {!scoped && payee && <input type="hidden" name="payee" value={payee} />}
           <div>
             <label htmlFor="q" className="mb-1 block text-xs font-medium text-[var(--color-muted)]">
               Member
@@ -267,7 +321,16 @@ export default async function AdminChargesPage({
                   breakdown. Row markup lives in ChargeRow, which owns the expansion. */}
               {rows.map((row) => (
                 <tbody key={row.id} className="border-b border-[var(--color-edge)] last:border-0">
-                  <ChargeRow row={row} />
+                  <ChargeRow
+                    row={row}
+                    // Tagged only in the mixed view, and only when it isn't the viewer's
+                    // own money -- the one place a charge could be mistaken for theirs.
+                    owedTo={
+                      !payee && row.payeeId !== viewer.discordUserId
+                        ? payeeLabel(row.payeeId, viewer.discordUserId)
+                        : null
+                    }
+                  />
                 </tbody>
               ))}
             </table>

@@ -311,12 +311,21 @@ model PasRun {
   @@map("pas_runs")
 }
 
-// One bill per member per run. Immutable once sent -- corrections append a Payment
-// or a new run, they never rewrite these numbers.
+// One bill per member per PAYEE per run. Immutable once sent -- corrections append a
+// Payment or a new run, they never rewrite these numbers.
 model PasBill {
   id            String @id @default(uuid())
   pasRunId      String @map("pas_run_id")
   discordUserId String @map("discord_user_id")
+
+  // Who the member pays: the Discord id of the person these fees are owed to. The operator,
+  // for every retailer they run; Chess, for Crunchyroll, whose bot he runs. A member who hit
+  // both in one drop window gets two bills from the same run -- which is why this is part of
+  // the unique key, and why a charge is scoped to whoever it is owed to.
+  //
+  // Every bill that predates this was owed to whoever ran the billing run, and the migration
+  // backfilled it from `pas_runs.operator_id` accordingly.
+  payeeId String @map("payee_id")
 
   subtotalCents Int @map("subtotal_cents")
   discountCents Int @default(0) @map("discount_cents")
@@ -371,10 +380,12 @@ model PasBill {
   lines    PasBillLine[]
   payments Payment[]
 
-  @@unique([pasRunId, discordUserId])
+  @@unique([pasRunId, discordUserId, payeeId])
   @@index([discordUserId, paidAt])
   // Drives the admin queue: unconfirmed claims, oldest first.
   @@index([paidAt, paidClaimedAt])
+  // A payee's own view of what they are owed, and its badge.
+  @@index([payeeId, paidAt])
   @@map("pas_bills")
 }
 

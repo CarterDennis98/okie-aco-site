@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
+import { billCoversSite } from "@/lib/billing/payees";
 import { resolveSiteLogo } from "@/lib/site-logo";
 
 /**
@@ -13,10 +14,11 @@ import { resolveSiteLogo } from "@/lib/site-logo";
  *   - `getMemberDropCheckouts` takes `discordUserId` as its first argument, and callers
  *     MUST pass the value returned by `requireMember()` -- never a route or search param.
  *     Same convention as db/queries/member.ts, for the same reason.
- *   - `getBillCheckouts` is ADMIN-ONLY: callers must have passed `requireAdmin()` first.
- *     It takes a bill id and reads whoever that bill belongs to, which is exactly the
- *     thing a member must never be able to do. Nothing here re-checks -- matching the
- *     split used by the other admin query modules.
+ *   - `getBillCheckouts` is ADMIN-ONLY: callers must have passed `requireAnyAdmin()`
+ *     first, and a site admin's call MUST pass their own id as the payee. It takes a bill
+ *     id and reads whoever that bill belongs to, which is exactly the thing a member must
+ *     never be able to do. Nothing here re-checks -- matching the split used by the other
+ *     admin query modules.
  *
  * Dry runs are excluded, like everywhere a drop is counted: nobody was billed for one, so
  * presenting it as a drop would invent an event.
@@ -260,18 +262,27 @@ export type BillCheckouts = DropGroup & {
  * Deliberately NOT derived from `pas_bill_lines`. Those are the snapshot of what was
  * charged; these are the checkouts as ingested. Reading the second from the first would
  * make a fee edit look like a different set of orders.
+ *
+ * ONLY THE CHECKOUTS THIS BILL COVERS. A window that billed a member twice -- Crunchyroll
+ * to Chess, the rest to the operator -- holds both sets of orders, and each bill's breakdown
+ * shows its own. Filtered after the fetch because the retailer is a raw vendor string that
+ * only `siteKey` can normalize; the cap is generous enough that a drop never meets it.
  */
-export async function getBillCheckouts(billId: string): Promise<BillCheckouts | null> {
+export async function getBillCheckouts(
+  billId: string,
+  payeeId?: string,
+): Promise<BillCheckouts | null> {
   const bill = await prisma.pasBill.findFirst({
-    where: { id: billId, run: { dryRun: false } },
+    where: { id: billId, run: { dryRun: false }, ...(payeeId ? { payeeId } : {}) },
     select: {
       discordUserId: true,
+      payeeId: true,
       run: { select: { id: true, dropLabel: true, windowStart: true, windowEnd: true } },
     },
   });
   if (!bill) return null;
 
-  const rows = await prisma.checkout.findMany({
+  const fetched = await prisma.checkout.findMany({
     where: {
       profile: { discordUserId: bill.discordUserId },
       occurredAt: { gte: bill.run.windowStart, lte: bill.run.windowEnd },
@@ -280,9 +291,12 @@ export async function getBillCheckouts(billId: string): Promise<BillCheckouts | 
     take: PER_BILL_LIMIT,
     select: CHECKOUT_SELECT,
   });
+  const rows = fetched.filter((row) => billCoversSite(bill.payeeId, row.site));
 
   return {
     ...summarize(bill.run.id, bill.run.dropLabel, bill.run.windowStart, bill.run.windowEnd, rows),
-    truncated: rows.length === PER_BILL_LIMIT,
+    // Against what was FETCHED: the filter can leave fewer rows than the cap even when the
+    // cap is what cut the window short.
+    truncated: fetched.length === PER_BILL_LIMIT,
   };
 }

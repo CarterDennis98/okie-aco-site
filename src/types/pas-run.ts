@@ -27,6 +27,14 @@ export const billLineInput = z
 export const billInput = z
   .object({
     userId: snowflake,
+    /**
+     * Who the member pays. One run can bill a member twice -- once to the operator, once to
+     * whoever runs another retailer's bot -- and this is what tells the two bills apart.
+     *
+     * Optional because a bot that predates payees omits it, and every bill then was owed
+     * to whoever ran the billing run; the route reads a missing one that way.
+     */
+    payeeId: snowflake.optional(),
     subtotalCents: z.number().int().min(0).max(10_000_000),
     discountCents: z.number().int().min(0).max(10_000_000),
     totalCents: z.number().int().min(0).max(10_000_000),
@@ -43,6 +51,8 @@ export const billInput = z
 export const deliveryResultInput = z
   .object({
     userId: snowflake,
+    /** Which of the member's bills this delivery was -- see `billInput.payeeId`. */
+    payeeId: snowflake.optional(),
     status: z.string().min(1).max(40),
     messageId: snowflake.nullable().optional(),
     error: z.string().max(500).nullable().optional(),

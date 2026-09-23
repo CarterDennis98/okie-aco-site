@@ -47,72 +47,8 @@ export async function revealAppPasswordForAdmin(form: FormData): Promise<RevealR
   return revealCredential(credential, viewer.discordUserId);
 }
 
-/**
- * "These edits are confirmed."
- *
- * The other half of the pair the schema describes on `VaultChange.appliedAt`: a member can
- * only report a change, and only the operator can see it take effect. Until this existed the
- * honest answer to "did my new card get used" was nothing at all, which is why members kept
- * asking in the channel.
- *
- * EXPLICIT IDS ONLY. There is deliberately no "confirm this whole retailer" or "confirm
- * everything" path: confirming is a claim that a specific edit is live, and a single
- * mis-click that wiped the entire queue would silently tell every member their changes had
- * landed when nothing had been loaded. There is no undo -- the column never unsets -- so
- * the guard belongs here and not only in the UI. A Server Action is an individually
- * addressable POST endpoint, so a bulk path left callable would make the protection
- * cosmetic.
- *
- * NEVER UNSETS. A confirmed change stays confirmed; a later edit appends its own row. That
- * is also why `appliedAt: null` is the only filter anything needs.
- *
- * The COLUMNS stay `applied_at` / `applied_by` while the UI says "confirmed" -- the wording
- * changed after the migration was already applied in production, and renaming a column to
- * match a label is not worth a second migration.
- */
-export async function markChangesApplied(
-  form: FormData,
-): Promise<{ ok: true; applied: number } | { ok: false; error: string }> {
-  const viewer = await requireAdmin();
-
-  const ids = [...new Set(form.getAll("changeId").map(String).filter(Boolean))];
-  if (ids.length === 0) return { ok: false, error: "Nothing selected." };
-
-  const pending = await prisma.vaultChange.findMany({
-    // `appliedAt: null` as well as the ids: re-confirming an already-confirmed change would
-    // otherwise overwrite who confirmed it and when, losing the original record.
-    where: { id: { in: ids }, appliedAt: null },
-    select: { id: true, ownerDiscordId: true },
-  });
-  // Not an error: the selection was valid, someone else just got there first. Saying
-  // "0 confirmed" is more useful than a failure for a no-op.
-  if (pending.length === 0) return { ok: true, applied: 0 };
-
-  const at = new Date();
-  await prisma.$transaction([
-    prisma.vaultChange.updateMany({
-      where: { id: { in: pending.map((p) => p.id) } },
-      data: { appliedAt: at, appliedBy: viewer.discordUserId },
-    }),
-    prisma.adminAudit.create({
-      data: {
-        actorDiscordId: viewer.discordUserId,
-        action: "vault_change.confirm",
-        entity: "vault_change",
-        entityId: pending.length === 1 ? pending[0].id : null,
-        after: {
-          count: pending.length,
-          members: [...new Set(pending.map((p) => p.ownerDiscordId))].length,
-        },
-      },
-    }),
-  ]);
-
-  // Both sides: the operator's queue and every member's own profile page.
-  revalidatePath("/admin/profiles");
-  revalidatePath("/dashboard/profiles");
-  return { ok: true, applied: pending.length };
-}
+// Confirming pending changes lives in site-admin-actions.ts: a site admin may confirm their
+// own retailers' edits, so it sits behind requireAnyAdmin() and not this file's guard.
 
 export type RevealAllResult =
   | { ok: true; revealed: { email: string; value: string }[]; failed: string[] }

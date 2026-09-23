@@ -6,9 +6,14 @@ import type { Prisma } from "@/generated/prisma/client";
 /**
  * The operator's view of what is owed.
  *
- * Callers MUST have passed `requireAdmin()` first -- nothing here re-checks, matching
+ * Callers MUST have passed `requireAnyAdmin()` first -- nothing here re-checks, matching
  * the split used by the vault queries: a query module that quietly enforced
  * authorization would make it tempting to skip the guard on the page.
+ *
+ * SCOPED BY WHO IS OWED. Every read takes an optional `payeeId`: a site admin's calls MUST
+ * pass their own, so Chess sees the Crunchyroll charges owed to him and nothing of the
+ * operator's; a full admin passes one only to filter, which is how the operator sees what
+ * Chess is owed after a drop. See `payeeScope` in the charges page.
  *
  * Dry runs are excluded everywhere, same as the member side. A dry run is a preview the
  * operator did against real data; nobody was DMed and nobody owes anything, so counting
@@ -28,6 +33,8 @@ export const PAGE_SIZE = 50;
 
 export type ChargeQuery = {
   filter: ChargeFilter;
+  /** Only bills owed to this person. Omitted: everyone's -- full admins only. */
+  payeeId?: string;
   /** Matches the member's username or display name, case-insensitively. */
   search?: string;
   /** Inclusive bounds on the drop's window start, as YYYY-MM-DD. */
@@ -39,6 +46,8 @@ export type ChargeQuery = {
 export type AdminChargeRow = {
   id: string;
   discordUserId: string;
+  /** Who the member pays for this charge. */
+  payeeId: string;
   username: string;
   displayName: string;
   dropLabel: string;
@@ -82,6 +91,11 @@ const STATUS: Record<ChargeFilter, Prisma.PasBillWhereInput> = {
   all: {},
 };
 
+/** The payee predicate, or nothing. One helper so no read can spell it differently. */
+function owedTo(payeeId: string | undefined): Prisma.PasBillWhereInput {
+  return payeeId ? { payeeId } : {};
+}
+
 /** End of the given day, so `to=2026-08-07` includes that day's drops. */
 function endOfDay(date: string): Date {
   const parsed = new Date(`${date}T00:00:00.000Z`);
@@ -99,6 +113,7 @@ function buildWhere(query: ChargeQuery): Prisma.PasBillWhereInput {
 
   return {
     ...STATUS[query.filter],
+    ...owedTo(query.payeeId),
     run: { dryRun: false, ...(hasDates ? { windowStart } : {}) },
     ...(search
       ? {
@@ -162,6 +177,7 @@ export async function getAdminCharges(query: ChargeQuery): Promise<AdminChargePa
       select: {
         id: true,
         discordUserId: true,
+        payeeId: true,
         totalCents: true,
         paidCents: true,
         paidAt: true,
@@ -184,6 +200,7 @@ export async function getAdminCharges(query: ChargeQuery): Promise<AdminChargePa
     rows: bills.map((b) => ({
       id: b.id,
       discordUserId: b.discordUserId,
+      payeeId: b.payeeId,
       username: b.member.username,
       displayName: b.member.globalName ?? b.member.username,
       dropLabel: b.run.dropLabel,
@@ -205,22 +222,23 @@ export async function getAdminCharges(query: ChargeQuery): Promise<AdminChargePa
   };
 }
 
-export async function getAdminChargeTotals(): Promise<AdminChargeTotals> {
+export async function getAdminChargeTotals(payeeId?: string): Promise<AdminChargeTotals> {
+  const scope = { ...REAL_RUNS, ...owedTo(payeeId) };
   const [claimed, outstanding, paid] = await Promise.all([
     prisma.pasBill.aggregate({
-      where: { ...REAL_RUNS, paidAt: null, paidClaimedAt: { not: null } },
+      where: { ...scope, paidAt: null, paidClaimedAt: { not: null } },
       _count: { _all: true },
       // Both columns, because what the operator is owed is the DIFFERENCE. Summing each
       // and subtracting is the same as summing the differences, and stays one aggregate.
       _sum: { totalCents: true, paidCents: true },
     }),
     prisma.pasBill.aggregate({
-      where: { ...REAL_RUNS, paidAt: null },
+      where: { ...scope, paidAt: null },
       _count: { _all: true },
       _sum: { totalCents: true, paidCents: true },
     }),
     prisma.pasBill.aggregate({
-      where: { ...REAL_RUNS, paidAt: { not: null } },
+      where: { ...scope, paidAt: { not: null } },
       _count: { _all: true },
       _sum: { totalCents: true },
     }),
@@ -244,9 +262,11 @@ export async function getAdminChargeTotals(): Promise<AdminChargeTotals> {
 }
 
 /** Every drop that has produced a real bill, newest first, for the date presets. */
-export async function getDropDates(): Promise<{ label: string; date: Date }[]> {
+export async function getDropDates(payeeId?: string): Promise<{ label: string; date: Date }[]> {
   const runs = await prisma.pasRun.findMany({
-    where: { dryRun: false, bills: { some: {} } },
+    // A drop only counts when it billed something owed to this payee -- otherwise Chess's
+    // "latest drop" shortcut would jump to a Target night he has no charges in.
+    where: { dryRun: false, bills: { some: owedTo(payeeId) } },
     select: { dropLabel: true, windowStart: true },
     orderBy: { windowStart: "desc" },
     take: 24,
@@ -259,12 +279,30 @@ export async function getDropDates(): Promise<{ label: string; date: Date }[]> {
  *
  * Unlike the rest of this module, this one is called from a page guarded by
  * `requireMember()` rather than `requireAdmin()` -- the dashboard header renders it only
- * when `viewer.isAdmin`, which is re-derived per request from the env allowlist. It
- * returns a single integer and nothing member-identifying, so the blast radius of a
+ * for someone with an admin area, which is re-derived per request from the env allowlist.
+ * It returns a single integer and nothing member-identifying, so the blast radius of a
  * caller forgetting the check is a number, not a name.
+ *
+ * A site admin's badge counts only the claims on charges owed to them.
  */
-export async function getPendingConfirmationCount(): Promise<number> {
+export async function getPendingConfirmationCount(payeeId?: string): Promise<number> {
   return prisma.pasBill.count({
-    where: { ...REAL_RUNS, paidAt: null, paidClaimedAt: { not: null } },
+    where: { ...REAL_RUNS, ...owedTo(payeeId), paidAt: null, paidClaimedAt: { not: null } },
   });
+}
+
+/**
+ * Everyone a real bill is owed to, for a full admin's "owed to" filter.
+ *
+ * Read from the bills rather than a list of payees: a filter tab for somebody nobody owes
+ * anything is noise, and one missing for somebody who IS owed would hide their money.
+ */
+export async function getChargePayees(): Promise<string[]> {
+  const groups = await prisma.pasBill.groupBy({
+    by: ["payeeId"],
+    where: REAL_RUNS,
+    _count: { _all: true },
+    orderBy: { _count: { payeeId: "desc" } },
+  });
+  return groups.map((g) => g.payeeId);
 }

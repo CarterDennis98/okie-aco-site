@@ -3,6 +3,7 @@ import "server-only";
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/db/client";
 import { auth } from "@/lib/auth";
+import { ALL_SITES, adminSitesFor, hasAdminArea, type AdminSites } from "@/lib/auth/admin-scope";
 
 /**
  * The authorization boundary.
@@ -30,24 +31,22 @@ export type Viewer = {
   avatarUrl: string | null;
   /** Re-derived from the database on every request, never read from the session. */
   isOg: boolean;
-  /** Re-derived from the environment on every request. */
+  /**
+   * A FULL admin: every retailer, every mailbox, every charge. Re-derived from the
+   * environment on every request.
+   *
+   * It still means exactly what it meant before site admins existed. Every check written
+   * before them is a full-admin check, so adding them opened nothing up; a site admin is
+   * `false` here and gets in only where a page asks for `requireAnyAdmin()`.
+   */
   isAdmin: boolean;
+  /**
+   * The retailers this viewer administers: "all" for a full admin, a site admin's own
+   * list, empty for everyone else. See lib/auth/admin-scope.ts. Re-derived from the
+   * environment on every request, like `isAdmin`.
+   */
+  adminSites: AdminSites;
 };
-
-/**
- * Admin is an environment allowlist, not a database column.
- *
- * A write to Postgres should never be sufficient to grant control over what members are
- * billed, and a redeploy is the right amount of friction for adding a second admin.
- */
-function adminIds(): Set<string> {
-  return new Set(
-    (process.env.ADMIN_DISCORD_IDS ?? "")
-      .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
-  );
-}
 
 function avatarUrl(discordUserId: string, hash: string | null): string | null {
   if (!hash) return null;
@@ -80,13 +79,19 @@ export async function currentViewer(): Promise<Viewer | null> {
   });
   if (!member || member.leftAt) return null;
 
+  // Admin is an environment allowlist, not a database column or a Discord role. A write to
+  // Postgres, or a role handed out by mistake, must never be enough to grant control over
+  // what members are billed -- a redeploy is the right amount of friction for that.
+  const adminSites = adminSitesFor(member.discordUserId);
+
   return {
     discordUserId: member.discordUserId,
     username: member.username,
     displayName: member.globalName ?? member.username,
     avatarUrl: avatarUrl(member.discordUserId, member.avatarHash),
     isOg: member.isOg,
-    isAdmin: adminIds().has(member.discordUserId),
+    isAdmin: adminSites === ALL_SITES,
+    adminSites,
   };
 }
 
@@ -107,4 +112,29 @@ export async function requireAdmin(): Promise<Viewer> {
   const viewer = await currentViewer();
   if (!viewer?.isAdmin) notFound();
   return viewer;
+}
+
+/**
+ * Full admins AND site admins -- anyone with something to administer.
+ *
+ * Only on the pages and actions that scope what they show by `viewer.adminSites` (and, for
+ * charges, by who a bill is owed to). Everything else stays on `requireAdmin()`, which is
+ * why the IMAP page, the mailbox reveals, and the app-password sweeps are untouched: a
+ * mailbox serves every retailer its owner uses, so there is no one-retailer slice of it.
+ */
+export async function requireAnyAdmin(): Promise<Viewer> {
+  const viewer = await currentViewer();
+  if (!viewer || !hasAdminArea(viewer.adminSites)) notFound();
+  return viewer;
+}
+
+/**
+ * Whose charges this admin handles: everyone's (undefined) for a full admin, only their own
+ * for a site admin -- the money owed to them, which is the money they can see arrive.
+ *
+ * Returned as the payee id rather than a `where` fragment so the queries and the actions
+ * spell the predicate the same way, and so "undefined means everyone" is decided here once.
+ */
+export function chargeScopeOf(viewer: Viewer): string | undefined {
+  return viewer.isAdmin ? undefined : viewer.discordUserId;
 }

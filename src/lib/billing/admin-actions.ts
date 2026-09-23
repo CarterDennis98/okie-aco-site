@@ -1,15 +1,16 @@
 "use server";
 
 import { getBillCheckouts, type BillCheckouts } from "@/db/queries/drop-checkouts";
-import { requireAdmin } from "@/lib/auth/guard";
+import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
 
 /**
  * Admin-only billing reads.
  *
  * Kept out of billing/actions.ts so the guard used by each file stays obvious at a glance,
- * the same split the vault actions use: every export here calls `requireAdmin()`. A Server
- * Action is an individually-addressable POST endpoint, so mixing guards in one module is
- * exactly how the wrong one ends up on the wrong action.
+ * the same split the vault actions use: every export here calls `requireAnyAdmin()` and
+ * scopes what it reads to the charges that admin handles. A Server Action is an
+ * individually-addressable POST endpoint, so mixing guards in one module is exactly how
+ * the wrong one ends up on the wrong action.
  */
 
 /**
@@ -23,7 +24,8 @@ import { requireAdmin } from "@/lib/auth/guard";
  * was billed for is not a charge, so there is nothing to break down.
  */
 export async function loadBillCheckouts(billId: string): Promise<BillCheckouts | null> {
-  await requireAdmin();
+  const viewer = await requireAnyAdmin();
   if (!billId) return null;
-  return getBillCheckouts(billId);
+  // A site admin opens only charges owed to them; anyone else's reads as not found.
+  return getBillCheckouts(billId, chargeScopeOf(viewer));
 }

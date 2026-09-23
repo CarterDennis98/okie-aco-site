@@ -38,6 +38,8 @@ export type MemberCheckout = {
 
 export type MemberChargeSummary = {
   id: string;
+  /** Who they pay for this one -- the operator, or whoever runs that retailer's bot. */
+  payeeId: string;
   dropLabel: string;
   windowStart: Date;
   subtotalCents: number;
@@ -58,6 +60,12 @@ export type MemberChargeSummary = {
 export type MemberDashboard = {
   unpaidTotalCents: number;
   unpaidCount: number;
+  /**
+   * What is still owed, per person it is owed to, largest first. A member who owes the
+   * operator AND Chess has two people to pay, and a single total with one payment button
+   * would send all of it to the operator.
+   */
+  owedByPayee: { payeeId: string; cents: number; count: number }[];
   lifetimeCheckouts: number;
   lifetimeUnits: number;
   charges: MemberChargeSummary[];
@@ -90,6 +98,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
       orderBy: { run: { windowStart: "desc" } },
       select: {
         id: true,
+        payeeId: true,
         subtotalCents: true,
         discountCents: true,
         totalCents: true,
@@ -129,6 +138,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
 
   const charges: MemberChargeSummary[] = bills.map((bill) => ({
     id: bill.id,
+    payeeId: bill.payeeId,
     dropLabel: bill.run.dropLabel,
     windowStart: bill.run.windowStart,
     subtotalCents: bill.subtotalCents,
@@ -147,14 +157,22 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
   // schema -- it is stamped exactly when paid_cents covers the bill.
   const unpaid = charges.filter((charge) => charge.paidAt === null);
 
+  // What is LEFT, not the original totals: a member who has paid half of a $42 charge
+  // owes $21, and showing $42 would be asking for money already received.
+  const left = (charge: MemberChargeSummary) => Math.max(0, charge.totalCents - charge.paidCents);
+
+  const owedByPayee = [...Map.groupBy(unpaid, (charge) => charge.payeeId)]
+    .map(([payeeId, list]) => ({
+      payeeId,
+      cents: list.reduce((sum, charge) => sum + left(charge), 0),
+      count: list.length,
+    }))
+    .sort((a, b) => b.cents - a.cents);
+
   return {
-    // What is LEFT, not the original totals: a member who has paid half of a $42 charge
-    // owes $21, and showing $42 would be asking for money already received.
-    unpaidTotalCents: unpaid.reduce(
-      (sum, charge) => sum + Math.max(0, charge.totalCents - charge.paidCents),
-      0,
-    ),
+    unpaidTotalCents: unpaid.reduce((sum, charge) => sum + left(charge), 0),
     unpaidCount: unpaid.length,
+    owedByPayee,
     lifetimeCheckouts: checkoutTotals._count._all,
     lifetimeUnits: checkoutTotals._sum.quantity ?? 0,
     charges,
@@ -184,6 +202,8 @@ export type MemberChargeLine = {
 
 export type MemberChargeDetail = {
   id: string;
+  /** Who they pay for this charge. See lib/billing/payees.ts. */
+  payeeId: string;
   dropLabel: string;
   windowStart: Date;
   windowEnd: Date;
@@ -223,6 +243,7 @@ export async function getMemberCharge(
     where: { id: chargeId, discordUserId, ...REAL_RUNS },
     select: {
       id: true,
+      payeeId: true,
       subtotalCents: true,
       discountCents: true,
       totalCents: true,
@@ -265,6 +286,7 @@ export async function getMemberCharge(
 
   return {
     id: bill.id,
+    payeeId: bill.payeeId,
     dropLabel: bill.run.dropLabel,
     windowStart: bill.run.windowStart,
     windowEnd: bill.run.windowEnd,
