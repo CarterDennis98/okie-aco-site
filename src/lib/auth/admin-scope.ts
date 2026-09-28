@@ -1,4 +1,4 @@
-import { siteKey } from "@/lib/sites";
+import { siteKey, siteStyle } from "@/lib/sites";
 
 /**
  * Who administers what.
@@ -9,8 +9,9 @@ import { siteKey } from "@/lib/sites";
  *                retailer, every mailbox, every charge -- and the only people who can move a
  *                profile from one runner to another.
  *   RUNNERS      anyone holding one of the Discord roles in RUNNER_ROLES: somebody who runs
- *                a retailer's bot. Chess on Crunchyroll, peacemaker on Premium Bandai, and
- *                whoever else is given the Target role to share that one.
+ *                a retailer's bot. Chess on Crunchyroll and Mattel, peacemaker on Premium
+ *                Bandai, CrispHeinz on Topps, and whoever else is given the Target role to
+ *                share that one.
  *
  * A runner's reach is TWO facts, and it takes both. The role says which retailers they MAY
  * be given; a full admin's assignment (VaultAccount.assigneeId) says which profiles they
@@ -51,6 +52,8 @@ export const RUNNER_ROLES: Readonly<Record<string, string>> = {
   target: "1553941817626730526",
   "pokemon-center": "1553941945045487646",
   walmart: "1553942026851196959",
+  topps: "1554199946633158881",
+  mattel: "1554259902925373471",
 };
 
 /** `process.env`, or a stand-in for it in a test. Only ADMIN_DISCORD_IDS is read. */
@@ -117,6 +120,39 @@ export function coversSite(sites: AdminSites, site: string | null | undefined): 
 /** Whether there is anything at all to administer -- what decides if the Admin tab shows. */
 export function hasAdminArea(sites: AdminSites): boolean {
   return sites === ALL_SITES || sites.length > 0;
+}
+
+/**
+ * Whether this viewer may download an export at all -- the export route's first check,
+ * made before anything is read.
+ *
+ * A full admin may ask for anything; what they get is narrowed later, by the request
+ * itself. A RUNNER gets exactly one of their own retailers, their own share of it, and:
+ *
+ *   PROFILES AND LOGINS  on any retailer they run.
+ *   APP PASSWORDS        only where a bot reads the emailed code, and only for the mailboxes
+ *                        behind their own assigned profiles there -- what their bot needs to
+ *                        sign those members in. CrispHeinz's Alpine reads Topps's codes, so
+ *                        the file for Topps holds the mailboxes behind the Topps profiles
+ *                        assigned to CrispHeinz, and nobody else's.
+ *
+ * App passwords were full-admin only before that, and the reason still holds: a mailbox
+ * serves every retailer its owner uses, so the file hands a runner read access to those
+ * members' whole inboxes, not a Topps-shaped slice of them. That is the accepted cost of a
+ * bot someone else runs having to read the code. What bounds it is the scope -- never
+ * site-less (every mailbox on file), never another retailer's, never another runner's --
+ * and the `vault_exports` row each download writes. The reveals and the IMAP page stay a
+ * full admin's.
+ */
+export function mayExport(
+  viewer: { discordUserId: string; adminSites: AdminSites },
+  request: { site: string; format: string; runner: string | null },
+): boolean {
+  if (viewer.adminSites === ALL_SITES) return true;
+  if (!coversSite(viewer.adminSites, request.site)) return false;
+  if (request.runner !== null && request.runner !== viewer.discordUserId) return false;
+  if (request.format === "imap") return siteStyle(request.site).usesEmailCodes !== false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------

@@ -37,7 +37,8 @@ import { RevealAppPassword } from "@/components/vault/reveal-app-password";
  * assignments -- the set their bot runs, and the set the export buttons hand over -- and can
  * switch to everyone's, or one other runner's, with the runner tabs. Only a full admin can
  * move profiles between runners; see assign-actions.ts. Mailbox controls stay
- * full-admin-only -- see requireAnyAdmin.
+ * full-admin-only -- see requireAnyAdmin -- except that a runner whose bot reads emailed
+ * codes can EXPORT the app passwords behind their own profiles. See mayExport.
  *
  * Card brand, last four, and expiry only -- never a card number or CVV. The one secret
  * readable here is an app password, behind an explicit reveal that writes a
@@ -143,6 +144,10 @@ export default async function AdminProfilesPage({
   // App passwords are a FULL admin's: a mailbox serves every retailer its owner uses, so the
   // reveals and the IMAP links stay off for a runner even where the retailer reads codes.
   const usesEmailCodes = style.usesEmailCodes !== false && viewer.isAdmin;
+  // What a RUNNER gets instead, where their bot has to read the code: one audited file of
+  // the app passwords behind their own profiles here, and nothing to reveal on the page.
+  // See mayExport.
+  const runnerAppPasswords = style.usesEmailCodes !== false && !viewer.isAdmin;
   // Costco: an email and a password, and no card or address at all, because the order is
   // placed by hand from the member's own account. Every column and every export below
   // that assumes a checkout profile is gated on this. See usesProfiles in sites.ts.
@@ -346,6 +351,9 @@ export default async function AdminProfilesPage({
           {usesAccounts && (
             <ExportLink href={`${exportBase}&format=accounts`} label="Accounts (user:pass)" />
           )}
+          {runnerAppPasswords && (
+            <ExportLink href={`${exportBase}&format=imap`} label="App passwords (IMAP)" />
+          )}
           <span className="text-xs text-[var(--color-muted)]">Active {noun}s only.</span>
           {/* The IMAP export used to sit in this row, one file per retailer. A mailbox is
               not a per-retailer thing, so it now lives on its own page and exports once. */}
@@ -482,6 +490,12 @@ export default async function AdminProfilesPage({
                       <ExportLink
                         href={`${exportBase}&member=${selectedMember.discordUserId}&format=accounts`}
                         label="Export accounts"
+                      />
+                    )}
+                    {runnerAppPasswords && (
+                      <ExportLink
+                        href={`${exportBase}&member=${selectedMember.discordUserId}&format=imap`}
+                        label="Export app passwords"
                       />
                     )}
                     {usesEmailCodes && (

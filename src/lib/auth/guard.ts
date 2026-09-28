@@ -126,7 +126,8 @@ export async function requireAdmin(): Promise<Viewer> {
  * why the IMAP page, the mailbox reveals, the app-password sweeps and moving profiles
  * between runners are untouched: a mailbox serves every retailer its owner uses, so there
  * is no one-runner slice of it, and assigning is how a full admin decides who reaches whose
- * cards.
+ * cards. The one app-password door a runner has is the export, narrowed to the mailboxes
+ * behind their own profiles where their bot reads codes -- see mayExport.
  */
 export async function requireAnyAdmin(): Promise<Viewer> {
   const viewer = await currentViewer();

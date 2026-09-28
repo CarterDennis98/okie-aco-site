@@ -16,6 +16,7 @@ import {
   coversSite,
   fullAdminIds,
   hasAdminArea,
+  mayExport,
   operatorId,
   runnerRoleFor,
   runnerSitesFor,
@@ -26,6 +27,7 @@ import { billCoversSite } from "@/lib/billing/payees";
 const OPERATOR = "111111111111111111";
 const CHESS = "397045810996576266";
 const PEACEMAKER = "720050977444724868";
+const CRISP = "1099014657127223417";
 const MEMBER = "222222222222222222";
 
 const env = { ADMIN_DISCORD_IDS: OPERATOR };
@@ -64,9 +66,21 @@ describe("adminSitesFor", () => {
 
 describe("runner roles", () => {
   it("names a role for every retailer someone other than a full admin runs", () => {
-    for (const site of ["crunchyroll", "premium-bandai", "target", "pokemon-center", "walmart"]) {
+    for (const site of [
+      "crunchyroll",
+      "premium-bandai",
+      "target",
+      "pokemon-center",
+      "walmart",
+      "topps",
+      "mattel",
+    ]) {
       expect(runnerRoleFor(site), site).toMatch(/^\d{15,25}$/);
     }
+  });
+
+  it("finds Mattel's role under the name Valor reports it by", () => {
+    expect(runnerRoleFor("Mattel Creations")).toBe(RUNNER_ROLES.mattel);
   });
 
   it("names none where only full admins reach", () => {
@@ -176,5 +190,67 @@ describe("billCoversSite", () => {
     expect(billCoversSite(PEACEMAKER, "Premium Bandai")).toBe(true);
     expect(billCoversSite(PEACEMAKER, "Target")).toBe(false);
     expect(billCoversSite(OPERATOR, "premium-bandai")).toBe(false);
+  });
+
+  it("gives Mattel to chess under Valor's name for it, and Topps to CrispHeinz", () => {
+    expect(billCoversSite(CHESS, "Mattel Creations")).toBe(true);
+    expect(billCoversSite(CHESS, "Topps")).toBe(false);
+    expect(billCoversSite(CRISP, "Topps")).toBe(true);
+    expect(billCoversSite(CRISP, "Mattel Creations")).toBe(false);
+    expect(billCoversSite(OPERATOR, "Mattel Creations")).toBe(false);
+    expect(billCoversSite(OPERATOR, "topps")).toBe(false);
+  });
+});
+
+describe("mayExport", () => {
+  /**
+   * The rule with money-and-inbox weight behind it: a runner's export is one of their own
+   * retailers, their own share of it, and app passwords only where their bot has to read a
+   * code. Every refusal here is a 404 from the export route.
+   */
+  const operator = { discordUserId: OPERATOR, adminSites: ALL_SITES };
+  const crisp = { discordUserId: CRISP, adminSites: ["topps"] as const };
+  const chess = { discordUserId: CHESS, adminSites: ["crunchyroll", "mattel"] as const };
+  const ask = (site: string, format: string, runner: string | null = null) => ({
+    site,
+    format,
+    runner,
+  });
+
+  it("lets a runner take profiles and logins on their own retailers", () => {
+    expect(mayExport(crisp, ask("topps", "aycd"))).toBe(true);
+    expect(mayExport(crisp, ask("topps", "accounts"))).toBe(true);
+    expect(mayExport(chess, ask("Mattel Creations", "aycd"))).toBe(true);
+  });
+
+  it("lets a runner take app passwords where their bot reads the emailed code", () => {
+    expect(mayExport(crisp, ask("topps", "imap"))).toBe(true);
+    expect(mayExport(crisp, ask("topps", "imap", CRISP))).toBe(true);
+  });
+
+  it("refuses app passwords where nothing reads a code", () => {
+    expect(mayExport(chess, ask("crunchyroll", "imap"))).toBe(false);
+    expect(mayExport(chess, ask("mattel", "imap"))).toBe(false);
+  });
+
+  it("never gives a runner every mailbox on file", () => {
+    // The site-less form is the whole table.
+    expect(mayExport(crisp, ask("", "imap"))).toBe(false);
+  });
+
+  it("refuses another retailer, or anyone else's share", () => {
+    expect(mayExport(crisp, ask("target", "imap"))).toBe(false);
+    expect(mayExport(crisp, ask("mattel", "aycd"))).toBe(false);
+    expect(mayExport(crisp, ask("topps", "imap", OPERATOR))).toBe(false);
+    expect(mayExport(crisp, ask("topps", "aycd", EVERYONE))).toBe(false);
+  });
+
+  it("refuses a member with no runner role at all", () => {
+    expect(mayExport({ discordUserId: MEMBER, adminSites: [] }, ask("topps", "aycd"))).toBe(false);
+  });
+
+  it("leaves a full admin's request to the route to narrow", () => {
+    expect(mayExport(operator, ask("", "imap"))).toBe(true);
+    expect(mayExport(operator, ask("topps", "imap", EVERYONE))).toBe(true);
   });
 });

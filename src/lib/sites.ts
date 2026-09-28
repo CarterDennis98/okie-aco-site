@@ -17,6 +17,10 @@
  *     Pokémon Center yellow at ΔE2000 22.1 -- which fixes nothing about the rest.
  *   - Premium Bandai gold #F4C646 is a third yellow: ΔE2000 4.2 from Pokémon Center's
  *     and 8.9 from Best Buy's, below floor against both.
+ *   - Topps #D71921 and Mattel #E3000B are two more reds, and the closest pair yet. Mattel
+ *     sits ΔE2000 1.0 from the brand's #E30613 -- the same red, to the eye -- and Topps
+ *     3.2 from it and 3.9 from Mattel. Neither clears 5.5 against Target or Costco, and
+ *     like Target's neither clears 3:1 as a UI shape on the chip (2.66:1, 2.80:1).
  *
  * No arrangement of these hues passes. The LOGO and the site NAME carry identity; the
  * tint is decorative reinforcement used at low alpha behind readable text, so it gates
@@ -71,8 +75,8 @@ export type SiteStyle = {
    *     at the login and can read it out of the member's inbox with them -- there is no
    *     bot mid-drop that has to open the mailbox unattended, which is the only thing a
    *     stored app password buys.
-   *   - Crunchyroll and Premium Bandai have a login and a bot, but the bot never reads a
-   *     code out of the inbox, so a stored app password would sit there unused.
+   *   - Crunchyroll, Premium Bandai and Mattel have a login and a bot, but the bot never
+   *     reads a code out of the inbox, so a stored app password would sit there unused.
    *
    * Defaults to true: a new retailer almost certainly mails a code to something automated,
    * and being nagged about a password you don't need is a smaller failure than silently
@@ -191,11 +195,11 @@ export type SiteStyle = {
    * Whether the bot that loads this retailer's AYCD file makes up a phone number itself
    * when it is handed "0".
    *
-   * That is a VALOR convention -- see BOT_SENTINEL_PHONE -- and Valor runs Pokémon Center
-   * and Best Buy. Every other bot takes "0" at face value, as a phone number that isn't
-   * one, so on their retailers the export writes a generated number wherever a profile has
-   * none. Target, Crunchyroll and Premium Bandai are the ones this is for: all three leave
-   * the phone optional, and none of their bots would know what to do with a "0".
+   * That is a VALOR convention -- see BOT_SENTINEL_PHONE -- and Valor runs Pokémon Center,
+   * Best Buy and Mattel. Every other bot takes "0" at face value, as a phone number that
+   * isn't one, so on their retailers the export writes a generated number wherever a
+   * profile has none. Target, Crunchyroll, Premium Bandai and Topps are the ones this is
+   * for: all four leave the phone optional, and none of their bots is known to read a "0".
    *
    * Defaults to false, the direction that works on any bot. A generated number imports and
    * checks out on Valor too -- it is used rather than replaced -- while a "0" handed to
@@ -322,7 +326,53 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     usesEmailCodes: false,
     selfServe: true,
   },
+  topps: {
+    label: "Topps",
+    // Sampled from the logo itself, like Crunchyroll's.
+    tint: "#D71921",
+    logo: "/topps-logo.png",
+    width: 1280,
+    height: 613,
+    // No tile. 0.3% of the mark is below 3:1 on the dark surface and 40.0% on white: the
+    // letters sit on an opaque white plate of their own, like Costco's counter, so a light
+    // tile is the one backing that would erase it.
+    //
+    // Profiled like Target: a login plus a full checkout profile, phone optional, and an
+    // app password -- Alpine reads the code Topps emails at login, so usesEmailCodes stays
+    // unset. No profileSoftCap, as on Crunchyroll.
+    selfServe: true,
+  },
+  mattel: {
+    label: "Mattel",
+    tint: "#E3000B",
+    logo: "/mattel-logo.png",
+    width: 1280,
+    height: 1284,
+    // No tile. 0.7% of the mark is below 3:1 on the dark surface and 12.5% on white -- all
+    // of it the white wordmark, which reads against the red burst around it either way.
+    //
+    // Valor calls the store "Mattel Creations", which siteKey folds into this key. Profiled
+    // like Crunchyroll: a login plus a full checkout profile, phone optional, no app
+    // password. It runs on chess's Valor, so a missing phone exports as Valor's "0".
+    usesEmailCodes: false,
+    botGeneratesPhone: true,
+    selfServe: true,
+  },
 };
+
+/**
+ * Keys a vendor's spelling normalizes to that are not the retailer's own, and the key they
+ * mean.
+ *
+ * Valor reports Mattel as "Mattel Creations", the store's full name, which normalizes to
+ * "mattel-creations". Every lookup here keys it "mattel" -- and so does the bot's payee
+ * table, so without this a Mattel checkout would chip as an unknown retailer and, worse,
+ * bill as the operator's rather than chess's.
+ *
+ * A Map rather than an object literal, so a key like "toString" can never resolve to
+ * something inherited. Kept in step with the bot's port (okie-aco-mirror/src/pas/sites.js).
+ */
+const KEY_ALIASES: ReadonlyMap<string, string> = new Map([["mattel-creations", "mattel"]]);
 
 /** Every retailer we can check out on, for the supported-sites section. */
 export function supportedSites(): SiteStyle[] {
@@ -440,26 +490,26 @@ export function loginOnlySiteKeys(): string[] {
 /**
  * Vendor bots spell the same retailer differently ("Pokemon Center US" vs
  * "Pokemon Center", "https://www.target.com" from Hidden's Site field), so match on a
- * normalized key rather than the raw string.
+ * normalized key rather than the raw string. A spelling that normalizes to some other
+ * key entirely ("Mattel Creations") is mapped back onto the retailer's -- see KEY_ALIASES.
  */
 export function siteKey(site: string | null | undefined): string {
   if (!site) return "unknown";
-  return (
-    String(site)
-      .toLowerCase()
-      .replace(/^https?:\/\//, "")
-      .replace(/^www\./, "")
-      .replace(/\.(com|net|org)\b.*$/, "")
-      // Apostrophes are dropped, not treated as separators: "Sam's Club" has to reach
-      // "sams-club", and turning the apostrophe into a space yields "sam-s-club", which
-      // matches no entry and silently falls through to the unknown-retailer chip.
-      .replace(/['’]/g, "")
-      .replace(/[^a-z0-9]+/g, " ")
-      .trim()
-      .replace(/\s+(us|usa)$/, "")
-      .trim()
-      .replace(/\s+/g, "-")
-  );
+  const key = String(site)
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\.(com|net|org)\b.*$/, "")
+    // Apostrophes are dropped, not treated as separators: "Sam's Club" has to reach
+    // "sams-club", and turning the apostrophe into a space yields "sam-s-club", which
+    // matches no entry and silently falls through to the unknown-retailer chip.
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+(us|usa)$/, "")
+    .trim()
+    .replace(/\s+/g, "-");
+  return KEY_ALIASES.get(key) ?? key;
 }
 
 export function siteStyle(site: string | null | undefined): SiteStyle {

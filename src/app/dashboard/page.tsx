@@ -149,8 +149,9 @@ export default async function DashboardPage() {
                 {/* App passwords, which belong to people rather than retailers -- see
                     /admin/imap. Its own entry because it is where drop-day "their codes
                     aren't arriving" starts, and hunting for it under a retailer cost time
-                    at exactly the wrong moment. A full admin's only: there is no
-                    one-retailer slice of a mailbox to give a runner. */}
+                    at exactly the wrong moment. A full admin's only: a runner gets the app
+                    passwords behind their own profiles from the export on the profiles page,
+                    never this page's view of every mailbox. */}
                 {viewer.isAdmin && (
                   <Link
                     href="/admin/imap"

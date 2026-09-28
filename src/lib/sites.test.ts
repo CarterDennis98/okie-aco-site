@@ -32,6 +32,25 @@ describe("siteKey", () => {
     expect(siteKey("Walmart")).toBe("walmart");
     expect(siteKey("Crunchyroll")).toBe("crunchyroll");
     expect(siteKey("Premium Bandai")).toBe("premium-bandai");
+    expect(siteKey("Topps")).toBe("topps");
+    expect(siteKey("Mattel")).toBe("mattel");
+  });
+
+  /**
+   * Valor names Mattel's store "Mattel Creations". Normalized as-is that is its own key, which
+   * matches no retailer -- a grey chip, and a checkout the bot bills to the operator instead
+   * of chess, whose payee entry is keyed "mattel".
+   */
+  it("folds a vendor's longer name for a store onto the retailer's key", () => {
+    expect(siteKey("Mattel Creations")).toBe("mattel");
+    expect(siteKey("mattel creations")).toBe("mattel");
+    expect(siteStyle("Mattel Creations").label).toBe("Mattel");
+    expect(isKnownSite("Mattel Creations")).toBe(true);
+  });
+
+  it("never resolves an alias lookup through the object prototype", () => {
+    expect(siteKey("toString")).toBe("tostring");
+    expect(siteKey("constructor")).toBe("constructor");
   });
 
   it("strips the US/USA region suffix", () => {
@@ -70,6 +89,8 @@ describe("siteStyle", () => {
       "Costco",
       "Crunchyroll",
       "Premium Bandai",
+      "Topps",
+      "Mattel Creations",
     ]) {
       expect(siteStyle(name).logo, `${name} should have a logo`).not.toBe("");
     }
@@ -92,6 +113,8 @@ describe("onTint", () => {
     expect(onTint("#FFE000")).toBe("#121212"); // Best Buy yellow
     expect(onTint("#FF8D0E")).toBe("#121212"); // Crunchyroll orange
     expect(onTint("#F4C646")).toBe("#121212"); // Premium Bandai gold
+    expect(onTint("#D71921")).toBe("#FFFFFF"); // Topps red
+    expect(onTint("#E3000B")).toBe("#FFFFFF"); // Mattel red
   });
 });
 
@@ -106,9 +129,11 @@ describe("selfServeSiteKeys", () => {
     expect(selfServeSiteKeys().sort()).toEqual([
       "costco",
       "crunchyroll",
+      "mattel",
       "pokemon-center",
       "premium-bandai",
       "target",
+      "topps",
       "walmart",
     ]);
   });
@@ -182,18 +207,20 @@ describe("usesEmailCodes", () => {
    * Three different reasons to be false, and the flag has to serve all of them: Pokemon
    * Center sends no code at all, Costco is signed into by hand -- the operator can read a
    * code with the member, so a stored app password buys nothing and asking for one is a
-   * chore invented for them -- and the Crunchyroll and Premium Bandai bots have a login but
-   * never open the inbox.
+   * chore invented for them -- and the Crunchyroll, Premium Bandai and Mattel bots have a
+   * login but never open the inbox.
    */
   it("is false where nothing of ours reads the mailbox", () => {
     expect(siteStyle("pokemon-center").usesEmailCodes).toBe(false);
     expect(siteStyle("costco").usesEmailCodes).toBe(false);
     expect(siteStyle("crunchyroll").usesEmailCodes).toBe(false);
     expect(siteStyle("premium-bandai").usesEmailCodes).toBe(false);
+    expect(siteStyle("Mattel Creations").usesEmailCodes).toBe(false);
   });
 
   it("is unset -- and therefore true -- where a bot reads the code", () => {
-    for (const key of ["target", "walmart", "best-buy", "sams-club"]) {
+    // Topps: Alpine reads the code Topps emails at login.
+    for (const key of ["target", "walmart", "best-buy", "sams-club", "topps"]) {
       expect(siteStyle(key).usesEmailCodes, `${key} should read codes`).not.toBe(false);
     }
   });
@@ -215,6 +242,8 @@ describe("siteStoresCardCvv", () => {
       "sams-club",
       "crunchyroll",
       "premium-bandai",
+      "topps",
+      "mattel",
     ]) {
       expect(siteStoresCardCvv(key), `${key} stores no account CVV`).toBe(false);
     }
@@ -260,6 +289,8 @@ describe("siteChangesApplyImmediately", () => {
       "sams-club",
       "crunchyroll",
       "premium-bandai",
+      "topps",
+      "mattel",
     ]) {
       expect(siteChangesApplyImmediately(key), `${key} must wait`).toBe(false);
     }
@@ -340,6 +371,8 @@ describe("siteRequiresPhone", () => {
     // Profiled like Target: optional, with the die, and filled in on export if left blank.
     expect(siteRequiresPhone("crunchyroll")).toBe(false);
     expect(siteRequiresPhone("premium-bandai")).toBe(false);
+    expect(siteRequiresPhone("topps")).toBe(false);
+    expect(siteRequiresPhone("mattel")).toBe(false);
   });
 
   it("defaults to false for an unknown retailer", () => {
@@ -362,7 +395,16 @@ describe("siteBotGeneratesPhone", () => {
   it("is true only on the retailers Valor runs", () => {
     expect(siteBotGeneratesPhone("pokemon-center")).toBe(true);
     expect(siteBotGeneratesPhone("best-buy")).toBe(true);
-    for (const key of ["target", "crunchyroll", "premium-bandai", "walmart", "sams-club"]) {
+    // chess's Valor, not the operator's -- the convention is the bot's, whoever runs it.
+    expect(siteBotGeneratesPhone("mattel")).toBe(true);
+    for (const key of [
+      "target",
+      "crunchyroll",
+      "premium-bandai",
+      "topps",
+      "walmart",
+      "sams-club",
+    ]) {
       expect(siteBotGeneratesPhone(key), `${key} needs a real number`).toBe(false);
     }
   });
@@ -377,5 +419,6 @@ describe("siteBotGeneratesPhone", () => {
   it("accepts the raw vendor spelling", () => {
     expect(siteBotGeneratesPhone("Pokemon Center US")).toBe(true);
     expect(siteBotGeneratesPhone("Best Buy USA")).toBe(true);
+    expect(siteBotGeneratesPhone("Mattel Creations")).toBe(true);
   });
 });

@@ -56,6 +56,12 @@ describe("checkoutInput", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts Alpine before the bot sends anything from it", () => {
+    // Its parser waits on real samples, but the vendor name has to be deployed first --
+    // see the note on sourceBot.
+    expect(checkoutInput.shape.sourceBot.safeParse("alpine").success).toBe(true);
+  });
+
   const vendors = mirrorVendors();
   it.runIf(vendors.length > 0)("accepts every vendor the mirror has fixtures for", () => {
     const known = checkoutInput.shape.sourceBot;

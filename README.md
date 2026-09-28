@@ -151,11 +151,17 @@ crafted header skipping middleware outright.
   keeps current between sign-ins (`POST /api/bot/runner-roles`), so giving or removing a role
   lands in seconds. Runners pass `requireAnyAdmin()` — never `requireAdmin()`, which still
   means a full admin — and every page and action that admits them narrows what it reads by
-  `vaultScopeFor`, or by who a charge is owed to. IMAP, app passwords, and **moving profiles
-  between runners** stay full-admin only.
+  `vaultScopeFor`, or by who a charge is owed to. The IMAP page, app-password reveals, and
+  **moving profiles between runners** stay full-admin only. The one exception is the export:
+  on a retailer where a bot reads the emailed code (Topps, on CrispHeinz's Alpine), a runner
+  can download the app passwords of the mailboxes behind **their own** assigned profiles
+  there — never site-less, never anyone else's, and logged in `vault_exports` like every
+  export. A mailbox serves every retailer its owner uses, so that file is read access to
+  those members' whole inboxes; see `mayExport` in `src/lib/auth/admin-scope.ts`.
 - **Every profile has exactly one runner.** New ones are assigned as they are saved: to the
   runner already holding that member on the retailer, else to the retailer's payee (chess on
-  Crunchyroll, peacemaker on Premium Bandai), else to the operator — the first id in
+  Crunchyroll and Mattel, peacemaker on Premium Bandai, CrispHeinz on Topps), else to the
+  operator — the first id in
   `ADMIN_DISCORD_IDS`. A full admin's profiles page and exports open on their **own**
   assignments, since an export is what gets loaded onto a bot and someone else's profiles on
   yours would run a member twice. A move writes a pair of queue entries — "take these off"

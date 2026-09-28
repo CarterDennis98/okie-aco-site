@@ -23,8 +23,11 @@ export const checkoutInput = z
      * outbox holds a batch the server rejects and stops flushing until it is accepted, so
      * one checkout from a vendor this list doesn't know stalls every checkout behind it --
      * every vendor, mid-drop. ingest.test.ts checks this list against the mirror's fixtures.
+     *
+     * "alpine" is here ahead of its parser, which waits on Alpine's own sample webhooks --
+     * so it is already accepted the day the bot starts sending it.
      */
-    sourceBot: z.enum(["valor", "shikari", "refract", "swft", "hidden", "stellar"]),
+    sourceBot: z.enum(["valor", "shikari", "refract", "swft", "hidden", "stellar", "alpine"]),
     discordMessageId: snowflake,
     discordChannelId: snowflake,
     /** Null for vendors that omit it, and for declines that never got one. */

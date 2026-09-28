@@ -36,10 +36,10 @@ export type Payee = {
 
 const PAYEES: readonly Payee[] = [
   {
-    // Runs Stellar on Crunchyroll, so Crunchyroll fees are his.
+    // Runs Stellar on Crunchyroll and his own Valor on Mattel, so fees on both are his.
     id: "397045810996576266",
     name: "chess",
-    sites: ["crunchyroll"],
+    sites: ["crunchyroll", "mattel"],
     handles: [{ method: "venmo", value: "@TJ-Chess" }],
   },
   {
@@ -53,6 +53,14 @@ const PAYEES: readonly Payee[] = [
     sites: ["premium-bandai"],
     handles: [],
   },
+  {
+    // Runs Alpine on Topps, so Topps fees are owed to CrispHeinz. No handles yet: a charge
+    // says to ask on Discord (payHint) until they are added here.
+    id: "1099014657127223417",
+    name: "CrispHeinz",
+    sites: ["topps"],
+    handles: [],
+  },
 ];
 
 const BY_ID = new Map(PAYEES.map((payee) => [payee.id, payee]));
@@ -63,10 +71,11 @@ const CLAIMED_SITES = new Set(PAYEES.flatMap((payee) => payee.sites.map((s) => s
 /**
  * Who a fee on this retailer is owed to, when it isn't the operator; null when it is.
  *
- * The site's copy of the bot's `payees.forSite`: Crunchyroll to chess, Premium Bandai to
- * peacemaker, everything else to whoever runs billing. Read by the ad hoc fee, which has to
- * reach the same answer /pas run would have -- a runner on Target who issues one is not owed
- * it, the operator is, exactly as for the rest of that night's Target fees.
+ * The site's copy of the bot's `payees.forSite`: Crunchyroll and Mattel to chess, Premium
+ * Bandai to peacemaker, Topps to CrispHeinz, everything else to whoever runs billing. Keyed
+ * through siteKey, so Valor's "Mattel Creations" is chess's too. Read by the ad hoc fee,
+ * which has to reach the same answer /pas run would have -- a runner on Target who issues
+ * one is not owed it, the operator is, exactly as for the rest of that night's Target fees.
  */
 export function payeeForSite(site: string | null | undefined): Payee | null {
   const key = siteKey(site);

@@ -25,7 +25,8 @@ import { isKnownSite, siteStyle, siteUsesProfiles } from "@/lib/sites";
  * and a guessed profile id from anybody else's reads exactly like one that doesn't exist.
  *
  * WHO IS OWED is decided the way the bot decides it, by retailer: Premium Bandai to
- * peacemaker, Crunchyroll to chess, everything else to the operator -- not by who clicked.
+ * peacemaker, Crunchyroll and Mattel to chess, Topps to CrispHeinz, everything else to the
+ * operator -- not by who clicked.
  * A second Target runner issuing a Target fee is not owed it; the operator is, like every
  * other Target fee that night. See payeeForSite.
  *

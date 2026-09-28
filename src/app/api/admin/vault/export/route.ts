@@ -1,5 +1,5 @@
 import { prisma } from "@/db/client";
-import { EVERYONE, coversSite, vaultScopeFor } from "@/lib/auth/admin-scope";
+import { EVERYONE, mayExport, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { requireAnyAdmin } from "@/lib/auth/guard";
 import { siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
@@ -18,6 +18,7 @@ import { decrypt } from "@/lib/vault/crypto";
  *   /api/admin/vault/export?site=target&format=accounts  username:password list
  *   /api/admin/vault/export?format=imap                  EVERY mailbox app password, CSV
  *   /api/admin/vault/export?format=imap&member=<id>      one member's, CSV
+ *   /api/admin/vault/export?site=topps&format=imap       the mailboxes behind your share
  *
  * EVERY PROFILE FORMAT IS ONE RUNNER'S SHARE. An export is what gets loaded onto a bot, and
  * a file holding another runner's profiles puts them on two bots at once -- a member checking
@@ -28,8 +29,8 @@ import { decrypt } from "@/lib/vault/crypto";
  * `site` is required by every format EXCEPT `imap`, which has no retailer in it: a mailbox
  * belongs to a person and its codes cover whichever retailers that person uses. Scoping the
  * app-password file per site produced overlapping files with no way to tell which was
- * current, so the site-less form is now the one the UI links to. `site` is still accepted
- * there for the old links.
+ * current, so the site-less form is the one a full admin's UI links to. `site` is still
+ * accepted there -- and it is the ONLY form a runner gets, below.
  *
  * Guarded by `requireAnyAdmin`, which 404s rather than 403s, and every call writes a
  * `vault_exports` row before the body is produced -- ONE PER MEMBER when several were
@@ -38,9 +39,11 @@ import { decrypt } from "@/lib/vault/crypto";
  *
  * A RUNNER exports their own retailers and nothing else: chess gets the Crunchyroll profiles
  * assigned to him, and a hand-typed `?site=target` is a 404 exactly as it is for a member.
- * `format=imap` is refused outright -- a mailbox serves every retailer its owner uses, so
- * there is no one-runner slice of those app passwords to hand over. Checked here rather than
- * trusted from the page, because this route is where the secrets are.
+ * App passwords only with a `site`, only where a bot reads the emailed code, and only for
+ * the mailboxes behind the runner's own profiles there -- CrispHeinz's Alpine has to read
+ * Topps's codes. Never site-less: that is every mailbox on file. See `mayExport` for why
+ * this is a deliberate widening rather than a slice. Checked here rather than trusted from
+ * the page, because this route is where the secrets are.
  *
  * LOGIN-ONLY RETAILERS (Costco) have accounts and no profiles, so `format=accounts` reads
  * the accounts directly and `format=aycd` is refused rather than answered with `[]`. No
@@ -73,18 +76,18 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const siteKey = url.searchParams.get("site") ?? "";
 
-  // Before anything else is parsed, let alone read: outside a runner's retailers, or for
-  // anyone's share but their own, this route does not exist for them.
+  // Before anything else is parsed, let alone read: outside a runner's retailers, for
+  // anyone's share but their own, or for app passwords where nothing reads a code, this
+  // route does not exist for them.
   const requestedRunner = url.searchParams.get("runner");
-  if (!viewer.isAdmin) {
-    const format = url.searchParams.get("format") ?? "aycd";
-    if (
-      format === "imap" ||
-      !coversSite(viewer.adminSites, siteKey) ||
-      (requestedRunner !== null && requestedRunner !== viewer.discordUserId)
-    ) {
-      return new Response("Not found", { status: 404 });
-    }
+  if (
+    !mayExport(viewer, {
+      site: siteKey,
+      format: url.searchParams.get("format") ?? "aycd",
+      runner: requestedRunner,
+    })
+  ) {
+    return new Response("Not found", { status: 404 });
   }
   // Whose profiles go in the file. Undefined only for a full admin's explicit runner=all.
   const { scope, runner } = vaultScopeFor(viewer, requestedRunner);
@@ -166,10 +169,11 @@ export async function GET(request: Request) {
     });
   }
 
-  // One runner's share -- see the note at the top. Not applied to app passwords, which are
-  // a full admin's and belong to no runner: narrowing those would drop the mailboxes of
-  // every member whose profiles sit with somebody else.
-  const runnerFilter = format !== "imap" && assigneeId ? { assigneeId } : {};
+  // One runner's share -- see the note at the top. A full admin's app passwords are the
+  // exception: they belong to no runner, and narrowing them would drop the mailboxes of every
+  // member whose profiles sit with somebody else. A RUNNER's are never the exception -- their
+  // file is the mailboxes behind their own profiles, and nothing else. See mayExport.
+  const runnerFilter = assigneeId && (format !== "imap" || !viewer.isAdmin) ? { assigneeId } : {};
 
   // Wrapped so the empty case can be typed as the same row array rather than `never[]`,
   // which nothing downstream could push into.
