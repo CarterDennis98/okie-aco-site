@@ -15,7 +15,7 @@ import { resolveSiteLogo } from "@/lib/site-logo";
  *     MUST pass the value returned by `requireMember()` -- never a route or search param.
  *     Same convention as db/queries/member.ts, for the same reason.
  *   - `getBillCheckouts` is ADMIN-ONLY: callers must have passed `requireAnyAdmin()`
- *     first, and a site admin's call MUST pass their own id as the payee. It takes a bill
+ *     first, and a runner's call MUST pass their own id as the payee. It takes a bill
  *     id and reads whoever that bill belongs to, which is exactly the thing a member must
  *     never be able to do. Nothing here re-checks -- matching the split used by the other
  *     admin query modules.
@@ -179,7 +179,10 @@ function summarize(
  */
 export async function getMemberDropCheckouts(discordUserId: string): Promise<MemberDropCheckouts> {
   const runs = await prisma.pasRun.findMany({
-    where: { dryRun: false },
+    // Ad hoc runs are not drops: each one is a single bill issued by hand, with a window
+    // that is an instant and no checkouts behind it. A night of Bandai fees would otherwise
+    // take every one of the eight slots below and push the real drops off the list.
+    where: { dryRun: false, adHoc: false },
     orderBy: { windowStart: "desc" },
     take: DROP_LIMIT,
     select: { id: true, dropLabel: true, windowStart: true, windowEnd: true },

@@ -47,8 +47,8 @@ export async function revealAppPasswordForAdmin(form: FormData): Promise<RevealR
   return revealCredential(credential, viewer.discordUserId);
 }
 
-// Confirming pending changes lives in site-admin-actions.ts: a site admin may confirm their
-// own retailers' edits, so it sits behind requireAnyAdmin() and not this file's guard.
+// Confirming pending changes lives in site-admin-actions.ts: a runner may confirm the edits
+// in their own queue, so it sits behind requireAnyAdmin() and not this file's guard.
 
 export type RevealAllResult =
   | { ok: true; revealed: { email: string; value: string }[]; failed: string[] }

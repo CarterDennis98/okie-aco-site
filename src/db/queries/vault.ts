@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
-import { VaultEntity } from "@/generated/prisma/enums";
+import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { loginOnlySiteKeys, siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
 import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
@@ -272,13 +272,21 @@ type ChangeState = {
  * A DELETE leaves a row pointing at an id that no longer exists, which is harmless -- the
  * lookup simply never matches -- and deliberately not cleaned up, because the audit trail
  * outliving the row it describes is the entire point of an append-only log.
+ *
+ * Moves between runners are left out. They are work for the runners -- one bot to take the
+ * profile off, one to load it -- and nothing about the member's own details changed, so a
+ * "pending confirmation" tag saying their edit hasn't reached the bot would be untrue.
  */
 async function loadChangeState(
   discordUserId: string,
   entity: VaultEntity = VaultEntity.VAULT_PROFILE,
 ): Promise<ChangeState> {
   const rows = await prisma.vaultChange.findMany({
-    where: { ownerDiscordId: discordUserId, entity },
+    where: {
+      ownerDiscordId: discordUserId,
+      entity,
+      action: { notIn: [VaultAction.ASSIGN, VaultAction.UNASSIGN] },
+    },
     orderBy: { at: "asc" },
     select: { entityId: true, at: true, appliedAt: true },
   });

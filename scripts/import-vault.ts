@@ -35,6 +35,8 @@ import {
   normalizePan,
   isLuhnValid,
 } from "../src/lib/vault/card";
+import { operatorId } from "../src/lib/auth/admin-scope";
+import { payeeForSite } from "../src/lib/billing/payees";
 import { encrypt } from "../src/lib/vault/crypto";
 
 const require = createRequire(import.meta.url);
@@ -77,6 +79,18 @@ const flag = (name: string, fallback?: string) => {
 const has = (name: string) => args.includes(`--${name}`);
 
 const SITE = flag("site", "target")!;
+
+// Who runs what this imports: the retailer's own runner where it has one, the operator
+// otherwise -- the fallbacks a new signup gets (see pickDefaultAssignee). An account already
+// on file keeps whoever holds it; the upsert below never touches the assignee on update.
+function importAssignee(): string {
+  const assignee = payeeForSite(SITE)?.id ?? operatorId();
+  if (!assignee) {
+    throw new Error("Set ADMIN_DISCORD_IDS: imported profiles need a runner to go to.");
+  }
+  return assignee;
+}
+
 const DIR = flag("dir", "F:/Documents/Okie ACO")!;
 const COMMIT = has("commit");
 const MAP_FILE = flag("map", path.join(process.cwd(), "data", "vault-owner-map.json"))!;
@@ -441,7 +455,13 @@ async function main() {
     const passwordEnc = encrypt(account.password, { entity: "vault_account", field: "password" });
     const row = await prisma.vaultAccount.upsert({
       where: { siteKey_email: { siteKey: SITE, email: account.email } },
-      create: { siteKey: SITE, email: account.email, passwordEnc, discordUserId: owner },
+      create: {
+        siteKey: SITE,
+        email: account.email,
+        passwordEnc,
+        discordUserId: owner,
+        assigneeId: importAssignee(),
+      },
       update: { passwordEnc, discordUserId: owner },
       select: { id: true },
     });

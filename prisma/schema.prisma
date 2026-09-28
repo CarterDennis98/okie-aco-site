@@ -305,6 +305,15 @@ model PasRun {
   createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
   sentAt      DateTime?    @map("sent_at") @db.Timestamptz(3)
 
+  // Issued by hand on the admin charges page, not by `/pas run`. A retailer with no webhook
+  // -- Premium Bandai -- sends the bot no checkouts to scan, so its fees are entered one bill
+  // at a time: one run holding exactly one bill, `sessionId` "adhoc-<key>" (the idempotency
+  // key the page generates, so a double-click lands on the same run), `operatorId` whoever
+  // issued it, and a window that is a single instant on the drop date -- there are no
+  // checkouts behind it for a window to catch. Nobody is DMed; the member finds it on their
+  // dashboard.
+  adHoc Boolean @default(false) @map("ad_hoc")
+
   bills PasBill[]
 
   @@index([windowStart(sort: Desc)])
@@ -518,6 +527,19 @@ model VaultAccount {
   active        Boolean @default(true)
   note          String?
 
+  // The runner this login -- and the profile behind it, when there is one -- is assigned
+  // to: the one whose export it goes out in, whose queue its changes land in, and the only
+  // runner who can see it at all. Chosen when the row is created (see defaultAssignee) and
+  // moved only by a full admin.
+  //
+  // On the ACCOUNT rather than the profile so one column covers both shapes: a profile is
+  // 1:1 with its account, and a login-only retailer's account has no profile to hold it.
+  //
+  // A plain Discord id, not a relation -- the same call `pas_bills.payee_id` makes. A runner
+  // can be assigned members before they have ever signed in, and a foreign key would turn
+  // that into a failed save for the member signing up.
+  assigneeId String @map("assignee_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -527,6 +549,8 @@ model VaultAccount {
   // An account may exist with no profile yet -- 11 do in the current export.
   @@unique([siteKey, email])
   @@index([discordUserId, siteKey])
+  // One runner's slice of a retailer: their roster, their export, their site counts.
+  @@index([siteKey, assigneeId])
   @@map("vault_accounts")
 }
 
@@ -683,6 +707,13 @@ enum VaultAction {
   DELETE
   ACTIVATE
   DEACTIVATE
+  // A full admin moved a profile or login between runners. Written as a PAIR -- ASSIGN in
+  // the new runner's queue ("load this"), UNASSIGN in the old one's ("take this off your
+  // bot") -- because a move is work on two bots, and a profile left running on both is a
+  // member checking out twice. Runner-facing only: nothing about the member's own profile
+  // changed, so their pages never show these.
+  ASSIGN
+  UNASSIGN
 
   @@map("vault_action")
 }
@@ -718,9 +749,21 @@ model VaultChange {
   appliedAt DateTime? @map("applied_at") @db.Timestamptz(3)
   appliedBy String?   @map("applied_by")
 
+  // The runner whose bot this change has to reach, and so whose queue it sits in: whoever
+  // the profile or login was assigned to when the change was made. Stamped here rather than
+  // looked up because a DELETE leaves no row behind to look it up on -- and a deletion is
+  // exactly the change a runner must not miss. A move re-stamps the entity's pending
+  // changes onto the new runner, who loads its current details anyway.
+  //
+  // Null for mailbox changes. An app password serves every retailer its owner uses, so it
+  // belongs to no one runner; those stay with full admins, as they always have.
+  assigneeId String? @map("assignee_id")
+
   @@index([at(sort: Desc)])
   @@index([ownerDiscordId])
   @@index([notifiedAt])
+  // A runner's own queue and its badge.
+  @@index([assigneeId, appliedAt])
   // Drives both sides: the operator's pending queue, and the member's "is this profile
   // waiting" lookup. Owner first because the member's page always scopes by it.
   @@index([ownerDiscordId, appliedAt])

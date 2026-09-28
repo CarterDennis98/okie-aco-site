@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
+import { defaultAssignee } from "@/db/queries/runners";
 import { getMemberProfile, type VaultProfileDetail } from "@/db/queries/vault";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
@@ -43,6 +44,9 @@ import {
  *   - Secrets are WRITE-ONLY. A blank secret field means "leave unchanged"; it can never
  *     mean "clear it", because nothing can read the value back to confirm the intent.
  *   - Nothing is logged. Not the values, not the form payload, not on error.
+ *   - Every new login or profile is assigned a runner as it is created (defaultAssignee),
+ *     and every change is stamped with whoever holds the row, so it reaches that runner's
+ *     queue -- deletions included, which leave nothing behind to look the runner up on.
  */
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -178,6 +182,9 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
   try {
     if (!profileId) {
       // --- create -----------------------------------------------------------
+      // Which runner's bot it goes on, decided before the row exists. A login the upsert
+      // finds already on file keeps whoever holds it -- its `update` is empty.
+      const assigneeId = await defaultAssignee(siteKey, viewer.discordUserId);
       const account = await prisma.vaultAccount.upsert({
         where: { siteKey_email: { siteKey, email } },
         create: {
@@ -187,10 +194,16 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           passwordEnc: password
             ? encrypt(password, { entity: "vault_account", field: "password" })
             : null,
+          assigneeId,
         },
         // An existing account must belong to this member, or the email is taken.
         update: {},
-        select: { id: true, discordUserId: true, profile: { select: { id: true, name: true } } },
+        select: {
+          id: true,
+          discordUserId: true,
+          assigneeId: true,
+          profile: { select: { id: true, name: true } },
+        },
       });
 
       if (account.discordUserId !== viewer.discordUserId) {
@@ -245,6 +258,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           entityId: created.id,
           action: VaultAction.CREATE,
           siteKey,
+          assigneeId: account.assigneeId,
           label: created.name,
         },
         viewer.displayName,
@@ -257,7 +271,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           id: true,
           name: true,
           accountId: true,
-          account: { select: { email: true } },
+          account: { select: { email: true, assigneeId: true } },
           ...ALL_PLAIN,
         },
       });
@@ -317,6 +331,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
             entityId: existing.id,
             action: VaultAction.UPDATE,
             siteKey,
+            assigneeId: existing.account.assigneeId,
             label: existing.name,
             fields: changed,
           },
@@ -367,7 +382,13 @@ export async function setProfileActive(form: FormData): Promise<ActionResult> {
 
   const profile = await prisma.vaultProfile.findFirst({
     where: { id: profileId, discordUserId: viewer.discordUserId },
-    select: { id: true, name: true, siteKey: true, active: true },
+    select: {
+      id: true,
+      name: true,
+      siteKey: true,
+      active: true,
+      account: { select: { assigneeId: true } },
+    },
   });
   if (!profile) return { ok: false, error: "Profile not found." };
   if (profile.active === active) return { ok: true };
@@ -382,6 +403,7 @@ export async function setProfileActive(form: FormData): Promise<ActionResult> {
       entityId: profile.id,
       action: active ? VaultAction.ACTIVATE : VaultAction.DEACTIVATE,
       siteKey: profile.siteKey,
+      assigneeId: profile.account.assigneeId,
       label: profile.name,
     },
     viewer.displayName,
@@ -417,7 +439,7 @@ export async function setProfilesActive(
 
   const profiles = await prisma.vaultProfile.findMany({
     where: { id: { in: ids }, discordUserId: viewer.discordUserId, active: !active },
-    select: { id: true, name: true, siteKey: true },
+    select: { id: true, name: true, siteKey: true, account: { select: { assigneeId: true } } },
   });
   // Not an error: the selection was valid, there was just nothing left to do. The UI
   // phrases `changed: 0` rather than showing a failure for a no-op.
@@ -436,6 +458,7 @@ export async function setProfilesActive(
       entityId: profile.id,
       action: active ? VaultAction.ACTIVATE : VaultAction.DEACTIVATE,
       siteKey: profile.siteKey,
+      assigneeId: profile.account.assigneeId,
       label: profile.name,
     })),
     viewer.displayName,
@@ -466,7 +489,15 @@ export async function deleteProfiles(form: FormData): Promise<ActionResult & { r
 
   const profiles = await prisma.vaultProfile.findMany({
     where: { id: { in: ids }, discordUserId: viewer.discordUserId },
-    select: { id: true, name: true, siteKey: true, accountId: true },
+    // The runner is read BEFORE the rows go: afterwards there is nothing left to read it
+    // from, and a deletion is the change their bot most needs to hear about.
+    select: {
+      id: true,
+      name: true,
+      siteKey: true,
+      accountId: true,
+      account: { select: { assigneeId: true } },
+    },
   });
   if (profiles.length === 0) return { ok: false, error: "Not found." };
 
@@ -485,6 +516,7 @@ export async function deleteProfiles(form: FormData): Promise<ActionResult & { r
       entityId: profile.id,
       action: VaultAction.DELETE,
       siteKey: profile.siteKey,
+      assigneeId: profile.account.assigneeId,
       label: profile.name,
     })),
     viewer.displayName,
@@ -500,7 +532,7 @@ export async function deleteProfiles(form: FormData): Promise<ActionResult & { r
 // ---------------------------------------------------------------------------
 
 /** The stored row a login form is editing. Never carries the password ciphertext. */
-type ExistingLogin = { id: string; email: string; active: boolean };
+type ExistingLogin = { id: string; email: string; active: boolean; assigneeId: string };
 
 /**
  * The retailer and the row the form names, or a message saying why it can't apply.
@@ -535,7 +567,7 @@ async function loginTarget(
   // missing rather than as a refusal that would confirm it exists.
   const login = await prisma.vaultAccount.findFirst({
     where: { id: loginId, discordUserId, siteKey },
-    select: { id: true, email: true, active: true },
+    select: { id: true, email: true, active: true, assigneeId: true },
   });
   if (!login) return { ok: false, error: "Login not found." };
   return { ok: true, siteKey, login };
@@ -618,8 +650,9 @@ export async function saveLogin(form: FormData): Promise<ActionResult> {
           // Bound to this entity and field by the AAD, so a ciphertext moved between
           // columns or tables fails to decrypt rather than quietly returning a value.
           cardCvvEnc: cvv ? encrypt(cvv, { entity: "vault_account", field: "card_cvv" }) : null,
+          assigneeId: await defaultAssignee(siteKey, viewer.discordUserId),
         },
-        select: { id: true },
+        select: { id: true, assigneeId: true },
       });
 
       await recordChange(
@@ -630,6 +663,7 @@ export async function saveLogin(form: FormData): Promise<ActionResult> {
           entityId: created.id,
           action: VaultAction.CREATE,
           siteKey,
+          assigneeId: created.assigneeId,
           label: email,
         },
         viewer.displayName,
@@ -667,6 +701,7 @@ export async function saveLogin(form: FormData): Promise<ActionResult> {
             entityId: login.id,
             action: VaultAction.UPDATE,
             siteKey,
+            assigneeId: login.assigneeId,
             label: email,
             fields: changed,
           },
@@ -707,6 +742,7 @@ export async function setLoginActive(form: FormData): Promise<ActionResult> {
       entityId: login.id,
       action: active ? VaultAction.ACTIVATE : VaultAction.DEACTIVATE,
       siteKey: target.siteKey,
+      assigneeId: login.assigneeId,
       label: login.email,
     },
     viewer.displayName,
@@ -741,6 +777,7 @@ export async function deleteLogin(form: FormData): Promise<ActionResult> {
       entityId: login.id,
       action: VaultAction.DELETE,
       siteKey: target.siteKey,
+      assigneeId: login.assigneeId,
       label: login.email,
     },
     viewer.displayName,
@@ -834,6 +871,8 @@ export async function saveEmailCredential(form: FormData): Promise<ActionResult>
       entity: VaultEntity.EMAIL_CREDENTIAL,
       entityId: row.id,
       action: existing ? VaultAction.UPDATE : VaultAction.CREATE,
+      // A mailbox serves every retailer its owner uses, so it belongs to no one runner.
+      assigneeId: null,
       label: email,
       fields: ["app password"],
     },
@@ -909,6 +948,8 @@ export async function saveEmailAlias(form: FormData): Promise<ActionResult> {
       entity: VaultEntity.EMAIL_ALIAS,
       entityId: row.id,
       action: existing ? VaultAction.UPDATE : VaultAction.CREATE,
+      // A mailbox serves every retailer its owner uses, so it belongs to no one runner.
+      assigneeId: null,
       label: `${email} -> ${credential.email}`,
       fields: ["forwards to"],
     },
@@ -938,6 +979,8 @@ export async function deleteEmailAlias(form: FormData): Promise<ActionResult> {
       entity: VaultEntity.EMAIL_ALIAS,
       entityId: existing.id,
       action: VaultAction.DELETE,
+      // A mailbox serves every retailer its owner uses, so it belongs to no one runner.
+      assigneeId: null,
       label: `${existing.email} -> ${existing.credential.email}`,
     },
     viewer.displayName,
@@ -966,6 +1009,8 @@ export async function deleteEmailCredential(form: FormData): Promise<ActionResul
       entity: VaultEntity.EMAIL_CREDENTIAL,
       entityId: existing.id,
       action: VaultAction.DELETE,
+      // A mailbox serves every retailer its owner uses, so it belongs to no one runner.
+      assigneeId: null,
       label: existing.email,
     },
     viewer.displayName,

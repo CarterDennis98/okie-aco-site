@@ -6,11 +6,11 @@ import { ALL_SITES } from "@/lib/auth/admin-scope";
 import { requireAnyAdmin } from "@/lib/auth/guard";
 
 /**
- * Vault actions a SITE admin may take, as well as a full one.
+ * Vault actions a RUNNER may take, as well as a full admin.
  *
  * Its own module so the guard is obvious at a glance, the same split admin-actions.ts and
  * actions.ts keep: every export here calls `requireAnyAdmin()` AND narrows what it touches
- * to the viewer's retailers. A Server Action is an individually-addressable POST endpoint,
+ * to the viewer's own queue. A Server Action is an individually-addressable POST endpoint,
  * so the narrowing lives in the query, never only in what the page chose to render.
  */
 
@@ -22,10 +22,12 @@ import { requireAnyAdmin } from "@/lib/auth/guard";
  * honest answer to "did my new card get used" was nothing at all, which is why members kept
  * asking in the channel.
  *
- * A SITE ADMIN CONFIRMS THEIR OWN RETAILERS ONLY. Chess loads the Crunchyroll profiles into
- * his bot, so he is the one who can say a Crunchyroll edit is live -- and nobody else's. An
- * id from another retailer in the selection is simply not found, and so not confirmed,
- * rather than failing the rest: the count that comes back says what actually happened.
+ * A RUNNER CONFIRMS THEIR OWN QUEUE ONLY: changes on their retailers that were stamped for
+ * their bot. Chess loads his Crunchyroll profiles into his bot, so he is the one who can say
+ * one of those edits is live -- and nobody else's, including another Crunchyroll runner's.
+ * An id from anyone else's queue is simply not found, and so not confirmed, rather than
+ * failing the rest: the count that comes back says what actually happened. A full admin can
+ * confirm anyone's.
  *
  * EXPLICIT IDS ONLY. There is deliberately no "confirm this whole retailer" or "confirm
  * everything" path: confirming is a claim that a specific edit is live, and a single
@@ -33,7 +35,8 @@ import { requireAnyAdmin } from "@/lib/auth/guard";
  * landed when nothing had been loaded. There is no undo -- the column never unsets -- so
  * the guard belongs here and not only in the UI. A Server Action is an individually
  * addressable POST endpoint, so a bulk path left callable would make the protection
- * cosmetic.
+ * cosmetic. (The one multi-id caller is a move between runners, which lists every id it
+ * confirms: one move is one gesture, and those rows tell a member nothing either way.)
  *
  * NEVER UNSETS. A confirmed change stays confirmed; a later edit appends its own row. That
  * is also why `appliedAt: null` is the only filter anything needs.
@@ -56,7 +59,9 @@ export async function markChangesApplied(
     where: {
       id: { in: ids },
       appliedAt: null,
-      ...(viewer.adminSites === ALL_SITES ? {} : { siteKey: { in: [...viewer.adminSites] } }),
+      ...(viewer.adminSites === ALL_SITES
+        ? {}
+        : { siteKey: { in: [...viewer.adminSites] }, assigneeId: viewer.discordUserId }),
     },
     select: { id: true, ownerDiscordId: true },
   });

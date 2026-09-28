@@ -26,6 +26,8 @@ import path from "node:path";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { parseAccountList, parseAycdExport } from "../src/lib/vault/aycd-import";
+import { operatorId } from "../src/lib/auth/admin-scope";
+import { payeeForSite } from "../src/lib/billing/payees";
 import { encrypt } from "../src/lib/vault/crypto";
 import { buildRosterIndex, resolveOwner, type RosterEntry } from "../src/lib/vault/profile-owner";
 
@@ -36,6 +38,18 @@ const flag = (name: string, fallback?: string) => {
 };
 
 const SITE = flag("site", "")!;
+
+// Who runs what this imports: the retailer's own runner where it has one, the operator
+// otherwise -- the fallbacks a new signup gets (see pickDefaultAssignee). An account already
+// on file keeps whoever holds it; the upsert below never touches the assignee on update.
+function importAssignee(): string {
+  const assignee = payeeForSite(SITE)?.id ?? operatorId();
+  if (!assignee) {
+    throw new Error("Set ADMIN_DISCORD_IDS: imported profiles need a runner to go to.");
+  }
+  return assignee;
+}
+
 const DIR = flag("dir", "F:/Documents/Okie ACO")!;
 const COMMIT = args.includes("--commit");
 // Force through cards whose security code is the wrong length for the brand. They will
@@ -258,6 +272,7 @@ async function main() {
           ? encrypt(password, { entity: "vault_account", field: "password" })
           : null,
         discordUserId: ownerId,
+        assigneeId: importAssignee(),
       },
       // Re-running with a corrected map must be able to move ownership.
       update: {

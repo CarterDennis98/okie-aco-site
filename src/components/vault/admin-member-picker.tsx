@@ -1,17 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useActionState, useState } from "react";
 import type { AdminMemberRow } from "@/db/queries/admin-vault";
+import type { RunnerOption } from "@/components/vault/runner-select";
+import { assignProfiles, type AssignResult } from "@/lib/vault/assign-actions";
 import type { SiteStyle } from "@/lib/sites";
 
 /**
- * The member roster, with a checkbox per member for bulk export.
+ * The member roster, with a checkbox per member for bulk export -- and, for a full admin,
+ * for moving those members to another runner.
  *
  * TWO SEPARATE GESTURES on one row, deliberately, and the same split the profile list
  * already uses: clicking the NAME opens that member's profiles, ticking the BOX includes
- * them in an export. Conflating them would mean you could not look at someone without
- * changing what you were about to export, and could not export without navigating.
+ * them in an export or a move. Conflating them would mean you could not look at someone
+ * without changing what you were about to export, and could not export without navigating.
  *
  * Selection is client state and intentionally not in the URL. It would otherwise have to
  * survive the navigation that clicking a name performs, and a member list of sixty with
@@ -29,6 +32,8 @@ export function AdminMemberPicker({
   exportBase,
   filtering = false,
   extraParams,
+  runnerNames,
+  move,
 }: {
   members: AdminMemberRow[];
   siteKey: string;
@@ -46,8 +51,21 @@ export function AdminMemberPicker({
   filtering?: boolean;
   /** The page's search params, carried into every member link. Serializable on purpose. */
   extraParams?: Record<string, string>;
+  /**
+   * Runner id -> name, when each member's runner is worth showing: everywhere except a
+   * runner's own view, where every row would say the same name.
+   */
+  runnerNames?: Record<string, string>;
+  /**
+   * Full admins only: who the ticked members can be moved to, and whose share of them moves
+   * -- the runner the page is showing, or "all". See assignProfiles.
+   */
+  move?: { runners: RunnerOption[]; from: string };
 }) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  // What the last move did, shown once the selection it acted on has cleared.
+  const [moved, setMoved] = useState<string | null>(null);
+  const noun = style.usesProfiles === false ? "logins" : "profiles";
 
   // What the filter left. The member currently open is kept even with no matches, so
   // clicking a name never makes the row you just clicked disappear from under you.
@@ -85,11 +103,12 @@ export function AdminMemberPicker({
             }}
             // Over what is VISIBLE, not the whole roster: ticking "select all" under a
             // search must not quietly queue up sixty members you cannot see.
-            onChange={(e) =>
+            onChange={(e) => {
+              setMoved(null);
               setChecked(
                 e.currentTarget.checked ? new Set(shown.map((m) => m.discordUserId)) : new Set(),
-              )
-            }
+              );
+            }}
             className="size-4 accent-[var(--color-brand)]"
           />
           Select all
@@ -148,7 +167,30 @@ export function AdminMemberPicker({
               )}
             </div>
           )}
+
+          {move && !overCap && (
+            <MoveMembers
+              siteKey={siteKey}
+              memberIds={[...checked]}
+              from={move.from}
+              runners={move.runners}
+              noun={noun}
+              onMoved={(moved) => {
+                // Said here rather than inside the bar, which closes with the selection.
+                setMoved(
+                  moved === 0 ? "Already there — nothing moved." : `Moved ${moved} ${noun}.`,
+                );
+                setChecked(new Set());
+              }}
+            />
+          )}
         </div>
+      )}
+
+      {moved && count === 0 && (
+        <p role="status" className="mb-3 text-[11px] text-[var(--color-muted)]">
+          {moved}
+        </p>
       )}
 
       {shown.length === 0 && (
@@ -179,6 +221,7 @@ export function AdminMemberPicker({
                 // stayed empty. Same shape as onSelect in profile-manager.tsx.
                 onChange={(e) => {
                   const isChecked = e.currentTarget.checked;
+                  setMoved(null);
                   setChecked((prev) => {
                     const next = new Set(prev);
                     if (isChecked) next.add(m.discordUserId);
@@ -229,11 +272,92 @@ export function AdminMemberPicker({
                   <span className="text-[var(--color-brand)]"> · {m.missingCvv} no CVV</span>
                 )}
               </p>
+              {/* Who runs them. More than one name is a member split between bots, which is
+                  worth seeing before exporting or moving them. */}
+              {runnerNames && m.runners.length > 0 && (
+                <p className="mt-0.5 truncate text-[11px] text-[var(--color-muted)]">
+                  {m.runners.map((id) => runnerNames[id] ?? id).join(", ")}
+                </p>
+              )}
             </Link>
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/**
+ * "Move these members to …" -- every profile of theirs on this retailer in the share the
+ * page is showing. Two steps like RunnerSelect: picking a runner arms the button.
+ */
+function MoveMembers({
+  siteKey,
+  memberIds,
+  from,
+  runners,
+  noun,
+  onMoved,
+}: {
+  siteKey: string;
+  memberIds: string[];
+  from: string;
+  runners: RunnerOption[];
+  noun: string;
+  onMoved: (moved: number) => void;
+}) {
+  const [to, setTo] = useState("");
+  const [state, action, pending] = useActionState(
+    async (_previous: AssignResult | null, form: FormData) => {
+      const result = await assignProfiles(form);
+      if (result.ok) onMoved(result.moved);
+      return result;
+    },
+    null,
+  );
+
+  return (
+    <form
+      action={action}
+      className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--color-edge)] pt-3"
+    >
+      <input type="hidden" name="siteKey" value={siteKey} />
+      <input type="hidden" name="from" value={from} />
+      {memberIds.map((id) => (
+        <input key={id} type="hidden" name="memberId" value={id} />
+      ))}
+      <label className="text-[11px] font-medium text-[var(--color-muted)]" htmlFor="move-to">
+        Move their {noun} to
+      </label>
+      <select
+        id="move-to"
+        name="assigneeId"
+        value={to}
+        onChange={(event) => setTo(event.currentTarget.value)}
+        disabled={pending}
+        className="rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-[11px] text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none"
+      >
+        <option value="">Pick a runner</option>
+        {runners.map((runner) => (
+          <option key={runner.id} value={runner.id}>
+            {runner.name}
+          </option>
+        ))}
+      </select>
+      <button
+        type="submit"
+        disabled={!to || pending}
+        className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-brand)]/60 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-[var(--color-brand)]/10 disabled:opacity-50 sm:min-h-0"
+      >
+        {pending ? "Moving…" : "Move"}
+      </button>
+      {/* A success closes this bar with the selection, so only a refusal is said here. */}
+      {state && !state.ok && (
+        <span role="alert" className="text-[11px] text-[var(--color-warn)]">
+          {state.error}
+        </span>
+      )}
+    </form>
   );
 }
 

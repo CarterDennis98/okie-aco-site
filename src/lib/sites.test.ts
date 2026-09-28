@@ -31,6 +31,7 @@ describe("siteKey", () => {
     expect(siteKey("Target")).toBe("target");
     expect(siteKey("Walmart")).toBe("walmart");
     expect(siteKey("Crunchyroll")).toBe("crunchyroll");
+    expect(siteKey("Premium Bandai")).toBe("premium-bandai");
   });
 
   it("strips the US/USA region suffix", () => {
@@ -68,6 +69,7 @@ describe("siteStyle", () => {
       "Sam's Club",
       "Costco",
       "Crunchyroll",
+      "Premium Bandai",
     ]) {
       expect(siteStyle(name).logo, `${name} should have a logo`).not.toBe("");
     }
@@ -89,6 +91,7 @@ describe("onTint", () => {
     expect(onTint("#FFCB05")).toBe("#121212"); // Pokemon Center yellow
     expect(onTint("#FFE000")).toBe("#121212"); // Best Buy yellow
     expect(onTint("#FF8D0E")).toBe("#121212"); // Crunchyroll orange
+    expect(onTint("#F4C646")).toBe("#121212"); // Premium Bandai gold
   });
 });
 
@@ -104,6 +107,7 @@ describe("selfServeSiteKeys", () => {
       "costco",
       "crunchyroll",
       "pokemon-center",
+      "premium-bandai",
       "target",
       "walmart",
     ]);
@@ -178,12 +182,14 @@ describe("usesEmailCodes", () => {
    * Three different reasons to be false, and the flag has to serve all of them: Pokemon
    * Center sends no code at all, Costco is signed into by hand -- the operator can read a
    * code with the member, so a stored app password buys nothing and asking for one is a
-   * chore invented for them -- and Crunchyroll's bot has a login but never opens the inbox.
+   * chore invented for them -- and the Crunchyroll and Premium Bandai bots have a login but
+   * never open the inbox.
    */
   it("is false where nothing of ours reads the mailbox", () => {
     expect(siteStyle("pokemon-center").usesEmailCodes).toBe(false);
     expect(siteStyle("costco").usesEmailCodes).toBe(false);
     expect(siteStyle("crunchyroll").usesEmailCodes).toBe(false);
+    expect(siteStyle("premium-bandai").usesEmailCodes).toBe(false);
   });
 
   it("is unset -- and therefore true -- where a bot reads the code", () => {
@@ -208,6 +214,7 @@ describe("siteStoresCardCvv", () => {
       "best-buy",
       "sams-club",
       "crunchyroll",
+      "premium-bandai",
     ]) {
       expect(siteStoresCardCvv(key), `${key} stores no account CVV`).toBe(false);
     }
@@ -252,6 +259,7 @@ describe("siteChangesApplyImmediately", () => {
       "best-buy",
       "sams-club",
       "crunchyroll",
+      "premium-bandai",
     ]) {
       expect(siteChangesApplyImmediately(key), `${key} must wait`).toBe(false);
     }
@@ -331,6 +339,7 @@ describe("siteRequiresPhone", () => {
     expect(siteRequiresPhone("pokemon-center")).toBe(false);
     // Profiled like Target: optional, with the die, and filled in on export if left blank.
     expect(siteRequiresPhone("crunchyroll")).toBe(false);
+    expect(siteRequiresPhone("premium-bandai")).toBe(false);
   });
 
   it("defaults to false for an unknown retailer", () => {
@@ -353,7 +362,7 @@ describe("siteBotGeneratesPhone", () => {
   it("is true only on the retailers Valor runs", () => {
     expect(siteBotGeneratesPhone("pokemon-center")).toBe(true);
     expect(siteBotGeneratesPhone("best-buy")).toBe(true);
-    for (const key of ["target", "crunchyroll", "walmart", "sams-club"]) {
+    for (const key of ["target", "crunchyroll", "premium-bandai", "walmart", "sams-club"]) {
       expect(siteBotGeneratesPhone(key), `${key} needs a real number`).toBe(false);
     }
   });

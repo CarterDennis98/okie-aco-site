@@ -18,6 +18,7 @@ function change(siteKey: string, label: string): ChangeRecord {
     entityId: label,
     action: VaultAction.DEACTIVATE,
     siteKey,
+    assigneeId: "1",
     label,
   };
 }
@@ -82,6 +83,7 @@ describe("appliedStamp", () => {
       "best-buy",
       "sams-club",
       "crunchyroll",
+      "premium-bandai",
     ]) {
       expect(appliedStamp(site), `${site} must wait to be confirmed`).toEqual({
         appliedAt: null,

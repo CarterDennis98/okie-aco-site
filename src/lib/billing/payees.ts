@@ -42,12 +42,36 @@ const PAYEES: readonly Payee[] = [
     sites: ["crunchyroll"],
     handles: [{ method: "venmo", value: "@TJ-Chess" }],
   },
+  {
+    // Runs Premium Bandai. No webhook reaches the bot from there, so /pas run never sees a
+    // Bandai checkout: his fees are issued by hand from the charges page. See PasRun.adHoc.
+    //
+    // No handles yet -- a charge owed to him says to ask him directly (payHint) until they
+    // are added here.
+    id: "720050977444724868",
+    name: "peacemaker",
+    sites: ["premium-bandai"],
+    handles: [],
+  },
 ];
 
 const BY_ID = new Map(PAYEES.map((payee) => [payee.id, payee]));
 
 /** Every retailer somebody other than the operator is owed for. */
 const CLAIMED_SITES = new Set(PAYEES.flatMap((payee) => payee.sites.map((s) => siteKey(s))));
+
+/**
+ * Who a fee on this retailer is owed to, when it isn't the operator; null when it is.
+ *
+ * The site's copy of the bot's `payees.forSite`: Crunchyroll to chess, Premium Bandai to
+ * peacemaker, everything else to whoever runs billing. Read by the ad hoc fee, which has to
+ * reach the same answer /pas run would have -- a runner on Target who issues one is not owed
+ * it, the operator is, exactly as for the rest of that night's Target fees.
+ */
+export function payeeForSite(site: string | null | undefined): Payee | null {
+  const key = siteKey(site);
+  return PAYEES.find((payee) => payee.sites.some((s) => siteKey(s) === key)) ?? null;
+}
 
 /**
  * Whether a checkout on `site` is one a bill owed to `payeeId` covers.
@@ -91,8 +115,8 @@ export function payHint(payee: Payee): string {
  * The name to show an admin for who a charge is owed to.
  *
  * "you" for the viewer's own, the listed name for anyone else here, and "Okie ACO" for the
- * operator seen by somebody else -- which today only happens if a site admin were ever shown
- * an operator's charge, and none of the queries do that.
+ * operator seen by somebody else -- which a runner who is not a payee meets when they issue a
+ * fee by hand: a Target fee is the operator's whoever issues it. See issueAdHocFee.
  */
 export function payeeLabel(payeeId: string, viewerId: string): string {
   if (payeeId === viewerId) return "you";

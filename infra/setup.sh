@@ -280,8 +280,8 @@ deploy)
 
   Still to set by hand, because they depend on the URL you just got:
     AUTH_URL, SERVER_ACTIONS_ALLOWED_ORIGINS, ADMIN_DISCORD_IDS,
-    SITE_ADMIN_DISCORD_IDS (optional), AUTH_DISCORD_ID, DISCORD_GUILD_ID,
-    DISCORD_OG_ROLE_ID, DISCORD_INVITE_URL, DISCORD_PAYMENT_URL
+    AUTH_DISCORD_ID, DISCORD_GUILD_ID, DISCORD_OG_ROLE_ID,
+    DISCORD_INVITE_URL, DISCORD_PAYMENT_URL
 
     gcloud run services update $SERVICE --region $REGION \\
       --update-env-vars AUTH_URL=https://<the url>,SERVER_ACTIONS_ALLOWED_ORIGINS=<the host>

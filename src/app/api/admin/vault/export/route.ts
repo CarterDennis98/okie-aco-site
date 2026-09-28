@@ -1,5 +1,5 @@
 import { prisma } from "@/db/client";
-import { coversSite } from "@/lib/auth/admin-scope";
+import { EVERYONE, coversSite, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { requireAnyAdmin } from "@/lib/auth/guard";
 import { siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
@@ -9,13 +9,21 @@ import { decrypt } from "@/lib/vault/crypto";
 /**
  * Profile export — the ONLY place in the system that decrypts stored secrets.
  *
- *   /api/admin/vault/export?site=target                  every member, main bot
- *   /api/admin/vault/export?site=target&bot=backup       every member, past the cap
+ *   /api/admin/vault/export?site=target                  your members, main bot
+ *   /api/admin/vault/export?site=target&bot=backup       your members, past the cap
+ *   /api/admin/vault/export?site=target&runner=all       EVERY runner's members
+ *   /api/admin/vault/export?site=target&runner=<id>      one other runner's
  *   /api/admin/vault/export?site=target&member=<id>      one member
  *   /api/admin/vault/export?site=target&member=<a>&member=<b>   several, one file
  *   /api/admin/vault/export?site=target&format=accounts  username:password list
  *   /api/admin/vault/export?format=imap                  EVERY mailbox app password, CSV
  *   /api/admin/vault/export?format=imap&member=<id>      one member's, CSV
+ *
+ * EVERY PROFILE FORMAT IS ONE RUNNER'S SHARE. An export is what gets loaded onto a bot, and
+ * a file holding another runner's profiles puts them on two bots at once -- a member checking
+ * out twice. So with no `runner` the file is the viewer's own assignments, exactly what their
+ * bot should run; a runner can never ask for more, and a hand-typed `runner=` from one is a
+ * 404. A full admin may ask for another runner's share, or for `runner=all`, knowingly.
  *
  * `site` is required by every format EXCEPT `imap`, which has no retailer in it: a mailbox
  * belongs to a person and its codes cover whichever retailers that person uses. Scoping the
@@ -28,11 +36,11 @@ import { decrypt } from "@/lib/vault/crypto";
  * selected, so the table can still say whose credentials left. If credentials ever surface
  * somewhere they shouldn't, that table is the trail.
  *
- * A SITE ADMIN exports their own retailers and nothing else: Chess gets the Crunchyroll
- * profiles his bot runs on, and a hand-typed `?site=target` is a 404 exactly as it is for a
- * member. `format=imap` is refused outright -- a mailbox serves every retailer its owner
- * uses, so there is no one-retailer slice of those app passwords to hand over. Checked here
- * rather than trusted from the page, because this route is where the secrets are.
+ * A RUNNER exports their own retailers and nothing else: chess gets the Crunchyroll profiles
+ * assigned to him, and a hand-typed `?site=target` is a 404 exactly as it is for a member.
+ * `format=imap` is refused outright -- a mailbox serves every retailer its owner uses, so
+ * there is no one-runner slice of those app passwords to hand over. Checked here rather than
+ * trusted from the page, because this route is where the secrets are.
  *
  * LOGIN-ONLY RETAILERS (Costco) have accounts and no profiles, so `format=accounts` reads
  * the accounts directly and `format=aycd` is refused rather than answered with `[]`. No
@@ -65,14 +73,23 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const siteKey = url.searchParams.get("site") ?? "";
 
-  // Before anything else is parsed, let alone read: outside a site admin's retailers this
-  // route does not exist for them.
+  // Before anything else is parsed, let alone read: outside a runner's retailers, or for
+  // anyone's share but their own, this route does not exist for them.
+  const requestedRunner = url.searchParams.get("runner");
   if (!viewer.isAdmin) {
     const format = url.searchParams.get("format") ?? "aycd";
-    if (format === "imap" || !coversSite(viewer.adminSites, siteKey)) {
+    if (
+      format === "imap" ||
+      !coversSite(viewer.adminSites, siteKey) ||
+      (requestedRunner !== null && requestedRunner !== viewer.discordUserId)
+    ) {
       return new Response("Not found", { status: 404 });
     }
   }
+  // Whose profiles go in the file. Undefined only for a full admin's explicit runner=all.
+  const { scope, runner } = vaultScopeFor(viewer, requestedRunner);
+  const assigneeId = scope.assigneeId;
+
   // REPEATABLE: `&member=a&member=b` exports both in one file. Deduped, because the picker
   // can send the same id twice and `in: [x, x]` would be a silent no-op to debug.
   const memberIds = [
@@ -149,6 +166,11 @@ export async function GET(request: Request) {
     });
   }
 
+  // One runner's share -- see the note at the top. Not applied to app passwords, which are
+  // a full admin's and belong to no runner: narrowing those would drop the mailboxes of
+  // every member whose profiles sit with somebody else.
+  const runnerFilter = format !== "imap" && assigneeId ? { assigneeId } : {};
+
   // Wrapped so the empty case can be typed as the same row array rather than `never[]`,
   // which nothing downstream could push into.
   const loadProfiles = () =>
@@ -157,6 +179,7 @@ export async function GET(request: Request) {
         siteKey,
         active: true,
         ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
+        account: runnerFilter,
       },
       include: { account: { select: { email: true, passwordEnc: true } } },
     });
@@ -176,6 +199,7 @@ export async function GET(request: Request) {
           siteKey,
           active: true,
           ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
+          ...runnerFilter,
         },
         orderBy: { email: "asc" },
         // `cardCvvEnc` is read HERE and nowhere else. This route is the only door a stored
@@ -334,9 +358,18 @@ export async function GET(request: Request) {
   const stamp = new Date().toISOString().slice(0, 10);
   const scopeLabel =
     memberIds.length === 1 ? "member" : memberIds.length > 1 ? `${memberIds.length}-members` : null;
+  // Named whenever the file is not the viewer's own share, so a download of someone else's
+  // profiles can't be mistaken for the one to load onto your own bot.
+  const runnerLabel =
+    format === "imap" || runner === viewer.discordUserId
+      ? null
+      : runner === EVERYONE
+        ? "every-runner"
+        : `runner-${runner}`;
   const suffix = [
     siteKey || (everyMailbox ? "all" : null),
     bot === "all" ? null : bot,
+    runnerLabel,
     scopeLabel,
     stamp,
   ]

@@ -62,6 +62,14 @@ export type ChangeRecord = {
   entityId: string;
   action: VaultAction;
   siteKey?: string | null;
+  /**
+   * The runner whose queue this lands in: whoever holds the profile or login. See
+   * `VaultChange.assigneeId`. Null only for mailbox changes, which belong to full admins.
+   *
+   * Required rather than optional so a new write path cannot forget it -- a change with no
+   * runner never reaches the bot of the one person who needed to see it.
+   */
+  assigneeId: string | null;
   /** Human-readable subject, e.g. the profile name. Never a secret. */
   label?: string | null;
   /** Column names that changed. Never their values. */
@@ -116,6 +124,8 @@ const ACTION_VERB: Record<VaultAction, string> = {
   DELETE: "removed",
   ACTIVATE: "enabled",
   DEACTIVATE: "disabled",
+  ASSIGN: "assigned",
+  UNASSIGN: "unassigned",
 };
 
 const ENTITY_NOUN: Record<VaultEntity, string> = {
@@ -153,6 +163,7 @@ export async function recordChange(change: ChangeRecord, actorName: string): Pro
         entityId: change.entityId,
         action: change.action,
         siteKey: change.siteKey ?? null,
+        assigneeId: change.assigneeId,
         label: change.label ?? null,
         fields: change.fields ?? [],
         // Applied on arrival where there is nothing to load it onto. See appliedStamp.
@@ -201,11 +212,19 @@ export async function recordChange(change: ChangeRecord, actorName: string): Pro
  *
  * Never throws, for the same reason as recordChange: the writes it describes have
  * already succeeded.
+ *
+ * `listed` narrows what the posted detail block names, for a gesture that writes more than
+ * one row per subject: a move between runners is an UNASSIGN and an ASSIGN for every
+ * profile, and listing each name twice would halve how many fit. Every row is still written.
+ *
+ * `at` stamps every row with the same instant. The queue groups one gesture's rows by it,
+ * so a move of forty profiles reads, and is confirmed, as one move rather than forty lines.
  */
 export async function recordBulkChange(
   changes: ChangeRecord[],
   actorName: string,
   summary: string,
+  options: { listed?: ChangeRecord[]; at?: Date } = {},
 ): Promise<void> {
   if (changes.length === 0) return;
 
@@ -220,8 +239,10 @@ export async function recordBulkChange(
       entityId: change.entityId,
       action: change.action,
       siteKey: change.siteKey ?? null,
+      assigneeId: change.assigneeId,
       label: change.label ?? null,
       fields: change.fields ?? [],
+      ...(options.at ? { at: options.at } : {}),
       // Per row, not per batch: a bulk change is one gesture but its rows can span
       // retailers, and only some of those have a bot step to wait for.
       ...appliedStamp(change.siteKey),
@@ -240,7 +261,7 @@ export async function recordBulkChange(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        content: `**${actorName}** ${summary}${detailBlock(changes)}`,
+        content: `**${actorName}** ${summary}${detailBlock(options.listed ?? changes)}`,
         allowed_mentions: { parse: [] },
       }),
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),

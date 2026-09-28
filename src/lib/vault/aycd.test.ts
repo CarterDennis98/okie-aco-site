@@ -103,7 +103,7 @@ describe("toAycdProfile phone on any other bot", () => {
     phoneOf({ siteKey: "target", phone: null, ...over });
 
   it("writes a real number instead of Valor's sentinel", () => {
-    for (const siteKey of ["target", "crunchyroll"]) {
+    for (const siteKey of ["target", "crunchyroll", "premium-bandai"]) {
       for (const phone of [null, "", "   "]) {
         const out = offValor({ siteKey, phone });
         // Ten digits `normalizePhone` would store unchanged -- the same bar the die meets.

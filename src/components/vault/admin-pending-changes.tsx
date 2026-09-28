@@ -24,6 +24,12 @@ import { markChangesApplied } from "@/lib/vault/site-admin-actions";
  * The retailer chips FILTER the queue rather than acting on it -- same shape and behaviour
  * as the charges page's filter tabs. They live in the URL, so a filtered queue can be linked
  * and survives a reload.
+ *
+ * MOVES BETWEEN RUNNERS are the one exception to one-row-one-confirm. A full admin moving
+ * forty profiles writes forty rows into each runner's queue, all stamped with the same
+ * instant, and they are shown -- and confirmed -- as the single move they were: "take these
+ * forty off your bot", once. Nothing about them reaches a member's page, so confirming a
+ * move tells no member anything; it only clears the runner's own to-do.
  */
 
 const ACTION_VERB: Record<string, string> = {
@@ -33,6 +39,37 @@ const ACTION_VERB: Record<string, string> = {
   ACTIVATE: "enabled",
   DEACTIVATE: "disabled",
 };
+
+/** One line of the queue: a single change, or every row of one move between runners. */
+type Entry =
+  | { kind: "change"; row: PendingChangeRow }
+  | { kind: "move"; key: string; rows: PendingChangeRow[] };
+
+/**
+ * Folds each move's rows into one entry, where its first row fell in the list.
+ *
+ * Keyed on everything one move shares -- direction, who did it, whose bot, which retailer,
+ * and the instant it was stamped -- so two moves made a minute apart stay two lines.
+ */
+function entriesOf(rows: PendingChangeRow[]): Entry[] {
+  const entries: Entry[] = [];
+  const moves = new Map<string, Extract<Entry, { kind: "move" }>>();
+  for (const row of rows) {
+    if (row.action !== "ASSIGN" && row.action !== "UNASSIGN") {
+      entries.push({ kind: "change", row });
+      continue;
+    }
+    const key = [row.action, row.actorDiscordId, row.assigneeId, row.siteKey, +row.at].join("|");
+    let move = moves.get(key);
+    if (!move) {
+      move = { kind: "move", key, rows: [] };
+      moves.set(key, move);
+      entries.push(move);
+    }
+    move.rows.push(row);
+  }
+  return entries;
+}
 
 const ENTITY_NOUN: Record<string, string> = {
   VAULT_PROFILE: "profile",
@@ -74,8 +111,11 @@ function FilterTab({
   );
 }
 
-/** Confirms exactly one change. There is no bulk variant -- see the note on the section. */
-function ConfirmButton({ changeId }: { changeId: string }) {
+/**
+ * Confirms exactly the changes it lists: one edit, or every row of one move. There is no
+ * "confirm everything" variant -- see the note on the section.
+ */
+function ConfirmButton({ changeIds, label = "Confirm" }: { changeIds: string[]; label?: string }) {
   const [state, formAction, pending] = useActionState(
     async (_previous: Awaited<ReturnType<typeof markChangesApplied>> | null, formData: FormData) =>
       markChangesApplied(formData),
@@ -84,14 +124,16 @@ function ConfirmButton({ changeId }: { changeId: string }) {
 
   return (
     <form action={formAction} className="contents">
-      <input type="hidden" name="changeId" value={changeId} />
+      {changeIds.map((id) => (
+        <input key={id} type="hidden" name="changeId" value={id} />
+      ))}
       <button
         type="submit"
         disabled={pending}
         title={state && !state.ok ? state.error : undefined}
         className="inline-flex min-h-11 shrink-0 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-xs font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 disabled:opacity-60 sm:min-h-0"
       >
-        {pending ? "Confirming…" : "Confirm"}
+        {pending ? "Confirming…" : label}
       </button>
       {state && !state.ok && (
         <span role="alert" className="text-[11px] text-[var(--color-warn)]">
@@ -111,6 +153,8 @@ export function AdminPendingChanges({
   siteKey,
   memberId,
   extraParams,
+  viewerId,
+  runnerNames,
 }: {
   rows: PendingChangeRow[];
   groups: PendingChangeGroup[];
@@ -133,13 +177,18 @@ export function AdminPendingChanges({
   siteKey: string;
   memberId: string | null;
   /**
-   * The page's other query params -- the profile search and the active/inactive filter.
+   * The page's other query params -- the profile search, the active/inactive filter, and
+   * whose profiles are showing.
    *
    * A plain object for the same reason siteKey is a string: it has to cross the
    * server/client boundary, so it must be serializable. Carried for the same reason as
    * the member id -- filtering the queue must not clear the search below it.
    */
   extraParams?: Record<string, string>;
+  /** Who is looking, so their own bot reads as "you" and anyone else's is named. */
+  viewerId: string;
+  /** Runner id -> name, for the changes that belong on somebody else's bot. */
+  runnerNames: Record<string, string>;
 }) {
   const hrefFor = (bucket: string | null) => {
     const params = new URLSearchParams({ site: siteKey });
@@ -200,26 +249,87 @@ export function AdminPendingChanges({
           whether the tabs render or not -- with one bucket they don't, and hanging the
           spacing off them left the list flush against the help text. */}
       <ul className="mt-3 max-h-96 divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-lg border border-[var(--color-edge)] bg-[var(--color-surface)]">
-        {rows.map((row) => (
-          <li
-            key={row.id}
-            className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-3 py-2"
-          >
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs text-[var(--color-fg)]">
-                <span className="font-semibold text-white">{row.username}</span>{" "}
-                {ACTION_VERB[row.action] ?? row.action.toLowerCase()}{" "}
-                {ENTITY_NOUN[row.entity] ?? "record"}
-                {row.label && <span className="text-[var(--color-muted)]"> {row.label}</span>}
-              </p>
-              <p className="mt-0.5 text-[11px] text-[var(--color-muted)]">
-                {row.siteLabel} · {relativeTime(row.at)}
-                {row.fields.length > 0 && ` · ${row.fields.join(", ")}`}
-              </p>
-            </div>
-            <ConfirmButton changeId={row.id} />
-          </li>
-        ))}
+        {entriesOf(rows).map((entry) => {
+          // "Your bot" for the viewer's own queue; named for anyone else's, which only a
+          // full admin looking past their own share ever sees.
+          const first = entry.kind === "change" ? entry.row : entry.rows[0];
+          const theirs =
+            first.assigneeId && first.assigneeId !== viewerId
+              ? (runnerNames[first.assigneeId] ?? first.assigneeId)
+              : null;
+
+          if (entry.kind === "change") {
+            const { row } = entry;
+            return (
+              <li
+                key={row.id}
+                className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-3 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs text-[var(--color-fg)]">
+                    <span className="font-semibold text-white">{row.username}</span>{" "}
+                    {ACTION_VERB[row.action] ?? row.action.toLowerCase()}{" "}
+                    {ENTITY_NOUN[row.entity] ?? "record"}
+                    {row.label && <span className="text-[var(--color-muted)]"> {row.label}</span>}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-[var(--color-muted)]">
+                    {row.siteLabel} · {relativeTime(row.at)}
+                    {row.fields.length > 0 && ` · ${row.fields.join(", ")}`}
+                    {theirs && ` · ${theirs}'s bot`}
+                  </p>
+                </div>
+                <ConfirmButton changeIds={[row.id]} />
+              </li>
+            );
+          }
+
+          const n = entry.rows.length;
+          const arriving = first.action === "ASSIGN";
+          const noun = first.entity === "VAULT_ACCOUNT" ? "login" : "profile";
+          const what = `${n} ${first.siteLabel} ${noun}${n === 1 ? "" : "s"}`;
+          return (
+            <li key={entry.key} className="px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs text-[var(--color-fg)]">
+                    <span className="font-semibold text-white">{first.actorName}</span> moved {what}{" "}
+                    {arriving
+                      ? theirs
+                        ? `to ${theirs}`
+                        : "to you"
+                      : theirs
+                        ? `off ${theirs}'s bot`
+                        : "off your bot"}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-[var(--color-muted)]">
+                    {relativeTime(first.at)} ·{" "}
+                    {arriving
+                      ? `load ${n === 1 ? "it" : "them"} onto the bot, then confirm`
+                      : `take ${n === 1 ? "it" : "them"} off the bot, then confirm`}
+                  </p>
+                </div>
+                <ConfirmButton
+                  changeIds={entry.rows.map((row) => row.id)}
+                  label={n === 1 ? "Confirm" : `Confirm all ${n}`}
+                />
+              </div>
+              {/* Collapsed: a move of forty is one decision, and the names are for checking
+                  the bot against, not for reading every time the page opens. */}
+              <details className="mt-1.5">
+                <summary className="inline-flex min-h-11 cursor-pointer items-center text-[11px] text-[var(--color-muted)] hover:text-[var(--color-fg)] sm:min-h-0">
+                  Which {noun}s
+                </summary>
+                <ul className="mt-1 space-y-0.5 pl-3 text-[11px] text-[var(--color-muted)]">
+                  {entry.rows.map((row) => (
+                    <li key={row.id}>
+                      <span className="text-[var(--color-fg)]">{row.label}</span> · {row.username}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </li>
+          );
+        })}
         {shown > rows.length && (
           // Never silently short. Counted against the ACTIVE bucket, not the overall total,
           // or a filtered list of 12 would claim to be hiding hundreds.

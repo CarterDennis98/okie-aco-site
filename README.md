@@ -142,14 +142,24 @@ crafted header skipping middleware outright.
 - **The session carries identity and nothing else.** `isOg` is re-read from the database
   and `isAdmin` from `ADMIN_DISCORD_IDS` on every request, so a role change takes effect
   immediately instead of when a cookie expires.
-- **Site admins** (`SITE_ADMIN_DISCORD_IDS`, `site:id` pairs) run one retailer's bot and
-  administer that retailer only: its profiles and exports, its profile changes, and the
-  charges owed to them. They pass `requireAnyAdmin()` — never `requireAdmin()`, which still
+- **Runners** run a retailer's bot, and administer only the profiles **assigned** to them
+  there: their roster and exports, their queue of profile changes, and the charges owed to
+  them. Two facts make someone a runner on a retailer, and it takes both — they hold that
+  retailer's Discord role (`RUNNER_ROLES` in `src/lib/auth/admin-scope.ts`), and a full admin
+  has assigned them profiles (`vault_accounts.assignee_id`). A role handed out by mistake
+  therefore opens an empty slice. Roles are read from `discord_members.roles`, which the bot
+  keeps current between sign-ins (`POST /api/bot/runner-roles`), so giving or removing a role
+  lands in seconds. Runners pass `requireAnyAdmin()` — never `requireAdmin()`, which still
   means a full admin — and every page and action that admits them narrows what it reads by
-  `viewer.adminSites`, or by who a charge is owed to. IMAP and app passwords stay
-  full-admin only. Like `ADMIN_DISCORD_IDS` it is an env allowlist, never a Discord role.
-  On Cloud Run it is set by hand, like the other service config:
-  `gcloud run services update okie-aco-site --region us-central1 --update-env-vars SITE_ADMIN_DISCORD_IDS=crunchyroll:<id>`.
+  `vaultScopeFor`, or by who a charge is owed to. IMAP, app passwords, and **moving profiles
+  between runners** stay full-admin only.
+- **Every profile has exactly one runner.** New ones are assigned as they are saved: to the
+  runner already holding that member on the retailer, else to the retailer's payee (chess on
+  Crunchyroll, peacemaker on Premium Bandai), else to the operator — the first id in
+  `ADMIN_DISCORD_IDS`. A full admin's profiles page and exports open on their **own**
+  assignments, since an export is what gets loaded onto a bot and someone else's profiles on
+  yours would run a member twice. A move writes a pair of queue entries — "take these off"
+  for the old runner, "load these" for the new one — so neither bot is left guessing.
 - Member queries take `discordUserId` as a **required first argument**, sourced only
   from the guard's return value. Resource lookups carry both predicates
   (`where: { id, discordUserId }`) rather than fetch-then-compare, which is what makes a

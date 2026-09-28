@@ -1,7 +1,7 @@
 /**
  * Charges, scoped by who they are owed to.
  *
- * What is under test is the site admin's view: Chess sees the Crunchyroll charges owed to
+ * What is under test is the runner's view: Chess sees the Crunchyroll charges owed to
  * him and nothing of the operator's, and a bill owed to one person can't be opened through
  * the other's scope. The queries do not check authorization themselves -- the pages and
  * actions pass the payee from the guard -- so this pins that the predicate they are handed

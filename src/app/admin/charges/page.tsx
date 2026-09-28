@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AdHocFee } from "@/components/billing/ad-hoc-fee";
 import { ChargeRow } from "@/components/billing/charge-row";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
@@ -9,10 +10,11 @@ import {
   getDropDates,
   type ChargeFilter,
 } from "@/db/queries/admin-charges";
+import { getAdHocSites } from "@/db/queries/ad-hoc";
 import { getPendingChangeCount } from "@/db/queries/admin-vault";
-import { ALL_SITES } from "@/lib/auth/admin-scope";
+import { ALL_SITES, operatorId, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
-import { payeeLabel } from "@/lib/billing/payees";
+import { payeeForSite, payeeLabel } from "@/lib/billing/payees";
 import { count, plural } from "@/lib/format";
 import { money } from "@/lib/money";
 
@@ -23,7 +25,7 @@ import { money } from "@/lib/money";
  * re-render on client navigation and doesn't wrap Server Actions. It 404s rather than
  * 403s, so a non-admin can't tell this route exists.
  *
- * SCOPED BY WHO IS OWED. A site admin sees only the charges owed to them -- Chess, his
+ * SCOPED BY WHO IS OWED. A runner sees only the charges owed to them -- Chess, his
  * Crunchyroll fees -- with no way to widen it: the payee comes from the guard, never the
  * URL. A full admin sees everyone's, and can narrow to one payee, which is how the operator
  * checks what Chess is owed after a drop.
@@ -71,7 +73,7 @@ export default async function AdminChargesPage({
   const to = ISO_DATE.test(params.to ?? "") ? params.to : undefined;
   const page = Math.max(1, Number.parseInt(params.page ?? "1", 10) || 1);
 
-  // A site admin's scope is fixed by the guard. A full admin's `?payee=` is honoured only
+  // A runner's scope is fixed by the guard. A full admin's `?payee=` is honoured only
   // when somebody is actually owed under it -- an unknown value falls back to everyone,
   // the same rule the status filter applies.
   const scoped = chargeScopeOf(viewer);
@@ -79,16 +81,27 @@ export default async function AdminChargesPage({
   const payee =
     scoped ?? (params.payee && payees.includes(params.payee) ? params.payee : undefined);
 
-  const [result, totals, drops, pendingChanges] = await Promise.all([
+  const [result, totals, drops, pendingChanges, adHocSites] = await Promise.all([
     getAdminCharges({ filter, search, from, to, page, payeeId: payee }),
     getAdminChargeTotals(payee),
     getDropDates(payee),
-    getPendingChangeCount(viewer.adminSites === ALL_SITES ? undefined : viewer.adminSites),
+    // The viewer's own queue -- what the badge on the Profiles link is asking them to do.
+    getPendingChangeCount(vaultScopeFor(viewer).scope),
+    // Where they can bill by hand: retailers they run, with profiles assigned to them.
+    getAdHocSites(
+      viewer.discordUserId,
+      viewer.adminSites === ALL_SITES ? undefined : viewer.adminSites,
+    ),
   ]);
+  // Who each of those retailers' fees is owed to, as the review step will say it.
+  const adHocOptions = adHocSites.map((site) => ({
+    ...site,
+    owedTo: payeeLabel(payeeForSite(site.siteKey)?.id ?? operatorId() ?? "", viewer.discordUserId),
+  }));
   const rows = result.rows;
 
   // Carried onto the filter tabs and the pager so one control never silently clears
-  // another. The payee rides along only for a full admin; a site admin's is never a param.
+  // another. The payee rides along only for a full admin; a runner's is never a param.
   const carry = (over: Record<string, string | number | undefined>) => {
     const next = new URLSearchParams();
     const merged = {
@@ -139,7 +152,7 @@ export default async function AdminChargesPage({
             )}
           </Link>
           {/* Mailboxes serve every retailer their owner uses, so there is no one-retailer
-              slice of that page to give a site admin. */}
+              slice of that page to give a runner. */}
           {viewer.isAdmin && (
             <Link
               href="/admin/imap"
@@ -150,7 +163,12 @@ export default async function AdminChargesPage({
           )}
         </div>
 
-        <h1 className="mt-5 text-3xl font-black tracking-tight text-white">Charges</h1>
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-3xl font-black tracking-tight text-white">Charges</h1>
+          {/* For a checkout /pas run can't see -- Premium Bandai has no webhook. Offered on
+              the retailers the viewer runs, against the profiles assigned to them. */}
+          <AdHocFee sites={adHocOptions} />
+        </div>
         <p className="mt-2 text-sm text-[var(--color-muted)]">
           Signed in as {viewer.displayName}.{" "}
           {scoped ? "These are the charges members owe you. " : ""}Marking a charge received writes

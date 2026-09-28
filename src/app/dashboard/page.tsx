@@ -12,7 +12,7 @@ import { otherPayee, payHint } from "@/lib/billing/payees";
 import { count, plural } from "@/lib/format";
 import { money } from "@/lib/money";
 import { signOutOfSite } from "@/lib/auth/actions";
-import { ALL_SITES, hasAdminArea } from "@/lib/auth/admin-scope";
+import { hasAdminArea, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { chargeScopeOf, requireMember } from "@/lib/auth/guard";
 
 // Never a build-time artifact and never cached: this is one member's private data.
@@ -35,8 +35,8 @@ export default async function DashboardPage() {
   // The guard lives in the page, not the layout, and its return value is the ONLY
   // source of the id below. Nothing here reads an id from the URL.
   const viewer = await requireMember();
-  // Full admins and site admins both get the admin links; each badge counts only what that
-  // admin handles -- a site admin's own retailers' changes, and the charges owed to them.
+  // Full admins and runners both get the admin links; each badge counts only what that admin
+  // handles -- the changes waiting on their own bot, and the charges owed to them.
   const showAdmin = hasAdminArea(viewer.adminSites);
   const [data, profileGroups, needingAppPassword, pendingConfirmation, pendingChanges, drops] =
     await Promise.all([
@@ -45,9 +45,7 @@ export default async function DashboardPage() {
       getEmailsNeedingAppPassword(viewer.discordUserId),
       // Only admins see these badges, and only they pay for the queries.
       showAdmin ? getPendingConfirmationCount(chargeScopeOf(viewer)) : Promise.resolve(0),
-      showAdmin
-        ? getPendingChangeCount(viewer.adminSites === ALL_SITES ? undefined : viewer.adminSites)
-        : Promise.resolve(0),
+      showAdmin ? getPendingChangeCount(vaultScopeFor(viewer).scope) : Promise.resolve(0),
       // The operator's house profiles are never billed, so they have no charges and no
       // per-drop breakdown. This is that breakdown, and it replaces the balance box they
       // could only ever see $0 in.
@@ -152,7 +150,7 @@ export default async function DashboardPage() {
                     /admin/imap. Its own entry because it is where drop-day "their codes
                     aren't arriving" starts, and hunting for it under a retailer cost time
                     at exactly the wrong moment. A full admin's only: there is no
-                    one-retailer slice of a mailbox to give a site admin. */}
+                    one-retailer slice of a mailbox to give a runner. */}
                 {viewer.isAdmin && (
                   <Link
                     href="/admin/imap"

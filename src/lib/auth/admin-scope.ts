@@ -3,22 +3,31 @@ import { siteKey } from "@/lib/sites";
 /**
  * Who administers what.
  *
- * Two allowlists, both read from the environment on every request, never from the
- * database and never from a Discord role:
+ * Two kinds of admin:
  *
- *   ADMIN_DISCORD_IDS       full admins -- every retailer, every mailbox, every charge.
- *   SITE_ADMIN_DISCORD_IDS  site admins -- someone who runs ONE retailer's bot and
- *                           administers that retailer and nothing else:
- *                             SITE_ADMIN_DISCORD_IDS="crunchyroll:397045810996576266"
- *                           `site:id` pairs, comma-separated. The same id may appear more
- *                           than once to cover several retailers.
+ *   FULL ADMINS  ADMIN_DISCORD_IDS, an environment allowlist read on every request. Every
+ *                retailer, every mailbox, every charge -- and the only people who can move a
+ *                profile from one runner to another.
+ *   RUNNERS      anyone holding one of the Discord roles in RUNNER_ROLES: somebody who runs
+ *                a retailer's bot. Chess on Crunchyroll, peacemaker on Premium Bandai, and
+ *                whoever else is given the Target role to share that one.
  *
- * An allowlist rather than a role for the reason the full one is: a site admin can download
- * that retailer's profiles, cards and security codes included, and a role assigned by
- * mistake -- or a database write -- must never be enough to hand that out. A redeploy is the
- * right amount of friction for giving someone members' card data.
+ * A runner's reach is TWO facts, and it takes both. The role says which retailers they MAY
+ * be given; a full admin's assignment (VaultAccount.assigneeId) says which profiles they
+ * actually have. So a role handed out by mistake opens nothing by itself -- the new runner
+ * can be assigned profiles, and until a full admin does, their slice of the retailer is
+ * empty. Taking the role away is the fast way to cut someone off; moving their profiles to
+ * another runner is the other.
  *
- * Pure, and kept apart from guard.ts, so the parsing can be tested without a database.
+ * Roles are read from `discord_members.roles`, which sign-in writes and the bot keeps
+ * current between sign-ins (see /api/bot/runner-roles), so a role change lands in seconds
+ * rather than at somebody's next login.
+ *
+ * The FULL-admin tier stays an allowlist, never a role: a full admin decides who gets which
+ * members' cards, and a database write or a mis-clicked role must never be enough to hand
+ * that power out. A redeploy is still the friction for that.
+ *
+ * Pure, and kept apart from guard.ts, so the rules can be tested without a database.
  */
 
 /** Every retailer, for a full admin. */
@@ -26,44 +35,77 @@ export const ALL_SITES = "all" as const;
 
 export type AdminSites = typeof ALL_SITES | readonly string[];
 
-/** `process.env`, or a stand-in for it in a test. Only the two allowlists are read. */
+/**
+ * The Discord role that makes someone a runner on each retailer, keyed by site key.
+ *
+ * In code rather than the environment for the reason payees.ts gives for its handles: which
+ * role reaches members' card data belongs in the history, next to the change that made it.
+ * Kept in step with RUNNER_ROLE_IDS in the bot (okie-aco-mirror/src/config.js), which is
+ * the list it reports holders of.
+ *
+ * A retailer missing here has no runners -- only full admins reach it.
+ */
+export const RUNNER_ROLES: Readonly<Record<string, string>> = {
+  crunchyroll: "1552031494975914034",
+  "premium-bandai": "1553548824817963008",
+  target: "1553941817626730526",
+  "pokemon-center": "1553941945045487646",
+  walmart: "1553942026851196959",
+};
+
+/** `process.env`, or a stand-in for it in a test. Only ADMIN_DISCORD_IDS is read. */
 type Env = Record<string, string | undefined>;
 
-function fullAdminIds(env: Env): Set<string> {
-  return new Set(
-    (env.ADMIN_DISCORD_IDS ?? "")
-      .split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
-  );
+/** Full admins, in the order they are listed. */
+export function fullAdminIds(env: Env = process.env): string[] {
+  return [
+    ...new Set(
+      (env.ADMIN_DISCORD_IDS ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
-/** Discord id -> the retailers they administer, keyed the way every other lookup is. */
-function siteAdminMap(env: Env): Map<string, Set<string>> {
-  const map = new Map<string, Set<string>>();
-  for (const entry of (env.SITE_ADMIN_DISCORD_IDS ?? "").split(",")) {
-    const separator = entry.indexOf(":");
-    if (separator < 0) continue;
-    const site = entry.slice(0, separator).trim();
-    const id = entry.slice(separator + 1).trim();
-    // An entry missing either half grants nothing, rather than guessing which half it meant.
-    if (!site || !/^\d{15,25}$/.test(id)) continue;
-    const sites = map.get(id) ?? new Set<string>();
-    sites.add(siteKey(site));
-    map.set(id, sites);
-  }
-  return map;
+/**
+ * The operator: the FIRST full admin listed. Whoever a profile goes to when nothing else
+ * claims it -- see pickDefaultAssignee -- and who is owed a fee no runner is.
+ *
+ * Null when no full admin is configured at all, which nothing can work around: there is
+ * then nobody to hold an unclaimed profile.
+ */
+export function operatorId(env: Env = process.env): string | null {
+  return fullAdminIds(env)[0] ?? null;
+}
+
+/** The role that makes someone a runner on this retailer, or null if nobody can be one. */
+export function runnerRoleFor(site: string | null | undefined): string | null {
+  return RUNNER_ROLES[siteKey(site)] ?? null;
+}
+
+/** The retailers these roles make someone a runner on, sorted. */
+export function runnerSitesFor(roles: readonly string[]): string[] {
+  const held = new Set(roles);
+  return Object.entries(RUNNER_ROLES)
+    .filter(([, role]) => held.has(role))
+    .map(([site]) => site)
+    .sort();
 }
 
 /**
  * What one member may administer: every retailer, a list of them, or none (empty).
  *
- * A full admin who is also listed as a site admin stays a full admin -- the narrower entry
- * never demotes the wider one.
+ * A full admin who also holds runner roles stays a full admin -- the narrower grant never
+ * demotes the wider one.
  */
-export function adminSitesFor(discordUserId: string, env: Env = process.env): AdminSites {
-  if (fullAdminIds(env).has(discordUserId)) return ALL_SITES;
-  return [...(siteAdminMap(env).get(discordUserId) ?? [])].sort();
+export function adminSitesFor(
+  discordUserId: string,
+  roles: readonly string[],
+  env: Env = process.env,
+): AdminSites {
+  if (fullAdminIds(env).includes(discordUserId)) return ALL_SITES;
+  return runnerSitesFor(roles);
 }
 
 /** Whether these sites include this retailer. Normalizes, like every other site lookup. */
@@ -75,4 +117,57 @@ export function coversSite(sites: AdminSites, site: string | null | undefined): 
 /** Whether there is anything at all to administer -- what decides if the Admin tab shows. */
 export function hasAdminArea(sites: AdminSites): boolean {
   return sites === ALL_SITES || sites.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Whose profiles an admin page is showing
+// ---------------------------------------------------------------------------
+
+/** The `?runner=` value that means every runner's, for a full admin. */
+export const EVERYONE = "all";
+
+/**
+ * Whose rows a vault read covers.
+ *
+ * Built once per request by `vaultScopeFor` and handed to every admin read that spans
+ * profiles, logins or their changes. Undefined fields mean "no restriction", so `{}` is a
+ * full admin looking at everyone's.
+ */
+export type VaultScope = {
+  /** Retailers in reach. Undefined: every retailer. */
+  sites?: readonly string[];
+  /** Only rows assigned to this runner. Undefined: anyone's. */
+  assigneeId?: string;
+  /**
+   * The change queue only: also the changes no runner owns, which are mailbox edits. They
+   * belong to full admins, so a full admin's own queue includes them and a runner's never
+   * does.
+   */
+  withUnassigned?: boolean;
+};
+
+/**
+ * Whose profiles a page shows, from the viewer and the `?runner=` they asked for.
+ *
+ *   RUNNER      their own assigned profiles, on their own retailers, always. `requested` is
+ *               ignored rather than honoured -- the URL can never widen a runner's view.
+ *   FULL ADMIN  their OWN by default (plus the unowned mailbox changes), which is the set
+ *               they load onto their bot. `?runner=all` is everyone's; `?runner=<id>` is one
+ *               other runner's, which is how the operator checks what chess is holding.
+ *
+ * `runner` is what the page should render as selected: EVERYONE, or a Discord id.
+ */
+export function vaultScopeFor(
+  viewer: { discordUserId: string; adminSites: AdminSites },
+  requested?: string | null,
+): { scope: VaultScope; runner: string } {
+  const self = viewer.discordUserId;
+  if (viewer.adminSites !== ALL_SITES) {
+    return { scope: { sites: [...viewer.adminSites], assigneeId: self }, runner: self };
+  }
+  if (requested === EVERYONE) return { scope: {}, runner: EVERYONE };
+  if (requested && requested !== self && /^\d{15,25}$/.test(requested)) {
+    return { scope: { assigneeId: requested }, runner: requested };
+  }
+  return { scope: { assigneeId: self, withUnassigned: true }, runner: self };
 }

@@ -3,9 +3,10 @@
 import { useState, useTransition } from "react";
 import { CheckoutsByProfile } from "@/components/checkouts-by-profile";
 import { ConfirmPayment, ReopenBill } from "@/components/billing/confirm-payment";
+import type { AdHocDetail } from "@/db/queries/ad-hoc";
 import type { AdminChargeRow } from "@/db/queries/admin-charges";
 import type { BillCheckouts } from "@/db/queries/drop-checkouts";
-import { loadBillCheckouts } from "@/lib/billing/admin-actions";
+import { loadAdHocDetail, loadBillCheckouts } from "@/lib/billing/admin-actions";
 import { methodLabel } from "@/lib/billing/methods";
 import { count, plural } from "@/lib/format";
 import { money } from "@/lib/money";
@@ -50,6 +51,8 @@ export function ChargeRow({
 }) {
   const [open, setOpen] = useState(false);
   const [checkouts, setCheckouts] = useState<BillCheckouts | null>(null);
+  // A fee issued by hand has no checkouts behind it, so it opens onto this instead.
+  const [detail, setDetail] = useState<AdHocDetail | null>(null);
   const [failed, setFailed] = useState(false);
   const [pending, startTransition] = useTransition();
 
@@ -59,8 +62,14 @@ export function ChargeRow({
       return;
     }
     setOpen(true);
-    if (checkouts || pending) return;
+    if (checkouts || detail || pending) return;
     startTransition(async () => {
+      if (row.adHoc) {
+        const result = await loadAdHocDetail(row.id);
+        if (result) setDetail(result);
+        else setFailed(true);
+        return;
+      }
       const result = await loadBillCheckouts(row.id);
       if (result) setCheckouts(result);
       else setFailed(true);
@@ -101,7 +110,15 @@ export function ChargeRow({
             >
               ›
             </span>
-            {pending ? "Loading…" : open ? "Hide checkouts" : "Checkouts"}
+            {pending
+              ? "Loading…"
+              : row.adHoc
+                ? open
+                  ? "Hide details"
+                  : "Issued by hand"
+                : open
+                  ? "Hide checkouts"
+                  : "Checkouts"}
           </button>
         </td>
         <td className={cell}>
@@ -166,12 +183,32 @@ export function ChargeRow({
       {open && (
         <tr>
           <td colSpan={5} className="bg-[var(--color-ink)]/40 px-5 py-4">
-            {pending && !checkouts ? (
-              <p className="text-xs text-[var(--color-muted)]">Loading checkouts…</p>
+            {pending && !checkouts && !detail ? (
+              <p className="text-xs text-[var(--color-muted)]">Loading…</p>
             ) : failed ? (
               <p className="text-xs text-[var(--color-warn)]">
-                Couldn&rsquo;t load the checkouts for this charge.
+                Couldn&rsquo;t load the details for this charge.
               </p>
+            ) : detail ? (
+              <>
+                <p className="mb-2 text-xs text-[var(--color-muted)]">
+                  Issued by hand by {detail.issuedBy}
+                  {detail.profileName && ` for ${detail.profileName}`} — no checkouts are recorded
+                  for it.
+                </p>
+                <ul className="space-y-1 text-xs">
+                  {detail.lines.map((line) => (
+                    <li key={line.label} className="flex justify-between gap-4">
+                      <span className="text-[var(--color-fg)]">
+                        {count(line.qty)} × {line.label}
+                      </span>
+                      <span className="text-[var(--color-muted)] tabular-nums">
+                        {money(line.feeCents)} each · {money(line.subtotalCents)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
             ) : checkouts ? (
               <>
                 <p className="mb-3 text-xs text-[var(--color-muted)]">

@@ -1,5 +1,6 @@
 "use server";
 
+import { getAdHocDetail, type AdHocDetail } from "@/db/queries/ad-hoc";
 import { getBillCheckouts, type BillCheckouts } from "@/db/queries/drop-checkouts";
 import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
 
@@ -26,6 +27,16 @@ import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
 export async function loadBillCheckouts(billId: string): Promise<BillCheckouts | null> {
   const viewer = await requireAnyAdmin();
   if (!billId) return null;
-  // A site admin opens only charges owed to them; anyone else's reads as not found.
+  // A runner opens only charges owed to them; anyone else's reads as not found.
   return getBillCheckouts(billId, chargeScopeOf(viewer));
+}
+
+/**
+ * The same expansion for a fee issued by hand, which has no checkouts to show: who issued
+ * it, against which profile, and its lines. Scoped exactly like loadBillCheckouts.
+ */
+export async function loadAdHocDetail(billId: string): Promise<AdHocDetail | null> {
+  const viewer = await requireAnyAdmin();
+  if (!billId) return null;
+  return getAdHocDetail(billId, chargeScopeOf(viewer));
 }

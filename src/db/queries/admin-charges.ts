@@ -10,7 +10,7 @@ import type { Prisma } from "@/generated/prisma/client";
  * the split used by the vault queries: a query module that quietly enforced
  * authorization would make it tempting to skip the guard on the page.
  *
- * SCOPED BY WHO IS OWED. Every read takes an optional `payeeId`: a site admin's calls MUST
+ * SCOPED BY WHO IS OWED. Every read takes an optional `payeeId`: a runner's calls MUST
  * pass their own, so Chess sees the Crunchyroll charges owed to him and nothing of the
  * operator's; a full admin passes one only to filter, which is how the operator sees what
  * Chess is owed after a drop. See `payeeScope` in the charges page.
@@ -63,6 +63,8 @@ export type AdminChargeRow = {
   paidClaimedNote: string | null;
   markedPaidBy: string | null;
   lineCount: number;
+  /** Issued by hand on this site rather than by /pas run, so there are no checkouts behind it. */
+  adHoc: boolean;
 };
 
 export type AdminChargePage = {
@@ -187,7 +189,7 @@ export async function getAdminCharges(query: ChargeQuery): Promise<AdminChargePa
         paidClaimedNote: true,
         markedPaidBy: true,
         member: { select: { username: true, globalName: true } },
-        run: { select: { dropLabel: true, windowStart: true } },
+        run: { select: { dropLabel: true, windowStart: true, adHoc: true } },
         _count: { select: { lines: true } },
       },
       orderBy: orderFor(query.filter),
@@ -214,6 +216,7 @@ export async function getAdminCharges(query: ChargeQuery): Promise<AdminChargePa
       paidClaimedNote: b.paidClaimedNote,
       markedPaidBy: b.markedPaidBy,
       lineCount: b._count.lines,
+      adHoc: b.run.adHoc,
     })),
     total,
     totalCents: aggregate._sum.totalCents ?? 0,
@@ -283,7 +286,7 @@ export async function getDropDates(payeeId?: string): Promise<{ label: string; d
  * It returns a single integer and nothing member-identifying, so the blast radius of a
  * caller forgetting the check is a number, not a name.
  *
- * A site admin's badge counts only the claims on charges owed to them.
+ * A runner's badge counts only the claims on charges owed to them.
  */
 export async function getPendingConfirmationCount(payeeId?: string): Promise<number> {
   return prisma.pasBill.count({

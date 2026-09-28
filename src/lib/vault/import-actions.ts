@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
+import { defaultAssignee } from "@/db/queries/runners";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
 import { isKnownSite, siteStyle, siteUsesProfiles } from "@/lib/sites";
@@ -121,7 +122,13 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
   const [accounts, allProfiles] = await Promise.all([
     prisma.vaultAccount.findMany({
       where: { siteKey, email: { in: profiles.map((p) => p.email) } },
-      select: { id: true, email: true, discordUserId: true, profile: { select: { id: true } } },
+      select: {
+        id: true,
+        email: true,
+        discordUserId: true,
+        assigneeId: true,
+        profile: { select: { id: true } },
+      },
     }),
     prisma.vaultProfile.findMany({
       where: { siteKey },
@@ -147,6 +154,14 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
 
   const changes: ChangeRecord[] = [];
 
+  // Who runs each row, so every change lands in that runner's queue. An existing login
+  // keeps whoever holds it; a new one goes where the member's others do -- decided once,
+  // before any are written, so one upload cannot split itself across runners.
+  const assigneeOf = new Map(accounts.map((a) => [a.id, a.assigneeId]));
+  const newAssignee = plan.creates.some((create) => !create.accountId)
+    ? await defaultAssignee(siteKey, viewer.discordUserId)
+    : null;
+
   for (const update of plan.updates) {
     const row = await prisma.vaultProfile.update({
       where: { id: update.profileId },
@@ -168,28 +183,32 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
       entityId: row.id,
       action: VaultAction.UPDATE,
       siteKey,
+      assigneeId: assigneeOf.get(update.accountId) ?? null,
       label: row.name,
       fields: ["imported from AYCD"],
     });
   }
 
   for (const create of plan.creates) {
-    const accountId =
-      create.accountId ??
-      (
-        await prisma.vaultAccount.create({
-          data: {
-            siteKey,
-            email: create.parsed.email,
-            passwordEnc: encrypt(create.password!, {
-              entity: "vault_account",
-              field: "password",
-            }),
-            discordUserId: viewer.discordUserId,
-          },
-          select: { id: true },
-        })
-      ).id;
+    let accountId = create.accountId;
+    if (!accountId) {
+      // `newAssignee` is set whenever a create has no account to hang off -- see above.
+      const account = await prisma.vaultAccount.create({
+        data: {
+          siteKey,
+          email: create.parsed.email,
+          passwordEnc: encrypt(create.password!, {
+            entity: "vault_account",
+            field: "password",
+          }),
+          discordUserId: viewer.discordUserId,
+          assigneeId: newAssignee!,
+        },
+        select: { id: true, assigneeId: true },
+      });
+      accountId = account.id;
+      assigneeOf.set(account.id, account.assigneeId);
+    }
 
     const row = await prisma.vaultProfile.create({
       data: {
@@ -212,6 +231,7 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
       entityId: row.id,
       action: VaultAction.CREATE,
       siteKey,
+      assigneeId: assigneeOf.get(accountId) ?? null,
       label: create.name,
       fields: ["imported from AYCD"],
     });

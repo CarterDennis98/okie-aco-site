@@ -11,6 +11,7 @@ import {
   getMemberIdentity,
   getPendingChangeCount,
 } from "@/db/queries/admin-vault";
+import { vaultScopeFor } from "@/lib/auth/admin-scope";
 import { requireAdmin } from "@/lib/auth/guard";
 import { count, plural, relativeTime } from "@/lib/format";
 import { siteStyle } from "@/lib/sites";
@@ -60,7 +61,7 @@ export default async function AdminImapPage({
     memberId ? getMemberEmailsForAdmin(memberId) : Promise.resolve(null),
     memberId ? getMemberIdentity(memberId) : Promise.resolve(null),
     getPendingConfirmationCount(),
-    getPendingChangeCount(),
+    getPendingChangeCount(vaultScopeFor(viewer).scope),
   ]);
 
   // An id that isn't a member at all is a typed URL, not a state to render. A member with

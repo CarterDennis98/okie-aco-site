@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import type { Prisma } from "@/generated/prisma/client";
+import type { VaultScope } from "@/lib/auth/admin-scope";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 // VaultEntity as a VALUE, not just a type: the mailbox query filters on it. The generated
 // module exports a const and a matching type under each name, so this covers both uses.
@@ -32,19 +33,46 @@ import {
  * `*_enc` columns are not selected at all. The only decryption in the system is the
  * export route.
  *
- * The exceptions are the reads the profiles page makes, which also serve a SITE admin
- * behind `requireAnyAdmin()`: those take the viewer's retailers as `sites` and MUST be
- * given them, and the per-retailer reads are only ever called with a retailer the page
- * has already checked is one of them.
+ * The exceptions are the reads the profiles page makes, which also serve a RUNNER behind
+ * `requireAnyAdmin()`: those take a `VaultScope` from `vaultScopeFor` and MUST be given it
+ * -- it is what narrows a runner to their own retailers and, within them, to the profiles
+ * assigned to them. The per-retailer reads are only ever called with a retailer the page
+ * has already checked is in scope.
  */
 
 /**
- * A site admin's slice of the change queue: their retailers, and never the mailbox bucket.
- * An app password serves every retailer its owner uses, so it belongs to no one retailer's
- * admin. `undefined` is a full admin, and means no restriction at all.
+ * A scope's slice of the change queue: its retailers, its runner, and the mailbox bucket
+ * only when the scope asks for it. An app password serves every retailer its owner uses,
+ * so it belongs to no one runner -- a runner never sees one, and a full admin's own queue
+ * does. An empty scope is a full admin looking at everyone's, and means no restriction.
  */
-function inSites(sites: readonly string[] | undefined): Prisma.VaultChangeWhereInput {
-  return sites ? { siteKey: { in: [...sites] } } : {};
+function changesIn(scope: VaultScope | undefined): Prisma.VaultChangeWhereInput {
+  const parts: Prisma.VaultChangeWhereInput[] = [];
+  if (scope?.sites) parts.push({ siteKey: { in: [...scope.sites] } });
+  if (scope?.assigneeId) {
+    parts.push(
+      scope.withUnassigned
+        ? { OR: [{ assigneeId: scope.assigneeId }, { assigneeId: null }] }
+        : { assigneeId: scope.assigneeId },
+    );
+  }
+  return parts.length > 0 ? { AND: parts } : {};
+}
+
+/** A scope's logins. See changesIn; the mailbox bucket has no rows here to include. */
+function accountsIn(scope: VaultScope | undefined): Prisma.VaultAccountWhereInput {
+  return {
+    ...(scope?.sites ? { siteKey: { in: [...scope.sites] } } : {}),
+    ...(scope?.assigneeId ? { assigneeId: scope.assigneeId } : {}),
+  };
+}
+
+/** A scope's profiles, which are assigned through their account. */
+function profilesIn(scope: VaultScope | undefined): Prisma.VaultProfileWhereInput {
+  return {
+    ...(scope?.sites ? { siteKey: { in: [...scope.sites] } } : {}),
+    ...(scope?.assigneeId ? { account: { assigneeId: scope.assigneeId } } : {}),
+  };
 }
 
 export type AdminMemberRow = {
@@ -88,27 +116,45 @@ export type AdminMemberRow = {
    * a search result would make the roster's own numbers change meaning as you type.
    */
   matchCount: number;
+  /**
+   * Who holds this member's rows in scope, most first. One entry on a runner's own roster;
+   * on a full admin's everyone-view, two or more means the member is split between bots.
+   */
+  runners: string[];
 };
+
+/** Distinct assignees of a member's rows, the one holding most of them first. */
+function runnersOf(rows: { assigneeId: string }[]): string[] {
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.assigneeId, (counts.get(row.assigneeId) ?? 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+}
 
 /**
  * Every member holding at least one profile on a site, for the picker.
  *
- * Returns EVERY member regardless of the filter, with `matchCount` per row. Dropping
- * non-matching members here would 404 the page the moment a search excluded whoever was
- * already open -- the page validates `?member=` against this list, so it has to stay the
- * full roster and the display filtering happens in the picker.
+ * Returns EVERY member in scope regardless of the filter, with `matchCount` per row.
+ * Dropping non-matching members here would close whoever was already open the moment a
+ * search excluded them -- the page validates `?member=` against this list, so it has to
+ * stay the full roster and the display filtering happens in the picker.
+ *
+ * `scope` narrows the roster to one runner's profiles, and a member with none of theirs is
+ * not on it. The counts on each row are over the same slice, so a runner reads "3/4 active"
+ * for the four profiles they actually run -- the member's others are another bot's business.
  */
 export async function getMembersForSite(
   siteKey: string,
   filter?: ProfileFilter,
+  scope?: VaultScope,
 ): Promise<AdminMemberRow[]> {
   // A login-only retailer has no profiles to count, so the roster is built from its
   // accounts instead. Same row shape either way -- see membersWithLogins.
-  if (!siteUsesProfiles(siteKey)) return membersWithLogins(siteKey, filter);
+  if (!siteUsesProfiles(siteKey)) return membersWithLogins(siteKey, filter, scope);
 
   const [profiles, members, coverage] = await Promise.all([
     prisma.vaultProfile.findMany({
-      where: { siteKey },
+      // AND, never a spread: `siteKey` must narrow the scope's retailers, not replace them.
+      where: { AND: [profilesIn(scope), { siteKey }] },
       select: {
         discordUserId: true,
         name: true,
@@ -123,7 +169,7 @@ export async function getMembersForSite(
         lastName: true,
         shipCity: true,
         shipState: true,
-        account: { select: { email: true } },
+        account: { select: { email: true, assigneeId: true } },
       },
     }),
     prisma.discordMember.findMany({
@@ -150,6 +196,7 @@ export async function getMembersForSite(
 
     const active = list.filter((p) => p.active);
     const member = nameById.get(discordUserId);
+    const runners = runnersOf(list.map((p) => p.account));
 
     rows.push({
       matchCount:
@@ -162,7 +209,19 @@ export async function getMembersForSite(
       displayName: member?.globalName ?? member?.username ?? discordUserId,
       profileCount: list.length,
       activeCount: active.length,
-      onBackup: cap === undefined ? 0 : Math.max(0, active.length - cap),
+      runners,
+      // Per RUNNER: each one's bot has its own main/backup split, so a member whose profiles
+      // are shared between two runners fills each runner's main bot separately. Counted the
+      // way the export splits them -- see onBackup on the profile rows.
+      onBackup:
+        cap === undefined
+          ? 0
+          : runners.reduce(
+              (sum, runner) =>
+                sum +
+                Math.max(0, active.filter((p) => p.account.assigneeId === runner).length - cap),
+              0,
+            ),
       expiredCards: list.filter((p) => isExpired(p.cardExpMonth, p.cardExpYear)).length,
       // Counted over ACTIVE profiles only: a disabled one isn't running, so it isn't
       // failing orders and isn't the thing to chase.
@@ -206,21 +265,22 @@ export async function getMembersForSite(
 async function membersWithLogins(
   siteKey: string,
   filter?: ProfileFilter,
+  scope?: VaultScope,
 ): Promise<AdminMemberRow[]> {
   const [accounts, cvvless, members, coverage] = await Promise.all([
     prisma.vaultAccount.findMany({
-      where: { siteKey },
+      where: { AND: [accountsIn(scope), { siteKey }] },
       // `cardCvvEnc` and `passwordEnc` are NOT selected -- see the header. Whether a code
       // exists is answered by the NULL filter beside this, so no ciphertext is loaded to
       // settle a yes/no question.
-      select: { id: true, discordUserId: true, email: true, active: true },
+      select: { id: true, discordUserId: true, email: true, active: true, assigneeId: true },
     }),
     // ACTIVE logins with no code on file. Grouped in the database so this is a count per
     // member rather than a set of ids to tally in memory.
     siteStoresCardCvv(siteKey)
       ? prisma.vaultAccount.groupBy({
           by: ["discordUserId"],
-          where: { siteKey, active: true, cardCvvEnc: null },
+          where: { AND: [accountsIn(scope), { siteKey, active: true, cardCvvEnc: null }] },
           _count: { _all: true },
         })
       : Promise.resolve([]),
@@ -256,6 +316,7 @@ async function membersWithLogins(
       displayName: member?.globalName ?? member?.username ?? discordUserId,
       profileCount: list.length,
       activeCount: list.filter((a) => a.active).length,
+      runners: runnersOf(list),
       onBackup: 0,
       expiredCards: 0,
       missingPhone: 0,
@@ -273,6 +334,10 @@ async function membersWithLogins(
 
 export type AdminProfileRow = {
   id: string;
+  /** The login this profile checks out with, which is what carries the assignment. */
+  accountId: string;
+  /** The runner whose bot runs it. */
+  assigneeId: string;
   name: string;
   active: boolean;
   email: string;
@@ -302,16 +367,22 @@ function formatAddress(parts: (string | null)[]): string {
  * The bot split is computed BEFORE the filter is applied. A profile's slot on the main bot
  * depends on where it falls in the member's whole active list, so filtering first would
  * have a search for one profile report it as running on the main bot when it doesn't.
+ *
+ * And it is counted PER RUNNER, because that is how each runner's export splits it: a
+ * member with four profiles on one runner and three on another fills two separate main
+ * bots. `scope` is applied after that count for the same reason as the search is -- a
+ * runner's view of their share must not renumber the slots.
  */
 export async function getMemberVaultForAdmin(
   siteKey: string,
   discordUserId: string,
   filter?: ProfileFilter,
+  scope?: VaultScope,
 ): Promise<{ rows: AdminProfileRow[]; total: number }> {
   const [profiles, coverage] = await Promise.all([
     prisma.vaultProfile.findMany({
       where: { siteKey, discordUserId },
-      include: { account: { select: { email: true } } },
+      include: { account: { select: { email: true, assigneeId: true } } },
     }),
     loadMailboxCoverage(discordUserId),
   ]);
@@ -319,12 +390,16 @@ export async function getMemberVaultForAdmin(
   profiles.sort((a, b) => collator.compare(a.name, b.name));
 
   const cap = siteStyle(siteKey).profileSoftCap;
-  let slot = 0;
+  const slots = new Map<string, number>();
 
-  const rows = profiles.map((p) => {
-    if (p.active) slot += 1;
+  const all = profiles.map((p) => {
+    const runner = p.account.assigneeId;
+    if (p.active) slots.set(runner, (slots.get(runner) ?? 0) + 1);
+    const slot = slots.get(runner) ?? 0;
     return {
       id: p.id,
+      accountId: p.accountId,
+      assigneeId: runner,
       name: p.name,
       active: p.active,
       email: p.account.email,
@@ -351,19 +426,25 @@ export async function getMemberVaultForAdmin(
     };
   });
 
-  // Paired by index against the raw rows, which carry the columns the matcher reads. Doing
+  // The runner's slice, then the search -- both after the slots were counted, and both
+  // paired by index against the raw rows, which carry the columns the matcher reads. Doing
   // it here rather than in the `where` above is what keeps `onBackup` and `total` honest.
+  const inScope = all
+    .map((row, i) => ({ row, raw: profiles[i] }))
+    .filter(({ row }) => !scope?.assigneeId || row.assigneeId === scope.assigneeId);
   const shown = filter
-    ? rows.filter((_, i) =>
-        matchesProfileFilter({ ...profiles[i], email: profiles[i].account.email }, filter),
+    ? inScope.filter(({ raw }) =>
+        matchesProfileFilter({ ...raw, email: raw.account.email }, filter),
       )
-    : rows;
+    : inScope;
 
-  return { rows: shown, total: rows.length };
+  return { rows: shown.map(({ row }) => row), total: inScope.length };
 }
 
 export type AdminLoginRow = {
   id: string;
+  /** The runner who holds this login. */
+  assigneeId: string;
   email: string;
   active: boolean;
   /** Where this login's codes land: itself, another inbox, or nowhere. */
@@ -403,19 +484,24 @@ export async function getMemberLoginsForAdmin(
   siteKey: string,
   discordUserId: string,
   filter?: ProfileFilter,
+  scope?: VaultScope,
 ): Promise<{ rows: AdminLoginRow[]; total: number }> {
+  // No bot split to protect here, so the runner's slice can go straight into the query.
+  const mine: Prisma.VaultAccountWhereInput = {
+    AND: [accountsIn(scope), { siteKey, discordUserId }],
+  };
   const [accounts, passwordless, cvvless, coverage] = await Promise.all([
     prisma.vaultAccount.findMany({
-      where: { siteKey, discordUserId },
+      where: mine,
       orderBy: { email: "asc" },
-      select: { id: true, email: true, active: true, updatedAt: true },
+      select: { id: true, email: true, active: true, updatedAt: true, assigneeId: true },
     }),
     prisma.vaultAccount.findMany({
-      where: { siteKey, discordUserId, passwordEnc: null },
+      where: { AND: [mine, { passwordEnc: null }] },
       select: { id: true },
     }),
     prisma.vaultAccount.findMany({
-      where: { siteKey, discordUserId, cardCvvEnc: null },
+      where: { AND: [mine, { cardCvvEnc: null }] },
       select: { id: true },
     }),
     loadMailboxCoverage(discordUserId),
@@ -425,6 +511,7 @@ export async function getMemberLoginsForAdmin(
   const missingCvv = new Set(cvvless.map((a) => a.id));
   const rows = accounts.map((account) => ({
     id: account.id,
+    assigneeId: account.assigneeId,
     email: account.email,
     active: account.active,
     mailbox: mailboxFor(coverage, account.email),
@@ -799,6 +886,11 @@ export type PendingChangeRow = {
   at: Date;
   ownerDiscordId: string;
   username: string;
+  /** Who made it: the member for an edit, a full admin for a move between runners. */
+  actorDiscordId: string;
+  actorName: string;
+  /** Whose bot it has to reach. Null for a mailbox change, which is a full admin's. */
+  assigneeId: string | null;
   siteKey: string | null;
   siteLabel: string;
   label: string | null;
@@ -815,9 +907,14 @@ export type PendingChangeRow = {
  */
 export type PendingChangeGroup = { siteKey: string | null; siteLabel: string; count: number };
 
-/** Just the number, for the nav badge. Cheap enough to call on every admin page. */
-export async function getPendingChangeCount(sites?: readonly string[]): Promise<number> {
-  return prisma.vaultChange.count({ where: { appliedAt: null, ...inSites(sites) } });
+/**
+ * Just the number, for the nav badge. Cheap enough to call on every admin page.
+ *
+ * Counted over the viewer's OWN queue -- their `vaultScopeFor` with no `?runner=` -- so the
+ * badge means "things waiting on your bot", not everyone's backlog.
+ */
+export async function getPendingChangeCount(scope?: VaultScope): Promise<number> {
+  return prisma.vaultChange.count({ where: { AND: [{ appliedAt: null }, changesIn(scope)] } });
 }
 
 /**
@@ -832,7 +929,7 @@ const PENDING_LIMIT = 200;
 
 export async function getPendingChanges(
   filter?: string,
-  sites?: readonly string[],
+  scope?: VaultScope,
 ): Promise<{
   rows: PendingChangeRow[];
   /** ALWAYS every bucket, with unfiltered counts -- these are the filter tabs. */
@@ -850,10 +947,10 @@ export async function getPendingChanges(
   const [grouped, total] = await Promise.all([
     prisma.vaultChange.groupBy({
       by: ["siteKey"],
-      where: { appliedAt: null, ...inSites(sites) },
+      where: { AND: [{ appliedAt: null }, changesIn(scope)] },
       _count: { _all: true },
     }),
-    getPendingChangeCount(sites),
+    getPendingChangeCount(scope),
   ]);
 
   const buckets = new Set(grouped.map((g) => g.siteKey ?? EMAIL_BUCKET));
@@ -865,7 +962,7 @@ export async function getPendingChanges(
     where: {
       AND: [
         { appliedAt: null },
-        inSites(sites),
+        changesIn(scope),
         // Null is a real value here, not "no filter", so the email bucket needs its own token.
         active === EMAIL_BUCKET ? { siteKey: null } : active ? { siteKey: active } : {},
       ],
@@ -876,6 +973,8 @@ export async function getPendingChanges(
       id: true,
       at: true,
       ownerDiscordId: true,
+      actorDiscordId: true,
+      assigneeId: true,
       siteKey: true,
       label: true,
       action: true,
@@ -890,9 +989,9 @@ export async function getPendingChanges(
 
   // One lookup for the names rather than a join per row: `vault_changes.owner_discord_id`
   // is a plain column, not a relation, precisely so a change survives a member leaving.
-  const owners = [...new Set(changes.map((c) => c.ownerDiscordId))];
+  const people = [...new Set(changes.flatMap((c) => [c.ownerDiscordId, c.actorDiscordId]))];
   const members = await prisma.discordMember.findMany({
-    where: { discordUserId: { in: owners } },
+    where: { discordUserId: { in: people } },
     select: { discordUserId: true, username: true, globalName: true },
   });
   const nameById = new Map(members.map((m) => [m.discordUserId, m.globalName ?? m.username]));
@@ -903,6 +1002,7 @@ export async function getPendingChanges(
       // Falls back to the id: a change by someone who has since left the server still has
       // to be markable, and showing a blank name would read as a broken row.
       username: nameById.get(change.ownerDiscordId) ?? change.ownerDiscordId,
+      actorName: nameById.get(change.actorDiscordId) ?? change.actorDiscordId,
       siteLabel: change.siteKey ? siteStyle(change.siteKey).label : "Email",
     })),
     groups: grouped
@@ -925,21 +1025,23 @@ export async function getPendingChanges(
  * alone would leave Costco out of the picker entirely -- it has accounts and no profiles
  * by design -- and a retailer with no picker entry has no export button either, which is
  * the operator's only way to get the credentials onto the bot.
+ *
+ * Counted within `scope`, so each tab says how many of THIS runner's profiles are there.
  */
 export async function getVaultSites(
-  sites?: readonly string[],
+  scope?: VaultScope,
 ): Promise<{ siteKey: string; count: number }[]> {
-  const loginOnly = loginOnlySiteKeys().filter((key) => !sites || sites.includes(key));
+  const loginOnly = loginOnlySiteKeys().filter((key) => !scope?.sites || scope.sites.includes(key));
   const [profiles, logins] = await Promise.all([
     prisma.vaultProfile.groupBy({
       by: ["siteKey"],
-      where: sites ? { siteKey: { in: [...sites] } } : {},
+      where: profilesIn(scope),
       _count: { _all: true },
     }),
     loginOnly.length > 0
       ? prisma.vaultAccount.groupBy({
           by: ["siteKey"],
-          where: { siteKey: { in: loginOnly } },
+          where: { AND: [accountsIn(scope), { siteKey: { in: loginOnly } }] },
           _count: { _all: true },
         })
       : Promise.resolve([]),

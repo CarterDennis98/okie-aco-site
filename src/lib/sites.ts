@@ -15,6 +15,8 @@
  *     on a dark surface, so they can't be chip fills or chip text.
  *   - Crunchyroll #FF8D0E is the one tint clear of all the others -- the nearest is
  *     Pokémon Center yellow at ΔE2000 22.1 -- which fixes nothing about the rest.
+ *   - Premium Bandai gold #F4C646 is a third yellow: ΔE2000 4.2 from Pokémon Center's
+ *     and 8.9 from Best Buy's, below floor against both.
  *
  * No arrangement of these hues passes. The LOGO and the site NAME carry identity; the
  * tint is decorative reinforcement used at low alpha behind readable text, so it gates
@@ -69,8 +71,8 @@ export type SiteStyle = {
    *     at the login and can read it out of the member's inbox with them -- there is no
    *     bot mid-drop that has to open the mailbox unattended, which is the only thing a
    *     stored app password buys.
-   *   - Crunchyroll has a login and a bot, but the bot never reads a code out of the inbox,
-   *     so a stored app password would sit there unused.
+   *   - Crunchyroll and Premium Bandai have a login and a bot, but the bot never reads a
+   *     code out of the inbox, so a stored app password would sit there unused.
    *
    * Defaults to true: a new retailer almost certainly mails a code to something automated,
    * and being nagged about a password you don't need is a smaller failure than silently
@@ -192,8 +194,8 @@ export type SiteStyle = {
    * That is a VALOR convention -- see BOT_SENTINEL_PHONE -- and Valor runs Pokémon Center
    * and Best Buy. Every other bot takes "0" at face value, as a phone number that isn't
    * one, so on their retailers the export writes a generated number wherever a profile has
-   * none. Target and Crunchyroll are the ones this is for: both leave the phone optional,
-   * and neither bot would know what to do with a "0".
+   * none. Target, Crunchyroll and Premium Bandai are the ones this is for: all three leave
+   * the phone optional, and none of their bots would know what to do with a "0".
    *
    * Defaults to false, the direction that works on any bot. A generated number imports and
    * checks out on Valor too -- it is used rather than replaced -- while a "0" handed to
@@ -297,6 +299,26 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     //
     // Its bot never reads a code out of the inbox, so an app password would do nothing.
     // See usesEmailCodes.
+    usesEmailCodes: false,
+    selfServe: true,
+  },
+  "premium-bandai": {
+    label: "Premium Bandai",
+    // The median of the logo's own gold, so the chip and the mark on it agree.
+    tint: "#F4C646",
+    logo: "/bandai-logo.png",
+    width: 394,
+    height: 381,
+    // No tile. 52.4% of the mark is below 3:1 on the dark surface and 37.6% on white, but
+    // the dark part is the badge's own black plate inside its gold frame -- a picture with a
+    // backing of its own, like Pokémon Center's, where per-pixel 3:1 is the wrong rule.
+    // A light tile would only wash out the gold that outlines it.
+    //
+    // Profiled like Crunchyroll, which is what the old signup form collected: a P-Bandai
+    // login, a full checkout profile, phone optional, no app password asked for.
+    //
+    // No webhook from this bot reaches us, so /pas run never sees a checkout here -- its fees
+    // are issued by hand from the charges page. See PasRun.adHoc.
     usesEmailCodes: false,
     selfServe: true,
   },
