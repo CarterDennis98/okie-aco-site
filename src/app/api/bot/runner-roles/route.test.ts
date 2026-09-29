@@ -25,8 +25,11 @@ const LEAVING = "999900000000000092";
 const UNTOUCHED = "999900000000000093";
 // Holds Target, has never signed in -- no row yet.
 const NEWCOMER = "999900000000000094";
+// Billed before ever signing in, so the only row is the billing run's placeholder -- the
+// id standing in for a username -- and then given Target.
+const PLACEHOLDER = "999900000000000095";
 
-const IDS = [JOINING, LEAVING, UNTOUCHED, NEWCOMER];
+const IDS = [JOINING, LEAVING, UNTOUCHED, NEWCOMER, PLACEHOLDER];
 
 function post(body: unknown, token = process.env.BOT_INGEST_TOKEN): Promise<Response> {
   return POST(
@@ -47,6 +50,7 @@ const snapshot = {
     [TARGET]: [
       { id: JOINING, username: "joining-test" },
       { id: NEWCOMER, username: "newcomer-test", globalName: "Newcomer" },
+      { id: PLACEHOLDER, username: "placeholder-test", globalName: "Placeholder" },
     ],
   },
 };
@@ -59,6 +63,8 @@ describe.skipIf(!canRun)("POST /api/bot/runner-roles", () => {
         { discordUserId: JOINING, username: "joining-test", roles: [OG] },
         { discordUserId: LEAVING, username: "leaving-test", roles: [OG, TARGET] },
         { discordUserId: UNTOUCHED, username: "untouched-test", roles: [CRUNCHYROLL] },
+        // Exactly what the billing-run route writes for a first-time member.
+        { discordUserId: PLACEHOLDER, username: PLACEHOLDER, roles: [OG] },
       ],
     });
   });
@@ -97,13 +103,32 @@ describe.skipIf(!canRun)("POST /api/bot/runner-roles", () => {
     });
   });
 
+  /**
+   * The bug this pins: a member billed before they ever signed in has a row named with their
+   * own id. Given a runner role, they kept it -- the sync touched roles only -- so every admin
+   * page named that runner by a number until they happened to log in.
+   */
+  it("names a holder whose row was only a placeholder", async () => {
+    const row = await prisma.discordMember.findUnique({ where: { discordUserId: PLACEHOLDER } });
+    expect(row).toMatchObject({
+      username: "placeholder-test",
+      globalName: "Placeholder",
+      roles: [OG, TARGET],
+    });
+  });
+
+  it("leaves the names of anyone the post doesn't list alone", async () => {
+    const row = await prisma.discordMember.findUnique({ where: { discordUserId: LEAVING } });
+    expect(row?.username).toBe("leaving-test");
+  });
+
   it("leaves every role the post doesn't name exactly as it was", async () => {
     expect(await rolesOf(UNTOUCHED)).toEqual([CRUNCHYROLL]);
   });
 
   it("changes nothing when the same snapshot arrives again", async () => {
     const again = await (await post(snapshot)).json();
-    expect(again).toMatchObject({ added: 0, removed: 0, created: 0 });
+    expect(again).toMatchObject({ added: 0, removed: 0, renamed: 0, created: 0 });
   });
 
   it("reports a role it doesn't grant rather than writing it", async () => {

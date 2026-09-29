@@ -22,6 +22,13 @@ import { runnerRolesInput } from "@/types/runner-roles";
  * A holder with no member row yet gets a provisional one, named from the bot, so a full
  * admin can assign them profiles before they have ever signed in. Sign-in overwrites it.
  *
+ * And every holder the post lists has their NAMES kept to what the bot sees -- username and
+ * display name, nothing else on the row. Mostly that changes nothing. What it exists for is
+ * the member billed before they ever signed in, whose only row is the billing run's
+ * placeholder with their id as the username: made a runner, they were named by that number
+ * on every admin page until they happened to log in. Anyone the post doesn't list is left
+ * exactly as they were.
+ *
  * Idempotent: posting the same snapshot twice changes nothing the second time.
  */
 export const dynamic = "force-dynamic";
@@ -74,12 +81,13 @@ export async function POST(request: Request) {
           where: {
             OR: [{ discordUserId: { in: [...holds.keys()] } }, { roles: { hasSome: applied } }],
           },
-          select: { discordUserId: true, roles: true },
+          select: { discordUserId: true, roles: true, username: true, globalName: true },
         })
       : [];
 
   let added = 0;
   let removed = 0;
+  let renamed = 0;
   const updates = [];
   for (const row of rows) {
     const held = holds.get(row.discordUserId) ?? new Set<string>();
@@ -87,14 +95,21 @@ export async function POST(request: Request) {
     const kept = row.roles.filter((role) => !applied.includes(role) || held.has(role));
     const gained = [...held].filter((role) => !row.roles.includes(role));
     const lost = row.roles.length - kept.length;
-    if (gained.length === 0 && lost === 0) continue;
+    // Only for someone the post lists -- the bot has no name for anybody else.
+    const seen = identity.get(row.discordUserId);
+    const names =
+      seen && (row.username !== seen.username || row.globalName !== seen.globalName)
+        ? { username: seen.username, globalName: seen.globalName }
+        : null;
+    if (gained.length === 0 && lost === 0 && !names) continue;
 
     added += gained.length;
     removed += lost;
+    if (names) renamed += 1;
     updates.push(
       prisma.discordMember.update({
         where: { discordUserId: row.discordUserId },
-        data: { roles: [...kept, ...gained], syncedAt: new Date() },
+        data: { roles: [...kept, ...gained], ...(names ?? {}), syncedAt: new Date() },
       }),
     );
   }
@@ -120,5 +135,5 @@ export async function POST(request: Request) {
 
   if (updates.length > 0) await prisma.$transaction(updates);
 
-  return Response.json({ applied, ignored, added, removed, created: missing.length });
+  return Response.json({ applied, ignored, added, removed, renamed, created: missing.length });
 }
