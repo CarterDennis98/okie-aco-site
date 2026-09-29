@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  checkProfiles,
   parseAccountList,
   parseAycdExport,
   planImport,
@@ -172,6 +173,8 @@ describe("parseAycdExport", () => {
   it("rejects JSON that isn't a profile list", () => {
     const { issues } = parseAycdExport('{"something":"else"}');
     expect(issues[0].problem).toMatch(/AYCD profile export/);
+    // A file holding just `null` used to throw here, and the upload failed with no message.
+    expect(parseAycdExport("null").issues[0].problem).toMatch(/AYCD profile export/);
   });
 
   it("accepts a { profiles: [...] } wrapper", () => {
@@ -232,6 +235,23 @@ describe("parseAycdExport", () => {
     const { profiles, issues } = parseAycdExport(JSON.stringify(many));
     expect(profiles).toEqual([]);
     expect(issues[0].problem).toMatch(/limit is 250/);
+  });
+});
+
+describe("checkProfiles", () => {
+  /**
+   * The limit bounds the work one upload can cause, so it has to hold before any row is
+   * built: four megabytes of `{},` is a million of them. Pinned on the shared checker, since
+   * every format's reader goes through it.
+   */
+  it("refuses an oversized file before reading a single row", () => {
+    const read = vi.fn();
+    const { issues } = checkProfiles(
+      Array.from({ length: 251 }, () => ({})),
+      read,
+    );
+    expect(issues[0].problem).toMatch(/limit is 250/);
+    expect(read).not.toHaveBeenCalled();
   });
 });
 

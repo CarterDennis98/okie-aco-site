@@ -17,6 +17,11 @@ import {
  * in AYCD Toolbox; asking them to retype 15 of them into a web form to use this site
  * would be the reason they don't.
  *
+ * ALSO THE CHECKS FOR EVERY OTHER FORMAT. Reading a file is split in two: a reader pulls
+ * each profile's fields out of wherever its format keeps them (`RawProfile`), and
+ * `checkProfiles` decides what may enter the vault. valor-import.ts is the second reader,
+ * so a Valor file is held to exactly the rules an AYCD one is.
+ *
  * NO SECRET EVER APPEARS IN AN ISSUE MESSAGE. Every problem is reported by the profile's
  * position and its name in the file, never by the value that failed -- a validation
  * report is rendered in a browser, and "card 4111111111111111 failed the Luhn check" is
@@ -30,7 +35,7 @@ import {
 export type ParsedProfile = {
   /** 1-based position in the uploaded file, for reporting. */
   position: number;
-  /** The name AYCD had. Used only to report; the server assigns the stored name. */
+  /** The name the file had. Used only to report; the server assigns the stored name. */
   sourceName: string;
   email: string;
   firstName: string;
@@ -117,8 +122,45 @@ export type ParseOptions = {
   allowInvalidCvv?: boolean;
 };
 
+/** One address as a file spells it: trimmed, and nothing else done to it yet. */
+export type RawAddress = {
+  line1: string;
+  line2: string;
+  city: string;
+  /** A two-letter code or the full name -- both exporters write the name. */
+  state: string;
+  postalCode: string;
+  /** "US" or "United States". */
+  country: string;
+};
+
+/**
+ * One profile as it came out of a file, before anything about it has been checked.
+ *
+ * What each READER produces -- AYCD's below, Valor's in valor-import.ts -- and the only
+ * thing `checkProfiles` sees. So the rules for what may enter the vault live in one place
+ * whichever bot wrote the file, and a profile carried in both formats imports to the same
+ * row. Every string is trimmed; a field the file lacks is "".
+ */
+export type RawProfile = {
+  sourceName: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  ship: RawAddress;
+  sameBillingAndShipping: boolean;
+  /** Read only when billing isn't the same as shipping. */
+  bill: RawAddress & { firstName: string; lastName: string };
+  onlyCheckoutOnce: boolean;
+  matchNameOnCardAndAddress: boolean;
+  cardNumber: string;
+  cardCvv: string;
+  cardExpMonth: string;
+  cardExpYear: string;
+};
+
 export function parseAycdExport(text: string, options: ParseOptions = {}): ParseResult {
-  const maxProfiles = options.maxProfiles ?? MAX_PROFILES;
   let root: unknown;
   try {
     root = JSON.parse(text);
@@ -134,7 +176,7 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
   // AYCD exports a bare array. Accept `{ profiles: [...] }` too, since some tools wrap it.
   const list = Array.isArray(root)
     ? root
-    : Array.isArray((root as { profiles?: unknown }).profiles)
+    : Array.isArray((root as { profiles?: unknown } | null)?.profiles)
       ? ((root as { profiles: unknown[] }).profiles as unknown[])
       : null;
 
@@ -152,14 +194,74 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
     };
   }
 
-  if (list.length > maxProfiles) {
+  return checkProfiles(list, aycdRow, options);
+}
+
+function aycdAddress(address: Record<string, unknown>): RawAddress {
+  return {
+    line1: str(address.line1),
+    line2: str(address.line2),
+    city: str(address.city),
+    state: str(address.state),
+    postalCode: str(address.postCode) || str(address.postcode) || str(address.zip),
+    country: str(address.country),
+  };
+}
+
+function aycdRow(raw: unknown): RawProfile {
+  const entry = (raw ?? {}) as Record<string, unknown>;
+  const ship = (entry.shippingAddress ?? {}) as Record<string, unknown>;
+  const bill = (entry.billingAddress ?? {}) as Record<string, unknown>;
+  const pay = (entry.paymentDetails ?? {}) as Record<string, unknown>;
+
+  // AYCD holds one name per address, so both are split here -- see splitName.
+  const shipName = splitName(str(ship.name));
+  const billName = splitName(str(bill.name));
+
+  return {
+    sourceName: str(entry.name),
+    // Either address may carry it; AYCD writes the same one on both.
+    email: str(ship.email) || str(bill.email),
+    firstName: shipName.firstName,
+    lastName: shipName.lastName,
+    phone: str(ship.phone),
+    ship: aycdAddress(ship),
+    sameBillingAndShipping: bool(entry.sameBillingAndShippingAddress),
+    bill: { ...aycdAddress(bill), firstName: billName.firstName, lastName: billName.lastName },
+    onlyCheckoutOnce: bool(entry.onlyCheckoutOnce),
+    matchNameOnCardAndAddress: bool(entry.matchNameOnCardAndAddress),
+    cardNumber: str(pay.cardNumber),
+    cardCvv: str(pay.cardCvv),
+    cardExpMonth: str(pay.cardExpMonth),
+    cardExpYear: str(pay.cardExpYear),
+  };
+}
+
+/**
+ * Whether each profile in a file may enter the vault, and in what form.
+ *
+ * Every rule an upload is held to, in one place: the limit on a file, the 1:1 address rule,
+ * the ZIP and card checks, and the two-letter state the rest of the system stores. `read`
+ * is the format's reader, and only ever decides where a field lives in that format.
+ *
+ * The count is checked BEFORE any entry is read. The limit is what bounds the work one
+ * upload can cause -- four megabytes of `{},` is a million entries -- so it has to hold
+ * before a million rows are built, not after.
+ */
+export function checkProfiles(
+  entries: readonly unknown[],
+  read: (entry: unknown) => RawProfile,
+  options: ParseOptions = {},
+): ParseResult {
+  const maxProfiles = options.maxProfiles ?? MAX_PROFILES;
+  if (entries.length > maxProfiles) {
     return {
       profiles: [],
       issues: [
         {
           position: 0,
           name: "",
-          problem: `That file holds ${list.length} profiles; the limit is ${maxProfiles} per import.`,
+          problem: `That file holds ${entries.length} profiles; the limit is ${maxProfiles} per import.`,
           severity: "error",
         },
       ],
@@ -170,20 +272,16 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
   const issues: ImportIssue[] = [];
   const seenEmails = new Set<string>();
 
-  list.forEach((raw, i) => {
+  entries.forEach((entry, i) => {
+    const row = read(entry);
     const position = i + 1;
-    const entry = (raw ?? {}) as Record<string, unknown>;
-    const sourceName = str(entry.name) || `#${position}`;
+    const sourceName = row.sourceName || `#${position}`;
     const fail = (problem: string) =>
       issues.push({ position, name: sourceName, problem, severity: "error" });
     const warn = (problem: string) =>
       issues.push({ position, name: sourceName, problem, severity: "warning" });
 
-    const ship = (entry.shippingAddress ?? {}) as Record<string, unknown>;
-    const bill = (entry.billingAddress ?? {}) as Record<string, unknown>;
-    const pay = (entry.paymentDetails ?? {}) as Record<string, unknown>;
-
-    const email = str(ship.email).toLowerCase() || str(bill.email).toLowerCase();
+    const email = row.email.toLowerCase();
     if (!EMAIL_RE.test(email)) {
       fail("No usable email address on the profile.");
       return;
@@ -195,16 +293,16 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
     }
     seenEmails.add(email);
 
-    const { firstName, lastName } = splitName(str(ship.name));
+    const { firstName, lastName } = row;
     if (!firstName || !lastName) {
       fail("Shipping name needs a first and last name.");
       return;
     }
 
-    const shipLine1 = str(ship.line1);
-    const shipCity = str(ship.city);
-    const shipState = stateCode(str(ship.state));
-    const shipPostalCode = str(ship.postCode) || str(ship.postcode) || str(ship.zip);
+    const shipLine1 = row.ship.line1;
+    const shipCity = row.ship.city;
+    const shipState = stateCode(row.ship.state);
+    const shipPostalCode = row.ship.postalCode;
     if (!shipLine1 || !shipCity || !shipState || !shipPostalCode) {
       fail("Shipping address is missing a street, city, state, or ZIP.");
       return;
@@ -218,11 +316,11 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
       return;
     }
 
-    const sameBillingAndShipping = bool(entry.sameBillingAndShippingAddress);
-    const billLine1 = str(bill.line1);
-    const billCity = str(bill.city);
-    const billState = stateCode(str(bill.state));
-    const billPostalCode = str(bill.postCode) || str(bill.postcode) || str(bill.zip);
+    const sameBillingAndShipping = row.sameBillingAndShipping;
+    const billLine1 = row.bill.line1;
+    const billCity = row.bill.city;
+    const billState = stateCode(row.bill.state);
+    const billPostalCode = row.bill.postalCode;
     if (!sameBillingAndShipping && (!billLine1 || !billCity || !billState || !billPostalCode)) {
       fail("Billing address is incomplete, and it isn't marked the same as shipping.");
       return;
@@ -234,7 +332,7 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
       return;
     }
 
-    const pan = normalizePan(str(pay.cardNumber));
+    const pan = normalizePan(row.cardNumber);
     if (!pan) {
       fail("No card number.");
       return;
@@ -248,7 +346,7 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
     if (!isLuhnValid(pan)) warn("Card number fails the Luhn check — importing anyway.");
 
     const brand = detectBrand(pan);
-    const cvv = str(pay.cardCvv);
+    const cvv = row.cardCvv;
     if (!cvv) {
       fail("No security code.");
       return;
@@ -261,7 +359,7 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
       warn("Security code isn't the right length for that card -- it will fail at checkout.");
     }
 
-    const { month, year } = normalizeExpiry(str(pay.cardExpMonth), str(pay.cardExpYear));
+    const { month, year } = normalizeExpiry(row.cardExpMonth, row.cardExpYear);
     if (
       !/^\d{2}$/.test(month) ||
       !/^\d{4}$/.test(year) ||
@@ -273,32 +371,30 @@ export function parseAycdExport(text: string, options: ParseOptions = {}): Parse
     }
     if (isExpired(month, year)) warn("Card is expired — importing anyway, but it won't check out.");
 
-    const billName = splitName(str(bill.name));
-
     profiles.push({
       position,
       sourceName,
       email,
       firstName,
       lastName,
-      phone: str(ship.phone) || null,
+      phone: row.phone || null,
       shipLine1,
-      shipLine2: str(ship.line2) || null,
+      shipLine2: row.ship.line2 || null,
       shipCity,
       shipState,
       shipPostalCode,
-      shipCountry: countryCode(str(ship.country)) || "US",
+      shipCountry: countryCode(row.ship.country) || "US",
       sameBillingAndShipping,
-      billFirstName: sameBillingAndShipping ? null : billName.firstName || null,
-      billLastName: sameBillingAndShipping ? null : billName.lastName || null,
+      billFirstName: sameBillingAndShipping ? null : row.bill.firstName || null,
+      billLastName: sameBillingAndShipping ? null : row.bill.lastName || null,
       billLine1: sameBillingAndShipping ? null : billLine1,
-      billLine2: sameBillingAndShipping ? null : str(bill.line2) || null,
+      billLine2: sameBillingAndShipping ? null : row.bill.line2 || null,
       billCity: sameBillingAndShipping ? null : billCity,
       billState: sameBillingAndShipping ? null : billState,
       billPostalCode: sameBillingAndShipping ? null : billPostalCode,
-      billCountry: sameBillingAndShipping ? null : countryCode(str(bill.country)) || "US",
-      onlyCheckoutOnce: bool(entry.onlyCheckoutOnce),
-      matchNameOnCardAndAddress: bool(entry.matchNameOnCardAndAddress),
+      billCountry: sameBillingAndShipping ? null : countryCode(row.bill.country) || "US",
+      onlyCheckoutOnce: row.onlyCheckoutOnce,
+      matchNameOnCardAndAddress: row.matchNameOnCardAndAddress,
       cardNumber: pan,
       cardCvv: cvv,
       cardExpMonth: month,
@@ -431,7 +527,7 @@ export function planImport(input: {
       continue;
     }
 
-    // A brand-new account needs a login; AYCD's profile export doesn't carry one.
+    // A brand-new account needs a login; neither AYCD's profile export nor Valor's carries one.
     if (!existing && !password && storesPassword) {
       plan.needPassword.push(parsed.email);
       continue;

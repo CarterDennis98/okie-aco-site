@@ -104,9 +104,9 @@ export default async function ProfilesPage() {
 
         <EmailCredentials credentials={credentials} needingPassword={needingPassword} />
 
-        {/* Profile sites only. An AYCD export is a file of cards and addresses, so a
-            login-only retailer has nothing to import from one -- and offering it in the
-            picker would take an upload and then reject it. */}
+        {/* Profile sites only. A profile export -- AYCD's, or Valor's -- is a file of cards
+            and addresses, so a login-only retailer has nothing to import from one -- and
+            offering it in the picker would take an upload and then reject it. */}
         <ImportProfiles siteKeys={profileSites} />
       </main>
 

@@ -236,6 +236,22 @@ export type SiteStyle = {
    * anything else is an order that fails mid-drop with nobody watching.
    */
   botGeneratesPhone?: boolean;
+
+  /**
+   * Whether a member can upload VALOR'S OWN profile export here, as well as AYCD's.
+   *
+   * Pokémon Center is where members run their own Valor, so that is where their profiles
+   * already live in Valor's format; asking them to convert a file to AYCD first would be the
+   * reason they retype it instead. See valor-import.ts for what is read from one.
+   *
+   * Not every retailer Valor runs. Best Buy and Mattel are Valor too (see botGeneratesPhone),
+   * but nobody has asked to import there and no member's file from them has been checked --
+   * turning this on is the one edit that opens it up. Refused at the upload for a crafted
+   * POST as well as left out of the form's copy.
+   *
+   * Defaults to false. Only meaningful where there are profiles to import, which a test pins.
+   */
+  importsValor?: boolean;
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -271,6 +287,9 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // Runs on Valor, so a profile with no phone keeps exporting as "0" for Valor to fill
     // in at checkout. See botGeneratesPhone.
     botGeneratesPhone: true,
+    // Members who run their own Valor here can upload its profile file as it is. See
+    // importsValor.
+    importsValor: true,
     selfServe: true,
   },
   "best-buy": {
@@ -522,6 +541,16 @@ export function siteRequiresPhone(site: string | null | undefined): boolean {
  */
 export function siteBotGeneratesPhone(site: string | null | undefined): boolean {
   return siteStyle(site).botGeneratesPhone === true;
+}
+
+/**
+ * Whether a member's upload here may be a Valor profile export rather than AYCD's.
+ *
+ * Read by BOTH the import form, which says so, and the import action, which is what a
+ * crafted POST has to get past. See `importsValor`.
+ */
+export function siteImportsValor(site: string | null | undefined): boolean {
+  return siteStyle(site).importsValor === true;
 }
 
 /**

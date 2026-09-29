@@ -5,7 +5,14 @@ import { prisma } from "@/db/client";
 import { defaultAssignee } from "@/db/queries/runners";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
-import { isKnownSite, siteStoresPassword, siteStyle, siteUsesProfiles } from "@/lib/sites";
+import {
+  isKnownSite,
+  siteImportsValor,
+  siteStoresPassword,
+  siteStyle,
+  siteUsesProfiles,
+  supportedSites,
+} from "@/lib/sites";
 import { recordBulkChange, type ChangeRecord } from "@/lib/vault/audit";
 import {
   parseAccountList,
@@ -16,22 +23,27 @@ import {
 } from "@/lib/vault/aycd-import";
 import { encrypt } from "@/lib/vault/crypto";
 import { profileIdentity } from "@/lib/vault/profile-input";
+import { isValorExport, parseValorExport } from "@/lib/vault/valor-import";
 
 /**
- * Member-facing AYCD import. Every export here calls `requireMember()`.
+ * Member-facing profile import. Every export here calls `requireMember()`.
  *
  * The counterpart to the admin AYCD export: a member keeps their profiles in AYCD
  * Toolbox, and this reads that file rather than making them retype fifteen addresses.
+ * Where the retailer allows it (`importsValor` -- Pokémon Center), the file may be Valor's
+ * own profile export instead. Which one it is is read from the file itself, and both go
+ * through the same checks and the same writes below.
  *
  * What it does NOT do, deliberately:
  *
  *   - Trust the `name` in the file. Profile names are server-assigned, same rule as the
  *     add form: `<their base> - N`, filling gaps. A file naming a profile "carter - 3"
  *     when that name belongs to someone else would otherwise collide on (site, name).
- *   - Create an account without a retailer password. AYCD's profile export carries cards
- *     and addresses but no logins, so a genuinely new account needs one supplied, and a
- *     row without one is reported rather than half-written -- except where the retailer
- *     keeps no password at all (Mattel, guest checkout), which neither asks nor stores.
+ *   - Create an account without a retailer password. A profile export -- AYCD's or
+ *     Valor's -- carries cards and addresses but no logins, so a genuinely new account
+ *     needs one supplied, and a row without one is reported rather than half-written --
+ *     except where the retailer keeps no password at all (Mattel, guest checkout), which
+ *     neither asks nor stores.
  *   - Log or echo anything it decrypted or was handed. Failures name a profile, never a
  *     value.
  */
@@ -90,12 +102,20 @@ async function readUpload(form: FormData, key: string): Promise<string | null> {
   return file.text();
 }
 
-export async function importAycdProfiles(form: FormData): Promise<ImportResult> {
+/** "Pokémon Center", or "Pokémon Center and Mattel" -- wherever a Valor file is taken. */
+function valorRetailers(): string {
+  const labels = supportedSites()
+    .filter((site) => siteImportsValor(site.key))
+    .map((site) => site.label);
+  return new Intl.ListFormat("en", { type: "conjunction" }).format(labels);
+}
+
+export async function importProfileFile(form: FormData): Promise<ImportResult> {
   const viewer = await requireMember();
 
   const siteKey = String(form.get("siteKey") ?? "");
   if (!isKnownSite(siteKey)) return { ok: false, error: "Pick a retailer." };
-  // An AYCD export is a file of cards and addresses, and a login-only retailer stores
+  // A profile export is a file of cards and addresses, and a login-only retailer stores
   // neither -- so there is nothing here to import into. The picker already leaves those
   // out; this is the half that holds for a crafted POST. See usesProfiles in sites.ts.
   if (!siteUsesProfiles(siteKey)) {
@@ -110,9 +130,21 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Upload failed." };
   }
-  if (!profilesText) return { ok: false, error: "Choose an AYCD profile export to import." };
+  if (!profilesText) return { ok: false, error: "Choose a profile export to import." };
 
-  const { profiles, issues } = parseAycdExport(profilesText);
+  // Which bot wrote it, read from the file -- see isValorExport. Refused where the retailer
+  // doesn't take Valor's format: the form only says where it does, and this is what a
+  // crafted POST has to get past. See importsValor in sites.ts.
+  const source = isValorExport(profilesText) ? "Valor" : "AYCD";
+  if (source === "Valor" && !siteImportsValor(siteKey)) {
+    return {
+      ok: false,
+      error: `That's a Valor profile export, which imports on ${valorRetailers()} only. For ${siteStyle(siteKey).label}, export your profiles from AYCD.`,
+    };
+  }
+
+  const { profiles, issues } =
+    source === "Valor" ? parseValorExport(profilesText) : parseAycdExport(profilesText);
   if (profiles.length === 0) {
     return { ok: false, error: "Nothing importable in that file.", issues };
   }
@@ -187,7 +219,7 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
       siteKey,
       assigneeId: assigneeOf.get(update.accountId) ?? null,
       label: row.name,
-      fields: ["imported from AYCD"],
+      fields: [`imported from ${source}`],
     });
   }
 
@@ -236,7 +268,7 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
       siteKey,
       assigneeId: assigneeOf.get(accountId) ?? null,
       label: create.name,
-      fields: ["imported from AYCD"],
+      fields: [`imported from ${source}`],
     });
   }
 
@@ -250,7 +282,7 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
     viewer.displayName,
     `imported ${created} new and ${updated} updated ${siteKey} profile${
       created + updated === 1 ? "" : "s"
-    } from AYCD`,
+    } from ${source}`,
   );
 
   revalidatePath("/dashboard/profiles");

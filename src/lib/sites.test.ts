@@ -20,6 +20,7 @@ import {
   selfServeSiteKeys,
   supportedSites,
   siteBotGeneratesPhone,
+  siteImportsValor,
   siteMembership,
   siteRequiresPhone,
   siteStoresCardCvv,
@@ -485,5 +486,34 @@ describe("siteBotGeneratesPhone", () => {
     expect(siteBotGeneratesPhone("Pokemon Center US")).toBe(true);
     expect(siteBotGeneratesPhone("Best Buy USA")).toBe(true);
     expect(siteBotGeneratesPhone("Mattel Creations")).toBe(true);
+  });
+});
+
+describe("siteImportsValor", () => {
+  /**
+   * Where a member may upload Valor's own profile file. Pokémon Center only: it is where
+   * members run their own Valor. Best Buy and Mattel are Valor too, but nobody's file from
+   * either has been checked, so they stay AYCD-only until someone asks.
+   */
+  it("is true only on Pokémon Center", () => {
+    expect(siteImportsValor("pokemon-center")).toBe(true);
+    for (const site of supportedSites().filter((s) => s.key !== "pokemon-center")) {
+      expect(siteImportsValor(site.key), `${site.key} takes AYCD only`).toBe(false);
+    }
+  });
+
+  it("only applies where there are profiles to import", () => {
+    for (const site of supportedSites().filter((s) => siteImportsValor(s.key))) {
+      expect(siteUsesProfiles(site.key), site.key).toBe(true);
+    }
+  });
+
+  it("defaults to false for an unknown retailer", () => {
+    expect(siteImportsValor("some-new-store")).toBe(false);
+    expect(siteImportsValor(null)).toBe(false);
+  });
+
+  it("accepts the raw vendor spelling", () => {
+    expect(siteImportsValor("Pokemon Center US")).toBe(true);
   });
 });

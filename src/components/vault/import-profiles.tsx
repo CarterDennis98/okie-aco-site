@@ -1,19 +1,24 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { importAycdProfiles, type ImportResult } from "@/lib/vault/import-actions";
-import { siteStyle } from "@/lib/sites";
+import { importProfileFile, type ImportResult } from "@/lib/vault/import-actions";
+import { siteImportsValor, siteStoresPassword, siteStyle } from "@/lib/sites";
 
 /**
- * Bulk import from an AYCD profile export.
+ * Bulk import from a bot's profile export: AYCD's, or -- where the retailer takes it
+ * (`importsValor`, Pokémon Center) -- Valor's own.
  *
  * The counterpart to the operator's export, so a member who already keeps fifteen
- * profiles in AYCD Toolbox doesn't retype them.
+ * profiles in AYCD Toolbox, or in their own Valor, doesn't retype them. Nobody is asked
+ * which format a file is: the action reads that from the file, and this only says where
+ * Valor's is taken.
  *
- * Two files, because one isn't enough: AYCD's profile export holds cards and addresses
- * but no retailer logins, so a profile for an account this site has never seen needs its
+ * Two files, because one isn't enough: a profile export holds cards and addresses but no
+ * retailer logins, so a profile for an account this site has never seen needs its
  * password supplied too. The copy says that up front rather than letting someone upload,
- * wait, and then be told half their profiles were skipped.
+ * wait, and then be told half their profiles were skipped. Where the retailer keeps no
+ * password -- guest checkout on Pokémon Center, the email-only logins on Mattel -- the
+ * logins file isn't offered at all, since the action would only drop it.
  *
  * The result panel reports per-profile problems by NAME AND POSITION only -- the action
  * never sends a value back, and this never asks for one.
@@ -24,22 +29,34 @@ const field =
 
 export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
   const [open, setOpen] = useState(false);
+  // Decides what the form SAYS about the files, never what is accepted -- the action checks
+  // the retailer against the file for itself.
+  const [site, setSite] = useState("");
 
   const [state, formAction, pending] = useActionState(
-    async (_previous: ImportResult | null, formData: FormData) => importAycdProfiles(formData),
+    async (_previous: ImportResult | null, formData: FormData) => importProfileFile(formData),
     null,
   );
+
+  const valorSites = siteKeys.filter((key) => siteImportsValor(key));
+  const valorWhere = new Intl.ListFormat("en", { type: "conjunction" }).format(
+    valorSites.map((key) => siteStyle(key).label),
+  );
+  // Offered until a retailer is picked, as it always was; hidden once one that keeps no
+  // password is.
+  const wantsLogins = !site || siteStoresPassword(site);
 
   return (
     <section className="mt-12">
       <h2 className="mb-2 flex items-center gap-2.5 text-xl font-bold tracking-tight">
         <span aria-hidden className="h-5 w-1 rounded-full bg-[var(--color-brand)]" />
-        Import from AYCD
+        {valorSites.length > 0 ? "Import from AYCD or Valor" : "Import from AYCD"}
       </h2>
       <p className="mb-4 max-w-2xl text-sm text-[var(--color-muted)]">
-        Already have your profiles in AYCD Toolbox? Export them and upload the file here instead of
-        adding each one by hand. Profiles you already have are matched by email and updated;
-        anything new is added with the next name in your sequence.
+        Already have your profiles in AYCD Toolbox
+        {valorSites.length > 0 && `, or in Valor for ${valorWhere}`}? Export them and upload the
+        file here instead of adding each one by hand. Profiles you already have are matched by email
+        and updated; anything new is added with the next name in your sequence.
       </p>
 
       {!open ? (
@@ -63,7 +80,14 @@ export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
               >
                 Retailer
               </label>
-              <select id="siteKey" name="siteKey" defaultValue="" className={field} required>
+              <select
+                id="siteKey"
+                name="siteKey"
+                value={site}
+                onChange={(event) => setSite(event.target.value)}
+                className={field}
+                required
+              >
                 <option value="" disabled>
                   Pick one
                 </option>
@@ -74,11 +98,11 @@ export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
                 ))}
               </select>
               <p className="mt-1 text-xs text-[var(--color-muted)]">
-                An AYCD export doesn&rsquo;t say which store it&rsquo;s for, so pick it here.
+                A profile export doesn&rsquo;t say which store it&rsquo;s for, so pick it here.
               </p>
             </div>
 
-            <div>
+            <div className={wantsLogins ? undefined : "sm:col-span-2"}>
               <label
                 htmlFor="profiles"
                 className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
@@ -93,27 +117,34 @@ export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
                 required
                 className={field}
               />
-            </div>
-
-            <div>
-              <label
-                htmlFor="accounts"
-                className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
-              >
-                Logins <span className="font-normal">(optional, .txt)</span>
-              </label>
-              <input
-                id="accounts"
-                name="accounts"
-                type="file"
-                accept=".txt,.csv,text/plain"
-                className={field}
-              />
               <p className="mt-1 text-xs text-[var(--color-muted)]">
-                One <code>email:password</code> per line. Needed only for accounts we don&rsquo;t
-                already have — the profile export doesn&rsquo;t include logins.
+                {siteImportsValor(site)
+                  ? "AYCD’s profile export, or Valor’s own — either works as it is."
+                  : "The profile export from AYCD Toolbox."}
               </p>
             </div>
+
+            {wantsLogins && (
+              <div>
+                <label
+                  htmlFor="accounts"
+                  className="mb-1 block text-xs font-medium text-[var(--color-muted)]"
+                >
+                  Logins <span className="font-normal">(optional, .txt)</span>
+                </label>
+                <input
+                  id="accounts"
+                  name="accounts"
+                  type="file"
+                  accept=".txt,.csv,text/plain"
+                  className={field}
+                />
+                <p className="mt-1 text-xs text-[var(--color-muted)]">
+                  One <code>email:password</code> per line. Needed only for accounts we don&rsquo;t
+                  already have — the profile export doesn&rsquo;t include logins.
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
