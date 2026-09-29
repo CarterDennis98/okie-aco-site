@@ -17,9 +17,10 @@
  */
 
 /**
- * Field names kept, compared case-insensitively with bold markers stripped (Swft bolds
- * its field names). Anything with an "Order" prefix is kept -- the vendors spell it
- * "Order Number", "Order ID", and "Order #".
+ * Field names kept, compared case-insensitively with bold markers and a trailing colon
+ * stripped (Swft bolds its field names; Alpine ends every one with ":"). Anything with an
+ * "Order" prefix is kept -- the vendors spell it "Order Number", "Order ID", "Order #" and
+ * "Order" -- but only as TEXT: see orderValue.
  */
 const ALLOWED_FIELDS = new Set([
   "site",
@@ -31,6 +32,8 @@ const ALLOWED_FIELDS = new Set([
   // like the rest of this list.
   "qty",
   "sku",
+  // Alpine's product id: the Shopify variant it bought.
+  "variant",
   "profile",
   "price",
   "total",
@@ -47,12 +50,14 @@ const ALLOWED_FIELDS = new Set([
  * Explicitly named so the reason is on the record rather than implied by absence.
  *
  *   Email / Account          the retailer login
+ *   Profile Email            the retailer login's address (Alpine)
  *   Payment                  card details
  *   Proxy*, Checkout Proxy   proxy host, port, user, password
  *   Share Link               a base64 blob encoding the vendor's site + proxy setup
  */
 const KNOWN_SENSITIVE = new Set([
   "email",
+  "profile email",
   "account",
   "payment",
   "proxy",
@@ -63,13 +68,33 @@ const KNOWN_SENSITIVE = new Set([
 ]);
 
 function normalizeName(name: string): string {
-  return name.replace(/\*\*/g, "").trim().toLowerCase();
+  return name.replace(/\*\*/g, "").trim().replace(/:$/, "").trim().toLowerCase();
+}
+
+function isOrderField(name: string): boolean {
+  return normalizeName(name).startsWith("order");
 }
 
 function isAllowed(name: string): boolean {
-  const normalized = normalizeName(name);
-  if (normalized.startsWith("order")) return true;
-  return ALLOWED_FIELDS.has(normalized);
+  if (isOrderField(name)) return true;
+  return ALLOWED_FIELDS.has(normalizeName(name));
+}
+
+/**
+ * An order field's value with every link reduced to its text, and any bare URL removed.
+ *
+ * The order NUMBER is what's worth keeping. The link a vendor wraps it in can be a
+ * credential in its own right: Alpine links each Topps order to its Shopify order-status
+ * page with an `authenticate?key=` token in the query, and that URL opens the order -- the
+ * member's address included -- for anyone holding it. The text survives; the URL never
+ * reaches the database.
+ */
+function orderValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  return value
+    .replace(/\[([^\]]*)\]\(\s*https?:\/\/[^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, "")
+    .trim();
 }
 
 export type SanitizedEmbed = {
@@ -115,8 +140,10 @@ export function sanitizeEmbed(raw: unknown): SanitizedEmbed {
       const field = entry as { name?: unknown; value?: unknown };
       if (typeof field.name !== "string") continue;
 
-      if (isAllowed(field.name)) {
-        fields.push({ name: field.name, value: field.value });
+      const value = isOrderField(field.name) ? orderValue(field.value) : field.value;
+      // An order field that was nothing but a link has nothing left worth storing.
+      if (isAllowed(field.name) && value !== "") {
+        fields.push({ name: field.name, value });
       } else {
         const normalized = normalizeName(field.name);
         dropped.add(field.name);

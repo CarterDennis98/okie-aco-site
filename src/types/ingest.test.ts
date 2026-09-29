@@ -56,10 +56,33 @@ describe("checkoutInput", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts Alpine before the bot sends anything from it", () => {
-    // Its parser waits on real samples, but the vendor name has to be deployed first --
-    // see the note on sourceBot.
-    expect(checkoutInput.shape.sourceBot.safeParse("alpine").success).toBe(true);
+  it("accepts an Alpine checkout exactly as the mirror builds it", () => {
+    // The shape toPayload produces from a real Topps success: the product as text with its
+    // page as the URL, the Shopify variant as the SKU, and the order NUMBER only -- Alpine's
+    // order link carries a login key and never leaves the parser. The product URL keeps the
+    // "®" Topps puts in its handles, which must not be what rejects a batch mid-drop.
+    const result = checkoutBatch.safeParse({
+      checkouts: [
+        {
+          sourceBot: "alpine",
+          discordMessageId: "1554287227834466416",
+          discordChannelId: "1554260403209637899",
+          orderId: "6719874629789",
+          occurredAt: "2026-09-26T17:42:03.000Z",
+          site: "Topps US",
+          productRaw: "2026 Bowman Chrome® Baseball - Mega Box",
+          sku: "48758312665245",
+          productUrl: "https://shop.topps.com/products/2026-bowman-chrome®-baseball-mega-box",
+          imageUrl: "https://images-ext-1.discordapp.net/external/abc/https/cdn.shopify.com/x.png",
+          profileRaw: "carter - 3",
+          quantity: 4,
+          quantityAssumed: false,
+          flags: [],
+          rawEmbed: { title: "AlpineAIO - Checked Out!" },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
   });
 
   const vendors = mirrorVendors();

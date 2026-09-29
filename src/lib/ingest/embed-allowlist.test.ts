@@ -100,11 +100,79 @@ describe("sanitizeEmbed", () => {
   });
 
   it("keeps every spelling of the order field", () => {
-    for (const name of ["Order Number", "Order ID", "Order #"]) {
+    for (const name of ["Order Number", "Order ID", "Order #", "Order:"]) {
       const { embed, dropped } = sanitizeEmbed({ fields: [{ name, value: "4471983" }] });
       expect(dropped).toEqual([]);
       expect((embed?.fields as { name: string }[])[0].name).toBe(name);
     }
+  });
+
+  it("reads Alpine's colon-suffixed names, and drops its login and proxy", () => {
+    // Shaped like a real AlpineAIO success, values replaced.
+    const { embed, dropped, droppedSensitive } = sanitizeEmbed({
+      title: "AlpineAIO - Checked Out!",
+      fields: [
+        { name: "Site:", value: "Topps US" },
+        {
+          name: "Product:",
+          value: "[2026 Topps Heritage Football - Value Box](https://shop.topps.com/products/x)",
+        },
+        { name: "Variant:", value: "48926411194525" },
+        { name: "Price:", value: "$37.1" },
+        { name: "Quantity:", value: "1" },
+        { name: "Profile:", value: "carter - 3" },
+        { name: "Profile Email:", value: "buyer@example.com" },
+        {
+          name: "Order:",
+          value:
+            "[6719874629789](https://account.topps.com/orders/abc123/authenticate?key=shcct_secret&locale=en-US)",
+        },
+        { name: "Mode:", value: "SAFE" },
+        { name: "Proxy:", value: "||1.2.3.4:8080:user:pass||" },
+      ],
+    });
+    const fields = embed?.fields as { name: string; value: string }[];
+    expect(fields.map((f) => f.name)).toEqual([
+      "Site:",
+      "Product:",
+      "Variant:",
+      "Price:",
+      "Quantity:",
+      "Profile:",
+      "Order:",
+      "Mode:",
+    ]);
+    expect(dropped.sort()).toEqual(["Profile Email:", "Proxy:"]);
+    expect(droppedSensitive.sort()).toEqual(["Profile Email:", "Proxy:"]);
+  });
+
+  /**
+   * Alpine links each Topps order to Shopify's order-status page with an
+   * `authenticate?key=` token in the URL, which opens the order -- address and all -- for
+   * whoever holds it. The number is the part worth keeping.
+   */
+  it("keeps an order's number and never the link around it", () => {
+    const { embed, dropped } = sanitizeEmbed({
+      fields: [
+        {
+          name: "Order:",
+          value:
+            "[6719874629789](https://account.topps.com/orders/abc123/authenticate?key=shcct_secret&locale=en-US)",
+        },
+        { name: "Order Number", value: "[#4471983](https://www.target.com/orders/4471983)" },
+        { name: "Order ID", value: "||US00000001||" },
+        { name: "Order Link", value: "https://example.com/o/1?token=abc" },
+      ],
+    });
+    const fields = embed?.fields as { name: string; value: string }[];
+    expect(fields).toEqual([
+      { name: "Order:", value: "6719874629789" },
+      { name: "Order Number", value: "#4471983" },
+      { name: "Order ID", value: "||US00000001||" },
+    ]);
+    // Nothing of any link survives, and a field that was only a link is reported as dropped.
+    expect(JSON.stringify(embed)).not.toMatch(/https?:|authenticate|shcct_|token=/);
+    expect(dropped).toEqual(["Order Link"]);
   });
 
   it("strips Swft's bold markers when matching names", () => {
@@ -180,11 +248,23 @@ describe("sanitizeEmbed", () => {
     }
   });
 
+  it.runIf(embeds.length > 0)("keeps no link inside an order field on a real embed", () => {
+    for (const { vendor, kind, embed } of embeds) {
+      const { embed: safe } = sanitizeEmbed(embed);
+      for (const field of (safe?.fields as { name: string; value: unknown }[]) ?? []) {
+        if (!/^(\*\*)?order/i.test(field.name)) continue;
+        expect(String(field.value), `${vendor}/${kind} kept a link in "${field.name}"`).not.toMatch(
+          /https?:\/\//,
+        );
+      }
+    }
+  });
+
   it.runIf(embeds.length > 0)("keeps the product and order fields on every real embed", () => {
     for (const { vendor, kind, embed } of embeds) {
       const { embed: safe } = sanitizeEmbed(embed);
       const names = ((safe?.fields as { name: string }[]) ?? []).map((f) =>
-        f.name.replace(/\*\*/g, "").toLowerCase(),
+        f.name.replace(/\*\*/g, "").replace(/:\s*$/, "").toLowerCase(),
       );
       const hasIdentity =
         names.some((n) => n.startsWith("order")) ||
