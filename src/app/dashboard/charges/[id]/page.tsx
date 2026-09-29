@@ -158,6 +158,14 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
                   <td className="py-2.5 text-right tabular-nums">−{money(charge.discountCents)}</td>
                 </tr>
               )}
+              {charge.creditCents > 0 && (
+                <tr className="text-[var(--color-good)]">
+                  <th scope="row" colSpan={3} className="py-2.5 text-right font-normal">
+                    ACO credit
+                  </th>
+                  <td className="py-2.5 text-right tabular-nums">−{money(charge.creditCents)}</td>
+                </tr>
+              )}
               <tr className="border-t border-[var(--color-edge)] text-lg font-bold text-white">
                 <th scope="row" colSpan={3} className="py-3 text-right">
                   Total
@@ -192,16 +200,27 @@ export default async function ChargePage({ params }: PageProps<"/dashboard/charg
           </section>
         )}
 
-        <ClaimPayment
-          billId={charge.id}
-          totalCents={charge.totalCents}
-          paidCents={charge.paidCents}
-          paidAt={charge.paidAt}
-          claimedAt={charge.paidClaimedAt}
-          claimedCents={charge.paidClaimedCents}
-          claimedMethod={charge.paidClaimedMethod}
-          claimedNote={charge.paidClaimedNote}
-        />
+        {/* Settled on arrival, with no payment behind it -- "Payment received" would be
+            telling them money moved that never did. See PasBill.creditCents. */}
+        {charge.creditCents > 0 && charge.totalCents === 0 ? (
+          <div className="mt-6 rounded-xl border border-[var(--color-good)]/40 bg-[var(--color-good)]/10 px-5 py-4">
+            <p className="text-sm font-semibold text-white">Covered by ACO credit</p>
+            <p className="mt-1 text-xs text-[var(--color-muted)]">
+              Your ACO credit paid this charge in full. Nothing to send.
+            </p>
+          </div>
+        ) : (
+          <ClaimPayment
+            billId={charge.id}
+            totalCents={charge.totalCents}
+            paidCents={charge.paidCents}
+            paidAt={charge.paidAt}
+            claimedAt={charge.paidClaimedAt}
+            claimedCents={charge.paidClaimedCents}
+            claimedMethod={charge.paidClaimedMethod}
+            claimedNote={charge.paidClaimedNote}
+          />
+        )}
 
         {charge.payments.length > 0 && (
           <section className="mt-10">

@@ -37,6 +37,11 @@ export const billInput = z
     payeeId: snowflake.optional(),
     subtotalCents: z.number().int().min(0).max(10_000_000),
     discountCents: z.number().int().min(0).max(10_000_000),
+    /**
+     * ACO credit the bill spent, after both discounts. Optional: a run with none -- and every
+     * run from a bot that predates credit -- leaves it out. See PasBill.creditCents.
+     */
+    creditCents: z.number().int().min(0).max(10_000_000).optional(),
     totalCents: z.number().int().min(0).max(10_000_000),
     isOg: z.boolean(),
     /** The exact DM text the member received. What settles a dispute months later. */

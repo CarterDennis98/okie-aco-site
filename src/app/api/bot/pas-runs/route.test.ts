@@ -13,6 +13,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/db/client";
+import { getAcoCreditBalance } from "@/db/queries/aco-credit";
 import { POST } from "./route";
 
 const canRun = Boolean(process.env.DATABASE_URL && process.env.BOT_INGEST_TOKEN);
@@ -30,6 +31,8 @@ const PAYEE = "999900000000000025";
 
 const SESSION = "test-pas-run-billable";
 const SPLIT_SESSION = "test-pas-run-split";
+const CREDIT_SESSION = "test-pas-run-credit";
+const CREDIT_DRY_SESSION = "test-pas-run-credit-dry";
 
 function post(body: unknown): Promise<Response> {
   return POST(
@@ -202,6 +205,66 @@ describe.skipIf(!canRun)("POST /api/bot/pas-runs", () => {
     expect(again.billsCreated).toBe(0);
     expect(again.billsAlreadyPresent).toBe(2);
   });
+
+  /**
+   * ACO credit is spent by the bill that spent it. One bill the credit covers entirely --
+   * owed nothing, so stored settled, with no payment behind it -- and one it covers in part,
+   * which stays owed like any other. Neither a re-post nor a dry run spends it again.
+   */
+  it("stores the credit a bill spent, and settles one it covered entirely", async () => {
+    const grant = (discordUserId: string, amountCents: number) =>
+      prisma.acoCredit.create({
+        data: { discordUserId, amountCents, issuedBy: OPERATOR, requestKey: crypto.randomUUID() },
+      });
+    await grant(NORMAL, 1000);
+    await grant(MIXED, 300);
+
+    const withCredit = {
+      ...payload,
+      sessionId: CREDIT_SESSION,
+      bills: [
+        { ...billFor(NORMAL), creditCents: 800, totalCents: 0 },
+        { ...billFor(MIXED), creditCents: 300, totalCents: 500 },
+      ],
+      delivery: [NORMAL, MIXED].map((userId) => ({ userId, status: "sent", messageId: null })),
+    };
+    expect((await (await post(withCredit)).json()).billsCreated).toBe(2);
+
+    const bills = await prisma.pasBill.findMany({
+      where: { run: { sessionId: CREDIT_SESSION } },
+      select: {
+        discordUserId: true,
+        creditCents: true,
+        totalCents: true,
+        paidCents: true,
+        paidAt: true,
+        markedPaidBy: true,
+      },
+    });
+    const byMember = new Map(bills.map((bill) => [bill.discordUserId, bill]));
+    // Covered: settled on arrival -- paid_at set with nothing received, which is the schema's
+    // invariant for a total of zero -- so it never sits in an unpaid queue as a $0 debt.
+    expect(byMember.get(NORMAL)).toMatchObject({
+      creditCents: 800,
+      totalCents: 0,
+      paidCents: 0,
+      markedPaidBy: OPERATOR,
+    });
+    expect(byMember.get(NORMAL)?.paidAt?.getTime()).toBe(payload.sentAtMs);
+    // Part covered: still owed, like any bill.
+    expect(byMember.get(MIXED)).toMatchObject({ creditCents: 300, totalCents: 500, paidAt: null });
+
+    expect(await getAcoCreditBalance(NORMAL)).toBe(200);
+    expect(await getAcoCreditBalance(MIXED)).toBe(0);
+
+    // A re-post finds the bills already there, so spends nothing more.
+    expect((await (await post(withCredit)).json()).billsCreated).toBe(0);
+    expect(await getAcoCreditBalance(NORMAL)).toBe(200);
+
+    // And a dry run spends nothing at all: nobody was billed by it.
+    await post({ ...withCredit, sessionId: CREDIT_DRY_SESSION, dryRun: true });
+    expect(await getAcoCreditBalance(NORMAL)).toBe(200);
+  });
 });
 
 async function billedUserIds(): Promise<string[]> {
@@ -213,7 +276,12 @@ async function billedUserIds(): Promise<string[]> {
 }
 
 async function cleanup() {
-  await prisma.pasRun.deleteMany({ where: { sessionId: { in: [SESSION, SPLIT_SESSION] } } });
+  await prisma.pasRun.deleteMany({
+    where: { sessionId: { in: [SESSION, SPLIT_SESSION, CREDIT_SESSION, CREDIT_DRY_SESSION] } },
+  });
+  await prisma.acoCredit.deleteMany({
+    where: { discordUserId: { in: [OPERATOR, MIXED, NORMAL, STRANGER] } },
+  });
   await prisma.profile.deleteMany({ where: { profileKey: { startsWith: "test-" } } });
   await prisma.item.deleteMany({ where: { productKey: "test-billable-product" } });
   await prisma.discordMember.deleteMany({

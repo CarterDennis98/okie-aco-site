@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
+import { getMemberAcoCredit } from "@/db/queries/aco-credit";
 import { resolveSiteLogo } from "@/lib/site-logo";
 
 /**
@@ -44,6 +45,8 @@ export type MemberChargeSummary = {
   windowStart: Date;
   subtotalCents: number;
   discountCents: number;
+  /** ACO credit this charge spent. See PasBill.creditCents. */
+  creditCents: number;
   totalCents: number;
   /** Recorded as received so far. Less than the total means part-paid, not paid. */
   paidCents: number;
@@ -68,6 +71,11 @@ export type MemberDashboard = {
   owedByPayee: { payeeId: string; cents: number; count: number }[];
   lifetimeCheckouts: number;
   lifetimeUnits: number;
+  /**
+   * ACO credit they hold: comes off their next Okie ACO fees on its own. The note is the
+   * reason the operator gave for the latest credit, when they gave one.
+   */
+  acoCredit: { balanceCents: number; lastNote: string | null };
   charges: MemberChargeSummary[];
   recentCheckouts: MemberCheckout[];
 };
@@ -92,7 +100,7 @@ const REAL_RUNS = { run: { dryRun: false } } as const;
 const RECENT_CHECKOUT_LIMIT = 250;
 
 export async function getMemberDashboard(discordUserId: string): Promise<MemberDashboard> {
-  const [bills, checkoutTotals, recent] = await Promise.all([
+  const [bills, checkoutTotals, recent, acoCredit] = await Promise.all([
     prisma.pasBill.findMany({
       where: { discordUserId, ...REAL_RUNS },
       orderBy: { run: { windowStart: "desc" } },
@@ -101,6 +109,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
         payeeId: true,
         subtotalCents: true,
         discountCents: true,
+        creditCents: true,
         totalCents: true,
         ogApplied: true,
         paidAt: true,
@@ -134,6 +143,8 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
         profile: { select: { displayName: true } },
       },
     }),
+
+    getMemberAcoCredit(discordUserId),
   ]);
 
   const charges: MemberChargeSummary[] = bills.map((bill) => ({
@@ -143,6 +154,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
     windowStart: bill.run.windowStart,
     subtotalCents: bill.subtotalCents,
     discountCents: bill.discountCents,
+    creditCents: bill.creditCents,
     totalCents: bill.totalCents,
     ogApplied: bill.ogApplied,
     paidCents: bill.paidCents,
@@ -175,6 +187,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
     owedByPayee,
     lifetimeCheckouts: checkoutTotals._count._all,
     lifetimeUnits: checkoutTotals._sum.quantity ?? 0,
+    acoCredit,
     charges,
     recentCheckouts: recent.map((row) => ({
       id: row.id,
@@ -209,6 +222,8 @@ export type MemberChargeDetail = {
   windowEnd: Date;
   subtotalCents: number;
   discountCents: number;
+  /** ACO credit this charge spent. See PasBill.creditCents. */
+  creditCents: number;
   totalCents: number;
   ogApplied: boolean;
   /** Recorded as received so far. Less than the total means part-paid, not paid. */
@@ -246,6 +261,7 @@ export async function getMemberCharge(
       payeeId: true,
       subtotalCents: true,
       discountCents: true,
+      creditCents: true,
       totalCents: true,
       ogApplied: true,
       paidAt: true,
@@ -292,6 +308,7 @@ export async function getMemberCharge(
     windowEnd: bill.run.windowEnd,
     subtotalCents: bill.subtotalCents,
     discountCents: bill.discountCents,
+    creditCents: bill.creditCents,
     totalCents: bill.totalCents,
     ogApplied: bill.ogApplied,
     paidCents: bill.paidCents,

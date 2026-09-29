@@ -48,6 +48,13 @@ function deliveryStatusOf(status: string | undefined): DeliveryStatus {
  * on the site already filters them out of balances and feeds. Storing them means the
  * operator can see a preview happened; pretending they didn't would make the site
  * disagree with the bot's own history.
+ *
+ * ACO CREDIT is spent HERE, by the bill: `creditCents` is stored on the row, and a member's
+ * balance is their grants less what their real bills spent -- so one bill per (run, member,
+ * payee), above, is also what stops a re-posted run spending it twice. A bill the credit
+ * covered entirely owes nothing, and is stored settled: paid_at set, nothing received, which
+ * is exactly the schema's invariant (paid_cents >= total_cents) for a total of zero. Left
+ * unpaid, it would sit in every "still owes" queue as a $0 debt.
  */
 export const dynamic = "force-dynamic";
 
@@ -186,6 +193,10 @@ export async function POST(request: Request) {
     }
 
     const delivery = deliveryByBill.get(billKey(bill.userId, payeeId));
+    const creditCents = bill.creditCents ?? 0;
+    // Settled on arrival -- see ACO CREDIT above. Only when credit is what zeroed it: a
+    // zero bill without credit is one the bot skips and never sends at all.
+    const coveredByCredit = creditCents > 0 && bill.totalCents === 0;
     await prisma.pasBill.create({
       data: {
         pasRunId: run.id,
@@ -193,7 +204,14 @@ export async function POST(request: Request) {
         payeeId,
         subtotalCents: bill.subtotalCents,
         discountCents: bill.discountCents,
+        creditCents,
         totalCents: bill.totalCents,
+        ...(coveredByCredit
+          ? {
+              paidAt: input.sentAtMs ? new Date(input.sentAtMs) : new Date(),
+              markedPaidBy: input.operatorId,
+            }
+          : {}),
         ogApplied: bill.isOg,
         deliveryStatus: deliveryStatusOf(delivery?.status),
         dmMessageId: delivery?.messageId ?? null,

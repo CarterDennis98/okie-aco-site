@@ -166,6 +166,9 @@ crafted header skipping middleware outright.
   assignments, since an export is what gets loaded onto a bot and someone else's profiles on
   yours would run a member twice. A move writes a pair of queue entries — "take these off"
   for the old runner, "load these" for the new one — so neither bot is left guessing.
+- **ACO credit is the operator's alone** — not every full admin's. Credit only ever comes off
+  the operator's own fees, so only they see **ACO credit** on the Charges page, and
+  `changeAcoCredit` (`src/lib/billing/credit-actions.ts`) checks it again where the write is.
 - Member queries take `discordUserId` as a **required first argument**, sourced only
   from the guard's return value. Resource lookups carry both predicates
   (`where: { id, discordUserId }`) rather than fetch-then-compare, which is what makes a
@@ -183,6 +186,12 @@ mutation-checked: removing `discordUserId` from the `where` clause makes it fail
 - **Money is integer cents everywhere**, matching the bot.
 - **Discord snowflake IDs are strings**, never numbers — they exceed 2^53.
 - **Sent bills are immutable.** Fee edits apply to future billing runs only.
+- **ACO credit is a ledger, never a stored balance.** `aco_credits` holds each give (+) and
+  take-back (−), and each bill records what it spent in `pas_bills.credit_cents`; a balance is
+  the one less the other, on real runs only (`src/db/queries/aco-credit.ts`). The bot reads
+  balances from `GET /api/bot/aco-credits` when it builds a `/pas run` preview. A bill that
+  credit covers entirely arrives settled, at $0, which is what keeps `paid_at` set exactly when
+  `paid_cents >= total_cents`.
 
 ## Next.js 16 notes
 

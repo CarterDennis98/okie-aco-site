@@ -225,6 +225,21 @@ export default async function DashboardPage() {
                   })}
                 </ul>
               )}
+              {/* Credit they can't spend by hand -- the bot takes it off their next fees -- so
+                  it's said as what it will do, not as money to use. Green: it's theirs. */}
+              {data.acoCredit.balanceCents > 0 && (
+                <p className="mt-3 text-sm text-[var(--color-fg)]">
+                  <span className="font-semibold text-[var(--color-good)] tabular-nums">
+                    {money(data.acoCredit.balanceCents)}
+                  </span>{" "}
+                  ACO credit — comes off your next Okie ACO fees automatically.
+                  {data.acoCredit.lastNote && (
+                    <span className="block text-xs text-[var(--color-muted)]">
+                      {data.acoCredit.lastNote}
+                    </span>
+                  )}
+                </p>
+              )}
             </div>
 
             {data.unpaidCount > 0 ? (
@@ -335,6 +350,10 @@ export default async function DashboardPage() {
                         {/* Deliberately says nothing about OG or a rate -- the discount's
                             existence is not public. The amount is on the charge page. */}
                         {charge.discountCents > 0 && " · discount applied"}
+                        {charge.creditCents > 0 &&
+                          (charge.totalCents === 0
+                            ? " · covered by ACO credit"
+                            : " · ACO credit applied")}
                       </p>
                     </div>
                     <div className="flex items-center gap-2.5">

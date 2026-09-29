@@ -118,6 +118,7 @@ model DiscordMember {
   vaultProfiles    VaultProfile[]
   emailCredentials EmailCredential[]
   emailAliases     EmailAlias[]
+  acoCredits       AcoCredit[]
 
   @@index([leftAt])
   @@map("discord_members")
@@ -338,6 +339,13 @@ model PasBill {
 
   subtotalCents Int @map("subtotal_cents")
   discountCents Int @default(0) @map("discount_cents")
+  // ACO credit this bill spent: the member's balance, applied by the bot after both
+  // discounts, on a bill owed to the operator only. total = subtotal - discount - credit.
+  //
+  // THIS COLUMN IS THE SPENDING. A member's balance is their grants (AcoCredit) less the
+  // sum of this over their real bills, so credit is used up by the very row that used it --
+  // and a billing run posted twice, which upserts onto the same bills, can't spend it twice.
+  creditCents   Int @default(0) @map("credit_cents")
   totalCents    Int @map("total_cents")
 
   // Snapshot of OG status at billing time. A later role change must not alter a
@@ -396,6 +404,36 @@ model PasBill {
   // A payee's own view of what they are owed, and its badge.
   @@index([payeeId, paidAt])
   @@map("pas_bills")
+}
+
+// ACO credit: money the operator gives a member by hand -- a make-good, a reward -- that
+// comes off their next Okie ACO fees automatically, whichever retailer those are on.
+//
+// A LEDGER OF GRANTS. A positive row is credit given; a negative row is credit taken back.
+// Nothing here is ever edited or deleted: a mistake is corrected by the next row, and the
+// history is the audit trail. What a member has left is the sum of their rows less what
+// their bills have spent (PasBill.creditCents on runs that weren't dry runs) -- see
+// db/queries/aco-credit.ts.
+//
+// Only the operator issues it (the first ADMIN_DISCORD_IDS entry), and it only ever pays
+// the operator's own fees: the bot never spends it on a bill owed to chess, peacemaker or
+// CrispHeinz, since that money was never the operator's to give away.
+model AcoCredit {
+  id            String @id @default(uuid())
+  discordUserId String @map("discord_user_id")
+  // Positive to give, negative to take back. Never zero.
+  amountCents   Int    @map("amount_cents")
+  // Why, as the operator typed it. Shown to the member beside their balance.
+  note          String?
+  issuedBy      String @map("issued_by")
+  // Minted by the dialog when it opens, so a double-click or a retried POST is one grant.
+  requestKey    String @unique @map("request_key")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  member DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+
+  @@index([discordUserId, createdAt])
+  @@map("aco_credits")
 }
 
 // Snapshot of what was charged. feeCents is deliberately NOT a join to

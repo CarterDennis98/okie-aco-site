@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AcoCredit } from "@/components/billing/aco-credit";
 import { AdHocFee } from "@/components/billing/ad-hoc-fee";
 import { ChargeRow } from "@/components/billing/charge-row";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
@@ -11,6 +12,7 @@ import {
   type ChargeFilter,
 } from "@/db/queries/admin-charges";
 import { getAdHocSites } from "@/db/queries/ad-hoc";
+import { getAcoCreditHolders, getCreditMemberOptions } from "@/db/queries/aco-credit";
 import { getPendingChangeCount } from "@/db/queries/admin-vault";
 import { ALL_SITES, operatorId, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
@@ -100,6 +102,14 @@ export default async function AdminChargesPage({
   }));
   const rows = result.rows;
 
+  // ACO credit is the operator's to give -- it comes off the operator's own fees -- so the
+  // control and the balances are theirs alone, not every full admin's. See credit-actions.ts.
+  const isOperator = viewer.isAdmin && viewer.discordUserId === operatorId();
+  const [creditMembers, creditHolders] = isOperator
+    ? await Promise.all([getCreditMemberOptions(), getAcoCreditHolders()])
+    : [[], []];
+  const creditOutstanding = creditHolders.reduce((sum, holder) => sum + holder.balanceCents, 0);
+
   // Carried onto the filter tabs and the pager so one control never silently clears
   // another. The payee rides along only for a full admin; a runner's is never a param.
   const carry = (over: Record<string, string | number | undefined>) => {
@@ -165,15 +175,61 @@ export default async function AdminChargesPage({
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-3xl font-black tracking-tight text-white">Charges</h1>
-          {/* For a checkout /pas run can't see -- Premium Bandai has no webhook. Offered on
-              the retailers the viewer runs, against the profiles assigned to them. */}
-          <AdHocFee sites={adHocOptions} />
+          <div className="flex flex-wrap items-center gap-2">
+            {isOperator && <AcoCredit members={creditMembers} />}
+            {/* For a checkout /pas run can't see -- Premium Bandai has no webhook. Offered on
+                the retailers the viewer runs, against the profiles assigned to them. */}
+            <AdHocFee sites={adHocOptions} />
+          </div>
         </div>
         <p className="mt-2 text-sm text-[var(--color-muted)]">
           Signed in as {viewer.displayName}.{" "}
           {scoped ? "These are the charges members owe you. " : ""}Marking a charge received writes
           a receipt — the bill&rsquo;s own amounts are never changed.
         </p>
+
+        {/* Who holds ACO credit, and why -- folded away, since it's a ledger to check rather
+            than a queue to work. A negative balance can't come from the dialog (taking back is
+            capped at what's left), so one showing here means something to look into. */}
+        {isOperator && creditHolders.length > 0 && (
+          <details className="mt-5 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-3">
+            <summary className="cursor-pointer text-sm text-[var(--color-fg)]">
+              ACO credit: {count(creditHolders.length)} {plural(creditHolders.length, "member")}{" "}
+              {creditHolders.length === 1 ? "holds" : "hold"}{" "}
+              <span className="font-semibold text-white tabular-nums">
+                {money(creditOutstanding)}
+              </span>
+            </summary>
+            <ul className="mt-3 divide-y divide-[var(--color-edge)] text-sm">
+              {creditHolders.map((holder) => (
+                <li
+                  key={holder.memberId}
+                  className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2"
+                >
+                  <span className="text-white">{holder.name}</span>
+                  <span className="flex flex-wrap items-baseline gap-x-3 text-xs text-[var(--color-muted)]">
+                    {holder.last && (
+                      <span>
+                        last {holder.last.amountCents > 0 ? "+" : "−"}
+                        {money(Math.abs(holder.last.amountCents))}
+                        {holder.last.note ? ` · ${holder.last.note}` : ""} ·{" "}
+                        {holder.last.at.toLocaleDateString("en-US")}
+                      </span>
+                    )}
+                    <span
+                      className={
+                        "text-sm font-semibold tabular-nums " +
+                        (holder.balanceCents < 0 ? "text-[var(--color-warn)]" : "text-white")
+                      }
+                    >
+                      {money(holder.balanceCents)}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
 
         {/* --- who it is owed to --- */}
         {/* Only when there is a choice: with one payee on record the tabs would be a single
