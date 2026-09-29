@@ -44,6 +44,11 @@ export type VaultProfileSummary = {
   shipCity: string;
   shipState: string;
   sameBillingAndShipping: boolean;
+  /**
+   * Whether the member says this account has the retailer's paid membership -- Red Line
+   * Club, on Mattel. Always false where the retailer has none; see `membership` in sites.ts.
+   */
+  hasMembership: boolean;
   // The mailbox this profile's verification codes land in: the account email itself when
   // it holds an app password, a different address when it forwards into one, null when
   // nothing covers it. The password is never carried here -- the reveal action fetches
@@ -161,7 +166,7 @@ const SUMMARY_SELECT = {
   shipState: true,
   sameBillingAndShipping: true,
   updatedAt: true,
-  account: { select: { email: true } },
+  account: { select: { email: true, hasMembership: true } },
 } as const;
 
 type SummaryRow = {
@@ -180,7 +185,7 @@ type SummaryRow = {
   shipState: string;
   sameBillingAndShipping: boolean;
   updatedAt: Date;
-  account: { email: string };
+  account: { email: string; hasMembership: boolean };
 };
 
 function toSummary(
@@ -211,6 +216,7 @@ function toSummary(
     shipCity: row.shipCity,
     shipState: row.shipState,
     sameBillingAndShipping: row.sameBillingAndShipping,
+    hasMembership: row.account.hasMembership,
     mailbox: coverage ? mailboxFor(coverage, row.account.email) : null,
     updatedAt: row.updatedAt,
   };

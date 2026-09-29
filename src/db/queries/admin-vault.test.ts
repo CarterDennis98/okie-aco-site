@@ -136,6 +136,59 @@ describe.skipIf(!canRun)("vault reads scoped to a runner", () => {
     expect(his.rows.map((row) => [row.name, row.onBackup])).toEqual([[`${PREFIX}m8`, false]]);
   });
 
+  /**
+   * What the per-member Mattel buttons are enabled by: the halves of the membership split,
+   * counted exactly as the export reads -- active only, the runner's share only, and
+   * regardless of the search, which the export ignores. The site here is Target, but the
+   * count doesn't care which retailer it is; only the page decides whether to split.
+   */
+  it("counts a member's active profiles in the share by membership, ignoring the search", async () => {
+    const names = (list: string[]) => list.map((name) => `${PREFIX}${name}`);
+    const marked = { account: { select: { id: true } } } as const;
+    const withIt = await prisma.vaultProfile.findMany({
+      where: { name: { in: names(["m1", "m2", "m3", "m8"]) } },
+      select: marked,
+    });
+    const idle = names(["m3"]);
+    try {
+      await prisma.vaultAccount.updateMany({
+        where: { id: { in: withIt.map((p) => p.account.id) } },
+        data: { hasMembership: true },
+      });
+      await prisma.vaultProfile.updateMany({
+        where: { name: { in: idle } },
+        data: { active: false },
+      });
+
+      // m1 and m2 have it; m3 does too but is switched off; m4-m7 don't.
+      const hers = await getMemberVaultForAdmin(SITE, MEMBER, undefined, alice);
+      expect(hers.membership).toEqual({ with: 2, without: 4 });
+
+      // A search showing one row leaves the halves as they were.
+      const searched = await getMemberVaultForAdmin(
+        SITE,
+        MEMBER,
+        { terms: [`${PREFIX}m5`], status: "all" },
+        alice,
+      );
+      expect(searched.rows).toHaveLength(1);
+      expect(searched.membership).toEqual({ with: 2, without: 4 });
+
+      // Bob's share of the same member is m8 alone.
+      const his = await getMemberVaultForAdmin(SITE, MEMBER, undefined, bob);
+      expect(his.membership).toEqual({ with: 1, without: 0 });
+    } finally {
+      await prisma.vaultAccount.updateMany({
+        where: { id: { in: withIt.map((p) => p.account.id) } },
+        data: { hasMembership: false },
+      });
+      await prisma.vaultProfile.updateMany({
+        where: { name: { in: idle } },
+        data: { active: true },
+      });
+    }
+  });
+
   it("counts each retailer tab over the runner's share", async () => {
     expect((await getVaultSites(bob)).find((s) => s.siteKey === SITE)?.count).toBe(2);
   });

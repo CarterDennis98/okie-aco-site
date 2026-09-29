@@ -4,7 +4,13 @@ import { useActionState, useState } from "react";
 import type { VaultProfileDetail } from "@/db/queries/vault";
 import { detectBrand, expectedCvvLength } from "@/lib/vault/card";
 import { saveProfile, type ActionResult } from "@/lib/vault/actions";
-import { siteRequiresPhone, siteStyle, siteUsesAccounts } from "@/lib/sites";
+import {
+  siteMembership,
+  siteRequiresPhone,
+  siteStoresPassword,
+  siteStyle,
+  siteUsesAccounts,
+} from "@/lib/sites";
 import { POSTAL_CODE_RE } from "@/lib/vault/profile-input";
 import { randomFirstName, randomLastName, randomPhone } from "@/lib/vault/random-identity";
 
@@ -204,6 +210,12 @@ export function ProfileForm({
   // confirmation goes -- but asking for a password invents a credential that does not
   // exist, and made the profile unsaveable because the field was required.
   const usesAccounts = siteUsesAccounts(siteKey);
+  // Mattel has an account, but its bot needs only the email it is registered to -- so no
+  // password field, and the account's paid membership is asked for in its place. See
+  // storesPassword and membership in sites.ts.
+  const storesPassword = siteStoresPassword(siteKey);
+  const membership = siteMembership(siteKey);
+  const retailer = siteStyle(siteKey).label;
   // Walmart will not check out without a phone number, so the field is required and gets no
   // die at all -- see requiresPhone in sites.ts.
   const phoneRequired = siteRequiresPhone(siteKey);
@@ -304,12 +316,14 @@ export function ProfileForm({
             defaultValue={profile?.email}
             required
             hint={
-              usesAccounts
-                ? "Must be unique — one account per profile."
-                : "Must be unique — one per profile. Checkout is as a guest, so there's no password."
+              !usesAccounts
+                ? "Must be unique — one per profile. Checkout is as a guest, so there's no password."
+                : storesPassword
+                  ? "Must be unique — one account per profile."
+                  : `The email your ${retailer} account is registered to — no password needed. One account per profile.`
             }
           />
-          {usesAccounts && (
+          {storesPassword && (
             <Field
               name="accountPassword"
               label="Account password"
@@ -318,6 +332,24 @@ export function ProfileForm({
               required={!isEdit}
               hint={isEdit ? "Leave blank to keep the current password." : undefined}
             />
+          )}
+          {/* Where the password would be: it is the other half of what the bot needs to know
+              about this account. A checkbox, not a required choice -- most accounts won't
+              have it, and unticked is an honest default. */}
+          {membership && (
+            <div>
+              <span className={label}>{membership.name}</span>
+              <label className="flex min-h-11 items-center gap-2.5 rounded-lg border border-[var(--color-edge)] px-3 py-2 text-sm text-[var(--color-fg)]">
+                <input
+                  type="checkbox"
+                  name="hasMembership"
+                  defaultChecked={profile?.hasMembership ?? false}
+                  className="size-4 accent-[var(--color-brand)]"
+                />
+                This account has {membership.short}
+              </label>
+              <p className="mt-1 text-[11px] text-[var(--color-muted)]">{membership.hint}</p>
+            </div>
           )}
         </div>
       </fieldset>

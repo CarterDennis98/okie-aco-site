@@ -392,6 +392,12 @@ export function planImport(input: {
   passwords: Map<string, string>;
   viewerDiscordId: string;
   viewerUsername: string;
+  /**
+   * Whether a login on this retailer keeps its password -- see siteStoresPassword. False on
+   * Mattel and on guest checkout: a new account needs none there, and one supplied anyway
+   * is dropped rather than stored as a credential nothing reads. Defaults to true.
+   */
+  storesPassword?: boolean;
 }): ImportPlan {
   const accountByEmail = new Map(input.accounts.map((a) => [a.email.toLowerCase(), a]));
   const base = profileBaseFor(input.myNames, input.viewerUsername);
@@ -399,9 +405,11 @@ export function planImport(input: {
 
   const plan: ImportPlan = { creates: [], updates: [], needPassword: [], issues: [] };
 
+  const storesPassword = input.storesPassword !== false;
+
   for (const parsed of input.profiles) {
     const existing = accountByEmail.get(parsed.email);
-    const password = input.passwords.get(parsed.email) ?? null;
+    const password = storesPassword ? (input.passwords.get(parsed.email) ?? null) : null;
 
     if (existing && existing.discordUserId !== input.viewerDiscordId) {
       plan.issues.push({
@@ -424,7 +432,7 @@ export function planImport(input: {
     }
 
     // A brand-new account needs a login; AYCD's profile export doesn't carry one.
-    if (!existing && !password) {
+    if (!existing && !password && storesPassword) {
       plan.needPassword.push(parsed.email);
       continue;
     }

@@ -8,9 +8,10 @@ import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
 import {
   isKnownSite,
+  siteMembership,
   siteStoresCardCvv,
+  siteStoresPassword,
   siteStyle,
-  siteUsesAccounts,
   siteUsesProfiles,
 } from "@/lib/sites";
 import { changedFields, recordBulkChange, recordChange } from "@/lib/vault/audit";
@@ -154,20 +155,25 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
   const cvv = text(form, "cardCvv");
   const fields = profileFieldsFromForm(form);
 
-  // Guest-checkout retailers have no login, so a password is not just optional here --
-  // it is meaningless, and anything submitted for one is discarded rather than stored
-  // against an account that cannot use it. `passwordEnc` stays null, which the schema
-  // defines as "no login" rather than "password unknown".
-  const usesAccounts = siteUsesAccounts(siteKey);
-  const password = usesAccounts ? text(form, "accountPassword") : "";
+  // Guest-checkout retailers have no login, and on Mattel only the login's email is needed
+  // -- so on both a password is not just optional, it is meaningless, and anything
+  // submitted for one is discarded rather than stored as a credential nothing reads.
+  // `passwordEnc` stays null. See storesPassword in sites.ts.
+  const storesPassword = siteStoresPassword(siteKey);
+  const password = storesPassword ? text(form, "accountPassword") : "";
 
   // Checked BEFORE the account is created. This used to sit after the upsert, so a
   // create with no password left an orphan vault_account holding an encrypted empty
   // string -- and because the upsert's `update` is empty, retrying with a real password
   // would never replace it.
-  if (!profileId && usesAccounts && !password) {
+  if (!profileId && storesPassword && !password) {
     return { ok: false, error: "Enter the retailer account password." };
   }
+
+  // Read only where the retailer has a membership to ask about; everywhere else an account
+  // has none, whatever a crafted POST says. See membership in sites.ts.
+  const membership = siteMembership(siteKey);
+  const hasMembership = membership ? bool(form, "hasMembership") : false;
 
   // Secrets are only ever written when supplied. Absent means unchanged.
   const cardSecrets = pan
@@ -194,6 +200,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           passwordEnc: password
             ? encrypt(password, { entity: "vault_account", field: "password" })
             : null,
+          hasMembership,
           assigneeId,
         },
         // An existing account must belong to this member, or the email is taken.
@@ -202,6 +209,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           id: true,
           discordUserId: true,
           assigneeId: true,
+          hasMembership: true,
           profile: { select: { id: true, name: true } },
         },
       });
@@ -216,6 +224,11 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           ok: false,
           error: `${account.profile.name} already uses that email on this retailer. Each profile needs its own.`,
         };
+      }
+      // A login of theirs the upsert found already on file, with no profile behind it: the
+      // empty `update` left its membership as it was, and the answer on this form is newer.
+      if (account.hasMembership !== hasMembership) {
+        await prisma.vaultAccount.update({ where: { id: account.id }, data: { hasMembership } });
       }
       // The name is GENERATED, never taken from the form. Members don't get to pick or
       // change it: the name is what ties a checkout back to a profile, and a free-text
@@ -271,7 +284,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           id: true,
           name: true,
           accountId: true,
-          account: { select: { email: true, assigneeId: true } },
+          account: { select: { email: true, assigneeId: true, hasMembership: true } },
           ...ALL_PLAIN,
         },
       });
@@ -298,10 +311,15 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         }
       }
 
+      // Named in the change the runner sees, because it moves the profile from one of the
+      // retailer's two exports to the other -- see membership in sites.ts.
+      const membershipChanged = hasMembership !== existing.account.hasMembership;
+
       const changed = changedFields(existing as Record<string, unknown>, fields);
       if (pan) changed.push("card");
       if (password) changed.push("account password");
       if (email !== existing.account.email) changed.push("account email");
+      if (membership && membershipChanged) changed.push(`${membership.short} membership`);
 
       // `fields` carries no name, so the existing one -- and its key -- are untouched.
       // Renaming is not offered at all; see the create branch for why.
@@ -310,7 +328,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         data: { ...fields, ...cardSecrets, updatedBy: viewer.discordUserId },
       });
 
-      if (password || email !== existing.account.email) {
+      if (password || email !== existing.account.email || membershipChanged) {
         await prisma.vaultAccount.update({
           where: { id: existing.accountId },
           data: {
@@ -318,6 +336,7 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
             ...(password
               ? { passwordEnc: encrypt(password, { entity: "vault_account", field: "password" }) }
               : {}),
+            ...(membershipChanged ? { hasMembership } : {}),
           },
         });
       }

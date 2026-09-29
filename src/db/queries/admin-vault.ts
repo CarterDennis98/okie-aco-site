@@ -352,6 +352,8 @@ export type AdminProfileRow = {
   mailbox: string | null;
   updatedAt: Date;
   onBackup: boolean;
+  /** The retailer's paid membership (Mattel's Red Line Club), per the member. See sites.ts. */
+  hasMembership: boolean;
 };
 
 function formatAddress(parts: (string | null)[]): string {
@@ -378,11 +380,16 @@ export async function getMemberVaultForAdmin(
   discordUserId: string,
   filter?: ProfileFilter,
   scope?: VaultScope,
-): Promise<{ rows: AdminProfileRow[]; total: number }> {
+): Promise<{
+  rows: AdminProfileRow[];
+  total: number;
+  /** Active profiles in the share, by the retailer's membership. See below. */
+  membership: { with: number; without: number };
+}> {
   const [profiles, coverage] = await Promise.all([
     prisma.vaultProfile.findMany({
       where: { siteKey, discordUserId },
-      include: { account: { select: { email: true, assigneeId: true } } },
+      include: { account: { select: { email: true, assigneeId: true, hasMembership: true } } },
     }),
     loadMailboxCoverage(discordUserId),
   ]);
@@ -423,6 +430,7 @@ export async function getMemberVaultForAdmin(
       mailbox: mailboxFor(coverage, p.account.email),
       updatedAt: p.updatedAt,
       onBackup: cap !== undefined && p.active && slot > cap,
+      hasMembership: p.account.hasMembership,
     };
   });
 
@@ -438,7 +446,15 @@ export async function getMemberVaultForAdmin(
       )
     : inScope;
 
-  return { rows: shown.map(({ row }) => row), total: inScope.length };
+  // What each half of a membership split holds for this member: ACTIVE rows in the share,
+  // counted before the search, because that is exactly what the export reads. Lets the page
+  // disable the half that would come out empty. See membership in sites.ts.
+  const membership = { with: 0, without: 0 };
+  for (const { row } of inScope) {
+    if (row.active) membership[row.hasMembership ? "with" : "without"] += 1;
+  }
+
+  return { rows: shown.map(({ row }) => row), total: inScope.length, membership };
 }
 
 export type AdminLoginRow = {

@@ -348,4 +348,24 @@ describe("planImport", () => {
     expect(result.creates[0].accountId).toBe("acc1");
     expect(result.creates[0].password).toBeNull();
   });
+
+  /**
+   * Mattel keeps its logins as emails only, and guest checkout has no login at all. The
+   * import used to demand a password for every new account regardless -- which blocked
+   * those profiles outright, or stored a credential nothing reads.
+   */
+  it("creates without a login where the retailer keeps no password", () => {
+    const result = plan({ passwords: new Map(), storesPassword: false });
+    expect(result.needPassword).toEqual([]);
+    expect(result.creates).toHaveLength(1);
+    expect(result.creates[0].password).toBeNull();
+  });
+
+  it("drops a password supplied anyway where none is kept", () => {
+    const accounts: ExistingAccount[] = [
+      { id: "acc1", email: "new@example.com", discordUserId: "111", profileId: "prof1" },
+    ];
+    expect(plan({ storesPassword: false }).creates[0].password).toBeNull();
+    expect(plan({ accounts, storesPassword: false }).updates[0].password).toBeNull();
+  });
 });

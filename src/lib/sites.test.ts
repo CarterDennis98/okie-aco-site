@@ -20,8 +20,10 @@ import {
   selfServeSiteKeys,
   supportedSites,
   siteBotGeneratesPhone,
+  siteMembership,
   siteRequiresPhone,
   siteStoresCardCvv,
+  siteStoresPassword,
   siteUsesAccounts,
   siteUsesProfiles,
 } from "@/lib/sites";
@@ -170,6 +172,69 @@ describe("siteUsesAccounts", () => {
 
   it("accepts the raw vendor spelling, not just the key", () => {
     expect(siteUsesAccounts("Pokemon Center US")).toBe(false);
+  });
+});
+
+describe("siteStoresPassword", () => {
+  /**
+   * Mattel has accounts, but chess's Valor needs only the email one is registered to --
+   * so the form asks for no password and the save action keeps none, while the account
+   * row (and the profile's 1:1 link to it) stays exactly as it is everywhere else.
+   */
+  it("is false where only the account's email is needed", () => {
+    expect(siteStoresPassword("mattel")).toBe(false);
+    expect(siteStoresPassword("Mattel Creations")).toBe(false);
+    // Still an account, not guest checkout: the form asks for the account's email.
+    expect(siteUsesAccounts("mattel")).toBe(true);
+  });
+
+  it("is false with no login at all", () => {
+    expect(siteStoresPassword("pokemon-center")).toBe(false);
+  });
+
+  it("is true wherever a bot signs in with the password", () => {
+    for (const key of [
+      "target",
+      "walmart",
+      "best-buy",
+      "sams-club",
+      "costco",
+      "crunchyroll",
+      "premium-bandai",
+      "topps",
+    ]) {
+      expect(siteStoresPassword(key), `${key} keeps its password`).toBe(true);
+    }
+  });
+
+  it("defaults to true for an unknown retailer", () => {
+    // Same direction as siteUsesAccounts: asking for a password that isn't needed beats
+    // silently not keeping one the bot signs in with.
+    expect(siteStoresPassword("some-new-store")).toBe(true);
+  });
+});
+
+describe("siteMembership", () => {
+  it("is Red Line Club on Mattel, under Valor's name for it too", () => {
+    expect(siteMembership("mattel")).toMatchObject({ name: "Red Line Club", short: "RLC" });
+    expect(siteMembership("Mattel Creations")?.short).toBe("RLC");
+  });
+
+  it("is absent everywhere else, which asks nothing and splits nothing", () => {
+    for (const key of supportedSites().map((s) => s.key)) {
+      if (key !== "mattel") expect(siteMembership(key), key).toBeNull();
+    }
+    expect(siteMembership("some-new-store")).toBeNull();
+  });
+
+  /**
+   * The split is of the PROFILE export -- a login-only retailer has no AYCD file to split,
+   * and no exported set its accounts would sort into.
+   */
+  it("only applies where there are profiles to split", () => {
+    for (const key of supportedSites().map((s) => s.key)) {
+      if (siteMembership(key)) expect(siteUsesProfiles(key), key).toBe(true);
+    }
   });
 });
 

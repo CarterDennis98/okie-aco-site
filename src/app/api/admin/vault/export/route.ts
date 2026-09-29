@@ -1,7 +1,13 @@
 import { prisma } from "@/db/client";
 import { EVERYONE, mayExport, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { requireAnyAdmin } from "@/lib/auth/guard";
-import { siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
+import {
+  siteMembership,
+  siteStoresPassword,
+  siteStyle,
+  siteUsesAccounts,
+  siteUsesProfiles,
+} from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { toAccountList, toAycdProfile } from "@/lib/vault/aycd";
 import { decrypt } from "@/lib/vault/crypto";
@@ -16,6 +22,8 @@ import { decrypt } from "@/lib/vault/crypto";
  *   /api/admin/vault/export?site=target&member=<id>      one member
  *   /api/admin/vault/export?site=target&member=<a>&member=<b>   several, one file
  *   /api/admin/vault/export?site=target&format=accounts  username:password list
+ *   /api/admin/vault/export?site=mattel&membership=with     only accounts with Red Line Club
+ *   /api/admin/vault/export?site=mattel&membership=without  only accounts without it
  *   /api/admin/vault/export?format=imap                  EVERY mailbox app password, CSV
  *   /api/admin/vault/export?format=imap&member=<id>      one member's, CSV
  *   /api/admin/vault/export?site=topps&format=imap       the mailboxes behind your share
@@ -58,6 +66,12 @@ import { decrypt } from "@/lib/vault/crypto";
  * bot runs. `bot=main` yields the first N active profiles per member, `bot=backup` the
  * rest, `bot=all` ignores the cap. Splitting here rather than by hand afterwards is the
  * point -- a mis-split file puts a member's profile on two bots at once.
+ *
+ * MEMBERSHIP SPLIT: a retailer with a paid membership its drops need (Mattel's Red Line
+ * Club) runs the accounts that have it and the ones that don't as separate sets, so
+ * `membership=with` / `membership=without` split its file in two, by what the member said
+ * on the profile form. Split here for the same reason as the bot split. Refused on a
+ * retailer with no membership to split by.
  *
  * Inactive profiles are never exported: a disabled profile is one the member asked not
  * to run.
@@ -105,11 +119,23 @@ export async function GET(request: Request) {
   ];
   const bot = (url.searchParams.get("bot") ?? "all") as BotScope;
   const format = url.searchParams.get("format") ?? "aycd";
+  // Null means both halves -- the retailer's whole file, as on any other retailer.
+  const membershipSplit = url.searchParams.get("membership");
 
   if (!["main", "backup", "all"].includes(bot))
     return new Response("Bad bot scope", { status: 400 });
   if (!["aycd", "accounts", "imap"].includes(format))
     return new Response("Bad format", { status: 400 });
+  if (membershipSplit !== null && membershipSplit !== "with" && membershipSplit !== "without")
+    return new Response("Bad membership split", { status: 400 });
+  // Refused rather than ignored: a file named "rlc" that held every profile would be
+  // loaded as the RLC set. See the membership split at the top.
+  const membership = siteMembership(siteKey);
+  if (membershipSplit !== null && !membership) {
+    return new Response(`${siteStyle(siteKey).label} has no membership to split by.`, {
+      status: 400,
+    });
+  }
   // Every format but `imap` is a list OF PROFILES on one retailer, so it cannot mean
   // anything without a site. App passwords can, and that is the form the UI uses.
   if (!siteKey && format !== "imap") return new Response("Missing site", { status: 400 });
@@ -129,6 +155,14 @@ export async function GET(request: Request) {
       {
         status: 400,
       },
+    );
+  }
+  // The same failure one step later: Mattel has logins, but we keep only their emails, so an
+  // `email:password` list would come out empty. The profile export carries the emails.
+  if (format === "accounts" && !siteStoresPassword(siteKey)) {
+    return new Response(
+      `We don't keep ${siteStyle(siteKey).label} passwords — the profile export carries each account's email.`,
+      { status: 400 },
     );
   }
   // Two reasons a retailer can be flagged that way -- guest checkout emails no code at
@@ -174,6 +208,10 @@ export async function GET(request: Request) {
   // member whose profiles sit with somebody else. A RUNNER's are never the exception -- their
   // file is the mailboxes behind their own profiles, and nothing else. See mayExport.
   const runnerFilter = assigneeId && (format !== "imap" || !viewer.isAdmin) ? { assigneeId } : {};
+  // One half of the retailer's accounts, when a split was asked for. Only on profiles: no
+  // login-only retailer has a membership to split by.
+  const membershipFilter =
+    membershipSplit === null ? {} : { hasMembership: membershipSplit === "with" };
 
   // Wrapped so the empty case can be typed as the same row array rather than `never[]`,
   // which nothing downstream could push into.
@@ -183,7 +221,7 @@ export async function GET(request: Request) {
         siteKey,
         active: true,
         ...(memberIds.length > 0 ? { discordUserId: { in: memberIds } } : {}),
-        account: runnerFilter,
+        account: { ...runnerFilter, ...membershipFilter },
       },
       include: { account: { select: { email: true, passwordEnc: true } } },
     });
@@ -370,9 +408,16 @@ export async function GET(request: Request) {
       : runner === EVERYONE
         ? "every-runner"
         : `runner-${runner}`;
+  // "rlc" / "no-rlc": the two Mattel files get loaded separately, so their names must say
+  // which half each one is.
+  const membershipLabel =
+    membershipSplit === null || !membership
+      ? null
+      : `${membershipSplit === "with" ? "" : "no-"}${membership.short.toLowerCase()}`;
   const suffix = [
     siteKey || (everyMailbox ? "all" : null),
     bot === "all" ? null : bot,
+    membershipLabel,
     runnerLabel,
     scopeLabel,
     stamp,

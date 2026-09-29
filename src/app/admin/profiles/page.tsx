@@ -15,7 +15,14 @@ import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { EVERYONE, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
 import { count, plural } from "@/lib/format";
-import { siteStoresCardCvv, siteStyle, siteUsesAccounts, siteUsesProfiles } from "@/lib/sites";
+import {
+  siteMembership,
+  siteStoresCardCvv,
+  siteStoresPassword,
+  siteStyle,
+  siteUsesAccounts,
+  siteUsesProfiles,
+} from "@/lib/sites";
 import {
   PROFILE_STATUSES,
   isProfileFilterActive,
@@ -141,6 +148,11 @@ export default async function AdminProfilesPage({
   // Guest checkout means no login and no emailed code. Every "account" and "app password"
   // control on this page is gated on these -- see the export row below.
   const usesAccounts = siteUsesAccounts(siteKey);
+  // Mattel has logins but we keep only their emails, so there is no user:pass file to offer
+  // -- the profile export carries the addresses. See storesPassword.
+  const storesPassword = siteStoresPassword(siteKey);
+  // Mattel's Red Line Club: the profile export splits on it. See membership in sites.ts.
+  const membership = siteMembership(siteKey);
   // App passwords are a FULL admin's: a mailbox serves every retailer its owner uses, so the
   // reveals and the IMAP links stay off for a runner even where the retailer reads codes.
   const usesEmailCodes = style.usesEmailCodes !== false && viewer.isAdmin;
@@ -167,7 +179,7 @@ export default async function AdminProfilesPage({
   const profiles =
     selected && usesProfiles
       ? await getMemberVaultForAdmin(siteKey, selected, filter, scope)
-      : { rows: [], total: 0 };
+      : { rows: [], total: 0, membership: { with: 0, without: 0 } };
   const logins =
     selected && !usesProfiles
       ? await getMemberLoginsForAdmin(siteKey, selected, filter, scope)
@@ -331,9 +343,24 @@ export default async function AdminProfilesPage({
             Export {whose} {style.label}:
           </span>
           {/* No AYCD file on a login-only retailer: there are no cards or addresses to put
-              in one, and the route refuses it rather than returning an empty array. */}
+              in one, and the route refuses it rather than returning an empty array.
+
+              Mattel splits by Red Line Club instead of by bot: the two halves are loaded
+              as separate sets, and between them they are the whole retailer. No retailer
+              has both a soft cap and a membership. */}
           {usesProfiles &&
-            (style.profileSoftCap !== undefined ? (
+            (membership ? (
+              <>
+                <ExportLink
+                  href={`${exportBase}&bot=all&membership=with`}
+                  label={`${membership.short} profiles (AYCD)`}
+                />
+                <ExportLink
+                  href={`${exportBase}&bot=all&membership=without`}
+                  label={`Non-${membership.short} profiles (AYCD)`}
+                />
+              </>
+            ) : style.profileSoftCap !== undefined ? (
               <>
                 <ExportLink
                   href={`${exportBase}&bot=main`}
@@ -344,11 +371,11 @@ export default async function AdminProfilesPage({
             ) : (
               <ExportLink href={`${exportBase}&bot=all`} label="Profiles (AYCD)" />
             ))}
-          {/* Meaningless on a guest-checkout retailer: Pokémon Center has no logins to list,
-              so the file came out empty and the button implied credentials that do not
-              exist. On a login-only retailer this is the ONLY export -- the file is the
-              whole record. */}
-          {usesAccounts && (
+          {/* Meaningless where no password is kept: Pokémon Center has no logins to list,
+              and Mattel's are emails only, so the file came out empty and the button implied
+              credentials that do not exist. On a login-only retailer this is the ONLY export
+              -- the file is the whole record. */}
+          {storesPassword && (
             <ExportLink href={`${exportBase}&format=accounts`} label="Accounts (user:pass)" />
           )}
           {runnerAppPasswords && (
@@ -480,13 +507,39 @@ export default async function AdminProfilesPage({
                     </span>
                   </h2>
                   <div className="flex flex-wrap gap-2">
-                    {usesProfiles && (
-                      <ExportLink
-                        href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all`}
-                        label="Export profiles"
-                      />
-                    )}
-                    {usesAccounts && (
+                    {/* Mattel's pair, like the site-wide row -- with the half this member
+                        has nothing active in greyed out rather than hidden, so which side
+                        they're missing reads at a glance. Counted from their active profiles
+                        in this share, not the search: that's what the file would hold. */}
+                    {usesProfiles &&
+                      (membership ? (
+                        <>
+                          <ExportLink
+                            href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all&membership=with`}
+                            label={`Export ${membership.short} profiles`}
+                            disabledReason={
+                              profiles.membership.with === 0
+                                ? `No active ${membership.short} profiles to export.`
+                                : undefined
+                            }
+                          />
+                          <ExportLink
+                            href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all&membership=without`}
+                            label={`Export non-${membership.short} profiles`}
+                            disabledReason={
+                              profiles.membership.without === 0
+                                ? `No active non-${membership.short} profiles to export.`
+                                : undefined
+                            }
+                          />
+                        </>
+                      ) : (
+                        <ExportLink
+                          href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all`}
+                          label="Export profiles"
+                        />
+                      ))}
+                    {storesPassword && (
                       <ExportLink
                         href={`${exportBase}&member=${selectedMember.discordUserId}&format=accounts`}
                         label="Export accounts"
@@ -606,6 +659,8 @@ export default async function AdminProfilesPage({
                               <span className="mt-1 flex flex-wrap gap-1">
                                 {!p.active && <Tag>disabled</Tag>}
                                 {p.onBackup && <Tag>backup bot</Tag>}
+                                {/* Which of the two exports it goes out in. */}
+                                {membership && p.hasMembership && <Tag>{membership.short}</Tag>}
                               </span>
                             </td>
                             <td className={cell}>
@@ -756,7 +811,32 @@ function Tag({
   );
 }
 
-function ExportLink({ href, label }: { href: string; label: string }) {
+/**
+ * A download, or -- given a reason -- a greyed-out stand-in that says why there is nothing
+ * to download. Disabled rather than dropped, so a pair of buttons keeps its shape and the
+ * missing half is visible as missing. The stand-in is an anchor with no href, which HTML
+ * defines as a placeholder where a link would otherwise be: nothing to follow or download.
+ */
+function ExportLink({
+  href,
+  label,
+  disabledReason,
+}: {
+  href: string;
+  label: string;
+  disabledReason?: string;
+}) {
+  if (disabledReason) {
+    return (
+      <a
+        aria-disabled="true"
+        title={disabledReason}
+        className="cursor-not-allowed rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-muted)] opacity-50"
+      >
+        {label}
+      </a>
+    );
+  }
   return (
     <a
       href={href}

@@ -154,6 +154,36 @@ export type SiteStyle = {
   usesAccounts?: boolean;
 
   /**
+   * Whether we keep the PASSWORD for a login here, or only the address it is registered to.
+   *
+   * Mattel is the one where the answer is no: chess's Valor needs the email a member's
+   * Mattel account is registered to and nothing more, so asking for the password would be
+   * collecting a credential nothing reads. The account row carries the email and the 1:1
+   * link exactly as a guest-checkout one does -- `passwordEnc` stays null -- but unlike
+   * Pokémon Center there IS an account behind it, and the form says so: it asks for the
+   * email on the member's account, not for "a checkout email".
+   *
+   * Defaults to true. Meaningless where `usesAccounts` is false -- with no login there is no
+   * password to keep, and `siteStoresPassword` answers false there on its own.
+   */
+  storesPassword?: boolean;
+
+  /**
+   * A paid membership the retailer gates its limited drops behind, on the accounts that
+   * have one.
+   *
+   * Mattel's Red Line Club: bought by the member from Mattel, never through us, and usually
+   * required for the drops worth running. Where this is set the profile form asks whether
+   * the account has it, and the profile export splits in two -- with it and without --
+   * because the two sets are loaded separately. Stored on the account; see
+   * VaultAccount.hasMembership.
+   *
+   * Unset everywhere else, which asks nothing and splits nothing. Only meaningful where
+   * there are profiles to split, which a test pins.
+   */
+  membership?: { name: string; short: string; hint: string };
+
+  /**
    * Whether we hold a full checkout profile here, or only a login.
    *
    * Costco is the first retailer where the answer is no, and the reason is how its bot
@@ -351,10 +381,20 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // No tile. 0.7% of the mark is below 3:1 on the dark surface and 12.5% on white -- all
     // of it the white wordmark, which reads against the red burst around it either way.
     //
-    // Valor calls the store "Mattel Creations", which siteKey folds into this key. Profiled
-    // like Crunchyroll: a login plus a full checkout profile, phone optional, no app
-    // password. It runs on chess's Valor, so a missing phone exports as Valor's "0".
+    // Valor calls the store "Mattel Creations", which siteKey folds into this key. A full
+    // checkout profile, phone optional, no app password -- and of the login, only its email:
+    // chess's Valor needs the address a member's account is registered to, never the
+    // password. See storesPassword. It runs on Valor, so a missing phone exports as "0".
+    //
+    // What does matter per account is Red Line Club, Mattel's paid membership: members
+    // with it and without it are exported, and loaded, as separate sets. See membership.
     usesEmailCodes: false,
+    storesPassword: false,
+    membership: {
+      name: "Red Line Club",
+      short: "RLC",
+      hint: "Bought separately from Mattel, and usually needed for the limited drops.",
+    },
     botGeneratesPhone: true,
     selfServe: true,
   },
@@ -403,6 +443,30 @@ export function isKnownSite(site: string | null | undefined): boolean {
  */
 export function siteUsesAccounts(site: string | null | undefined): boolean {
   return siteStyle(site).usesAccounts !== false;
+}
+
+/**
+ * Whether a login here keeps its password.
+ *
+ * Read by the profile form, the save action, the AYCD import and the accounts export --
+ * the form decides what to render, and the rest are what a crafted POST or a hand-typed
+ * URL has to get past. False on a guest-checkout retailer, which has no login at all, and
+ * on one where only the account's address is needed. See `storesPassword`.
+ */
+export function siteStoresPassword(site: string | null | undefined): boolean {
+  return siteUsesAccounts(site) && siteStyle(site).storesPassword !== false;
+}
+
+/**
+ * The membership this retailer gates its drops behind, or null when it has none.
+ *
+ * Read by the profile form and the save action, which ask for it, and by the admin page and
+ * the export, which split on it. See `membership`.
+ */
+export function siteMembership(
+  site: string | null | undefined,
+): { name: string; short: string; hint: string } | null {
+  return siteStyle(site).membership ?? null;
 }
 
 /**

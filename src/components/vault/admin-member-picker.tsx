@@ -5,7 +5,7 @@ import { useActionState, useState } from "react";
 import type { AdminMemberRow } from "@/db/queries/admin-vault";
 import type { RunnerOption } from "@/components/vault/runner-select";
 import { assignProfiles, type AssignResult } from "@/lib/vault/assign-actions";
-import type { SiteStyle } from "@/lib/sites";
+import { siteStoresPassword, type SiteStyle } from "@/lib/sites";
 
 /**
  * The member roster, with a checkbox per member for bulk export -- and, for a full admin,
@@ -143,8 +143,20 @@ export function AdminMemberPicker({
                   site-wide row above. Without one, "main" and "all" are the same file.
                   A login-only retailer has no profiles at all, so it gets neither -- see
                   usesProfiles in sites.ts. */}
+              {/* Mattel splits by Red Line Club rather than by bot, like the site-wide row. */}
               {style.usesProfiles !== false &&
-                (style.profileSoftCap !== undefined ? (
+                (style.membership ? (
+                  <>
+                    <BulkLink
+                      href={bulkHref(`bot=all&membership=with`)}
+                      label={`Profiles · ${style.membership.short}`}
+                    />
+                    <BulkLink
+                      href={bulkHref(`bot=all&membership=without`)}
+                      label={`Profiles · non-${style.membership.short}`}
+                    />
+                  </>
+                ) : style.profileSoftCap !== undefined ? (
                   <>
                     <BulkLink
                       href={bulkHref(`bot=main`)}
@@ -155,14 +167,15 @@ export function AdminMemberPicker({
                 ) : (
                   <BulkLink href={bulkHref(`bot=all`)} label="Profiles (AYCD)" />
                 ))}
-              {/* No logins on a guest-checkout retailer, so no file. Same gating as the
-                  site-wide row on the page.
+              {/* No passwords on a guest-checkout retailer, or on Mattel, whose logins we
+                  keep as emails only -- so no file. Same gating as the site-wide row on the
+                  page.
 
                   The app-password export used to sit beside this one, scoped to the
                   retailer. It moved to /admin/imap: a mailbox serves whichever retailers a
                   member happens to use, so splitting it per site produced overlapping files
                   and left the operator guessing which one was current. */}
-              {style.usesAccounts !== false && (
+              {siteStoresPassword(siteKey) && (
                 <BulkLink href={bulkHref(`format=accounts`)} label="Accounts" />
               )}
             </div>

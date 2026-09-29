@@ -4,7 +4,7 @@ import { useActionState, useState } from "react";
 import Image from "next/image";
 import type { VaultProfileDetail, VaultProfileSummary } from "@/db/queries/vault";
 import { relativeTime } from "@/lib/format";
-import { siteStyle } from "@/lib/sites";
+import { siteMembership, siteStyle } from "@/lib/sites";
 import {
   deleteProfiles,
   loadProfileForEdit,
@@ -153,6 +153,8 @@ function ProfileRow({
   selected: boolean;
   onSelect: (checked: boolean) => void;
 }) {
+  const membership = siteMembership(profile.siteKey);
+
   return (
     <li
       className={
@@ -226,6 +228,15 @@ function ProfileRow({
               label="Backup bot"
               detail="Past the main bot's profile cap for this retailer — still runs, just on the backup."
               className="inline-flex min-h-6 items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-muted)] uppercase"
+            />
+          )}
+          {/* What the member ticked on the form -- Red Line Club on Mattel -- so a profile
+              that should say so, and doesn't, is visible without opening it. */}
+          {membership && profile.hasMembership && (
+            <HintChip
+              label={membership.short}
+              detail={`You've marked this account as having ${membership.name}.`}
+              className="inline-flex min-h-6 items-center rounded-full bg-[var(--color-elevated)] px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase"
             />
           )}
           {/* A chip rather than a sentence per row: on real data almost half the Walmart

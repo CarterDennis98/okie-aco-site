@@ -523,6 +523,13 @@ model VaultAccount {
   // supplied", and `storesCardCvv` on the retailer is what says which of the two it is.
   cardCvvEnc String? @map("card_cvv_enc")
 
+  // Whether this retailer account carries a paid membership that the retailer gates its
+  // limited drops behind -- Mattel's Red Line Club today, which the member buys from Mattel,
+  // never through us. Asked for only where `membership` is set in sites.ts, and false
+  // everywhere else. It decides which of that retailer's two profile exports a profile goes
+  // out in: members with it and members without it are loaded as separate sets.
+  hasMembership Boolean @default(false) @map("has_membership")
+
   discordUserId String  @map("discord_user_id")
   active        Boolean @default(true)
   note          String?

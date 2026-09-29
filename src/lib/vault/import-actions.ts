@@ -5,7 +5,7 @@ import { prisma } from "@/db/client";
 import { defaultAssignee } from "@/db/queries/runners";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
-import { isKnownSite, siteStyle, siteUsesProfiles } from "@/lib/sites";
+import { isKnownSite, siteStoresPassword, siteStyle, siteUsesProfiles } from "@/lib/sites";
 import { recordBulkChange, type ChangeRecord } from "@/lib/vault/audit";
 import {
   parseAccountList,
@@ -30,7 +30,8 @@ import { profileIdentity } from "@/lib/vault/profile-input";
  *     when that name belongs to someone else would otherwise collide on (site, name).
  *   - Create an account without a retailer password. AYCD's profile export carries cards
  *     and addresses but no logins, so a genuinely new account needs one supplied, and a
- *     row without one is reported rather than half-written.
+ *     row without one is reported rather than half-written -- except where the retailer
+ *     keeps no password at all (Mattel, guest checkout), which neither asks nor stores.
  *   - Log or echo anything it decrypted or was handed. Failures name a profile, never a
  *     value.
  */
@@ -149,6 +150,7 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
     passwords,
     viewerDiscordId: viewer.discordUserId,
     viewerUsername: viewer.username,
+    storesPassword: siteStoresPassword(siteKey),
   });
   issues.push(...plan.issues);
 
@@ -197,10 +199,11 @@ export async function importAycdProfiles(form: FormData): Promise<ImportResult> 
         data: {
           siteKey,
           email: create.parsed.email,
-          passwordEnc: encrypt(create.password!, {
-            entity: "vault_account",
-            field: "password",
-          }),
+          // Null only where the retailer keeps no password at all (Mattel, guest checkout);
+          // everywhere else planImport has already held back any create without one.
+          passwordEnc: create.password
+            ? encrypt(create.password, { entity: "vault_account", field: "password" })
+            : null,
           discordUserId: viewer.discordUserId,
           assigneeId: newAssignee!,
         },
