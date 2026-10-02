@@ -85,6 +85,35 @@ describe("checkoutInput", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a Sniped checkout exactly as the mirror builds it", () => {
+    // The shape toPayload produces from a real Target success: the Store with Sniped's
+    // "(Checkout)" mode taken off, the TCIN as the SKU, no product URL (Sniped sends none),
+    // and the profile name alone -- the login email Sniped stacks under it in the same field
+    // never leaves the parser.
+    const result = checkoutBatch.safeParse({
+      checkouts: [
+        {
+          sourceBot: "sniped",
+          discordMessageId: "1555379159402938389",
+          discordChannelId: "1555363461192482856",
+          orderId: "912000000000001",
+          occurredAt: "2026-10-02T00:41:29.061Z",
+          site: "Target",
+          productRaw: "2026 Topps NFL Flagship Football Trading Card Value Box",
+          sku: "1012944733",
+          productUrl: null,
+          imageUrl: "https://images-ext-1.discordapp.net/external/abc/https/target.scene7.com/x",
+          profileRaw: "Target 11",
+          quantity: 2,
+          quantityAssumed: false,
+          flags: [],
+          rawEmbed: { title: "Successful Checkout!" },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
   const vendors = mirrorVendors();
   it.runIf(vendors.length > 0)("accepts every vendor the mirror has fixtures for", () => {
     const known = checkoutInput.shape.sourceBot;

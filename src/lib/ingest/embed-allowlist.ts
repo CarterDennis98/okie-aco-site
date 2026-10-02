@@ -25,6 +25,8 @@
 const ALLOWED_FIELDS = new Set([
   "site",
   "module",
+  // Sniped's name for the site, its mode in a bracket after it: "Target (Checkout)".
+  "store",
   "product",
   "item",
   "quantity",
@@ -97,6 +99,25 @@ function orderValue(value: unknown): unknown {
     .trim();
 }
 
+const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+
+/**
+ * A kept field's value with every line that holds an email address taken out.
+ *
+ * A field can be allowed by name and still carry a login: Sniped stacks the retailer
+ * account's address under the profile name inside its Profile field, each line spoilered
+ * on its own. The WHOLE line goes, not just the address -- whatever shares a line with a
+ * login's address is likelier to be the rest of that login than anything worth keeping.
+ */
+function withoutEmailLines(value: unknown): unknown {
+  if (typeof value !== "string" || !EMAIL.test(value)) return value;
+  return value
+    .split("\n")
+    .filter((line) => !EMAIL.test(line))
+    .join("\n")
+    .trim();
+}
+
 export type SanitizedEmbed = {
   /** Safe to store. Null when there was nothing usable. */
   embed: Record<string, unknown> | null;
@@ -140,8 +161,11 @@ export function sanitizeEmbed(raw: unknown): SanitizedEmbed {
       const field = entry as { name?: unknown; value?: unknown };
       if (typeof field.name !== "string") continue;
 
-      const value = isOrderField(field.name) ? orderValue(field.value) : field.value;
-      // An order field that was nothing but a link has nothing left worth storing.
+      const value = withoutEmailLines(
+        isOrderField(field.name) ? orderValue(field.value) : field.value,
+      );
+      // An order field that was nothing but a link, or any field that was nothing but an
+      // email address, has nothing left worth storing.
       if (isAllowed(field.name) && value !== "") {
         fields.push({ name: field.name, value });
       } else {

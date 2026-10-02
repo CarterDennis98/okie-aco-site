@@ -24,7 +24,16 @@ export const checkoutInput = z
      * one checkout from a vendor this list doesn't know stalls every checkout behind it --
      * every vendor, mid-drop. ingest.test.ts checks this list against the mirror's fixtures.
      */
-    sourceBot: z.enum(["valor", "shikari", "refract", "swft", "hidden", "stellar", "alpine"]),
+    sourceBot: z.enum([
+      "valor",
+      "shikari",
+      "refract",
+      "swft",
+      "hidden",
+      "stellar",
+      "alpine",
+      "sniped",
+    ]),
     discordMessageId: snowflake,
     discordChannelId: snowflake,
     /** Null for vendors that omit it, and for declines that never got one. */

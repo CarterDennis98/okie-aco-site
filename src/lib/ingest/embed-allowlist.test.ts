@@ -146,6 +146,59 @@ describe("sanitizeEmbed", () => {
     expect(droppedSensitive.sort()).toEqual(["Profile Email:", "Proxy:"]);
   });
 
+  it("keeps Sniped's Store, and its Profile without the login email stacked inside it", () => {
+    // Shaped like a real sniped.gg success, values replaced. Sniped puts the retailer login's
+    // address on a second line of the Profile field itself, each line spoilered on its own,
+    // so allowing "Profile" by name would store the address with it.
+    const { embed, dropped, droppedSensitive } = sanitizeEmbed({
+      title: "Successful Checkout!",
+      fields: [
+        { name: "Date", value: "<t:1759365689:f>" },
+        { name: "Store", value: "Target (Checkout)" },
+        { name: "Profile", value: "||Target 11||\n||buyer@example.com||" },
+        { name: "Product", value: "2026 Topps NFL Flagship Football Trading Card Value Box" },
+        { name: "SKU", value: "1012944733" },
+        { name: "Price", value: "$24.99" },
+        { name: "Quantity", value: "2" },
+        { name: "Proxy", value: "||1.2.3.4:8080:user:pass||" },
+        { name: "Order Number", value: "||912000000000001||" },
+        { name: "Status", value: "Still placed" },
+      ],
+    });
+    const fields = embed?.fields as { name: string; value: string }[];
+    expect(fields.map((f) => f.name)).toEqual([
+      "Store",
+      "Profile",
+      "Product",
+      "SKU",
+      "Price",
+      "Quantity",
+      "Order Number",
+    ]);
+    expect(fields.find((f) => f.name === "Profile")?.value).toBe("||Target 11||");
+    expect(JSON.stringify(embed)).not.toContain("buyer@example.com");
+    expect(dropped.sort()).toEqual(["Date", "Proxy", "Status"]);
+    expect(droppedSensitive).toEqual(["Proxy"]);
+  });
+
+  it("stores no email address from any field it keeps", () => {
+    // The whole line goes, not just the address: whatever shares a line with a login's
+    // address is likelier to be the rest of that login than anything worth keeping.
+    const { embed, dropped } = sanitizeEmbed({
+      fields: [
+        { name: "Profile", value: "carter - 3\nbuyer@example.com:hunter2" },
+        { name: "Product", value: "a thing" },
+        { name: "Site", value: "||buyer@example.com||" },
+      ],
+    });
+    expect(embed?.fields).toEqual([
+      { name: "Profile", value: "carter - 3" },
+      { name: "Product", value: "a thing" },
+    ]);
+    // A field that was nothing but an address has nothing left worth storing.
+    expect(dropped).toEqual(["Site"]);
+  });
+
   /**
    * Alpine links each Topps order to Shopify's order-status page with an
    * `authenticate?key=` token in the URL, which opens the order -- address and all -- for
@@ -245,6 +298,18 @@ describe("sanitizeEmbed", () => {
       for (const name of names) {
         expect(banned.test(name), `${vendor}/${kind} kept "${name}"`).toBe(false);
       }
+    }
+  });
+
+  it.runIf(embeds.length > 0)("keeps no email address anywhere in a real vendor embed", () => {
+    // A boolean, not a toMatch: a failure must not print the embed, address and all.
+    const email = /[^\s@"]+@[^\s@"]+\.[^\s@"]+/;
+    for (const { vendor, kind, embed } of embeds) {
+      const { embed: safe } = sanitizeEmbed(embed);
+      expect(
+        email.test(JSON.stringify(safe ?? {})),
+        `${vendor}/${kind} kept an email address`,
+      ).toBe(false);
     }
   });
 
