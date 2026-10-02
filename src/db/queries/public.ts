@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
+import { productLabel } from "@/lib/normalize";
 import { resolveSiteLogo } from "@/lib/site-logo";
 
 /**
@@ -148,7 +149,7 @@ export async function getPublicFeed(limit = 250): Promise<PublicCheckout[]> {
     site: row.site,
     siteLogo: resolveSiteLogo(row.site),
     quantity: row.quantity,
-    label: row.item?.label ?? row.productRaw ?? "an item",
+    label: productLabel(row.item?.label ?? row.productRaw ?? "an item"),
     // The item's image is canonical; the checkout's own is the fallback for rows
     // ingested before an item was matched.
     imageUrl: row.item?.imageUrl ?? row.imageUrl,
@@ -181,7 +182,7 @@ export async function getRangeStats(range: StatsRange): Promise<RangeStats> {
     where: { id: { in: grouped.map((g) => g.itemId!).filter(Boolean) } },
     select: { id: true, label: true, source: true, imageUrl: true },
   });
-  const byId = new Map(items.map((i) => [i.id, i]));
+  const byId = new Map(items.map((i) => [i.id, { ...i, label: productLabel(i.label) }]));
 
   const topProducts = grouped
     .map((g) => {
@@ -284,7 +285,7 @@ export async function getRecentDrops(range: StatsRange, limit = MAX_DROPS): Prom
     where: { id: { in: itemIds as string[] } },
     select: { id: true, label: true, source: true, imageUrl: true },
   });
-  const byId = new Map(items.map((i) => [i.id, i]));
+  const byId = new Map(items.map((i) => [i.id, { ...i, label: productLabel(i.label) }]));
 
   // One profile lookup for every drop, then the same identity rule per drop.
   const allKeys = wanted.flatMap(

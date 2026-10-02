@@ -18,6 +18,7 @@ import {
   normalizeProduct,
   normalizeProfile,
   parseQuantity,
+  productLabel,
 } from "./normalize";
 import { money, ogDiscountCents, safeLabel } from "./money";
 
@@ -39,6 +40,7 @@ type BotProfiles = {
 type BotScrape = {
   normalizeProfile: (raw: unknown) => unknown;
   normalizeProduct: (raw: unknown, aliases?: Record<string, string>) => unknown;
+  productLabel: (text: unknown) => string;
   parseQuantity: (raw: unknown) => unknown;
 };
 type BotRender = { money: (cents: number) => string; safeLabel: (label: string) => string };
@@ -77,12 +79,23 @@ describe("normalizeProfile", () => {
 
 describe("normalizeProduct", () => {
   it("preserves non-ASCII exactly", () => {
-    const label = "Pokémon Trading Card Game: First Partner Illustration Collection—Series 3";
-    const result = normalizeProduct(label);
-    expect(result.label).toBe(label);
-    expect(result.productKey).toBe(label.toLowerCase());
+    const raw = "Pokémon Trading Card Game: First Partner Illustration Collection—Series 3";
+    const result = normalizeProduct(raw);
+    expect(result.productKey).toBe(raw.toLowerCase());
     expect(result.productKey).toContain("é");
     expect(result.productKey).toContain("—");
+    // The label loses the phrase and keeps the em dash. See productLabel.
+    expect(result.label).toBe("First Partner Illustration Collection—Series 3");
+  });
+
+  it("tidies the label and never the key", () => {
+    // Valor on Pokémon Center: a markdown link, the store's id, and the phrase.
+    const raw =
+      "[(10-10425-120) Pokémon TCG: Mega Evolution-Pitch Black Booster Display Box (36 Packs)](https://www.pokemoncenter.com/product/10-10425-120)";
+    const result = normalizeProduct(raw);
+    expect(result.label).toBe("Mega Evolution-Pitch Black Booster Display Box (36 Packs)");
+    // Every fee, alias and item is keyed off this, so it must be exactly what it was.
+    expect(result.productKey).toBe(raw.toLowerCase());
   });
 
   it("flags a bare SKU as unreadable", () => {
@@ -103,6 +116,69 @@ describe("normalizeProduct", () => {
       label: "(no product listed)",
       unreadable: true,
     });
+  });
+});
+
+describe("productLabel", () => {
+  it("takes the name out of a markdown link", () => {
+    expect(
+      productLabel(
+        "[POKEMON ME5 PITCH BLACK ELITE TRAINER BOX](https://www.walmart.com/ip/seort/20161351456)",
+      ),
+    ).toBe("POKEMON ME5 PITCH BLACK ELITE TRAINER BOX");
+  });
+
+  it("drops a store id ahead of the name, Pokémon Center's or Best Buy's", () => {
+    expect(
+      productLabel("(10-10318-139) Pokémon TCG: Mega Evolution-Ascended Heroes Mini Tin (Riolu)"),
+    ).toBe("Mega Evolution-Ascended Heroes Mini Tin (Riolu)");
+    expect(
+      productLabel(
+        "[(6680138) Disney - Lorcana: Attack of the Vine! Sleeved Booster](https://www.bestbuy.com/site/-/6680138.p?skuId=6680138)",
+      ),
+    ).toBe("Disney - Lorcana: Attack of the Vine! Sleeved Booster");
+    // A bracketed count is part of the name, not an id.
+    expect(productLabel("(2 Pack) Booster Bundle")).toBe("(2 Pack) Booster Bundle");
+  });
+
+  it("drops the phrase in every spelling the vendors use", () => {
+    for (const raw of [
+      "Pokémon Trading Card Game: Mega Greninja ex Premium Collection",
+      "Pokémon Trading Card Game : Mega Greninja ex Premium Collection",
+      "Pokemon Trading Card Game Mega Greninja ex Premium Collection",
+      "Pokemon Trading Card Games  Mega Greninja ex Premium Collection",
+      "Pokémon TCG: Mega Greninja ex Premium Collection",
+      "POKEMON TCG - Mega Greninja ex Premium Collection",
+      "Poke\u0301mon TCG—Mega Greninja ex Premium Collection",
+    ]) {
+      expect(productLabel(raw), JSON.stringify(raw)).toBe("Mega Greninja ex Premium Collection");
+    }
+  });
+
+  it("keeps the phrase when it is most of the name", () => {
+    expect(productLabel("Pokémon Trading Card Game Classic")).toBe(
+      "Pokémon Trading Card Game Classic",
+    );
+    expect(productLabel("Pokémon TCG")).toBe("Pokémon TCG");
+  });
+
+  it("leaves everything else alone", () => {
+    for (const raw of [
+      "Pokémon 30th Anniversary Elite Trainer Box",
+      "One Piece Card Game: The Time of Battle Double Pack Set 1",
+      "Mega Evolution-Pitch Black Pokémon Center Elite Trainer Box",
+      "1012055696",
+    ]) {
+      expect(productLabel(raw)).toBe(raw);
+    }
+  });
+
+  it("is safe to run on a label twice", () => {
+    const once = productLabel(
+      "[(10-10451-115) Pokémon TCG: 30th Celebration Booster Bundle (6 Packs)](https://www.pokemoncenter.com/product/10-10451-115)",
+    );
+    expect(once).toBe("30th Celebration Booster Bundle (6 Packs)");
+    expect(productLabel(once)).toBe(once);
   });
 });
 
@@ -224,6 +300,15 @@ describe.skipIf(!botAvailable)("parity with okie-aco-mirror", () => {
     }
   });
 
+  it(`productLabel agrees on all ${products.size} real product names, raw and once-tidied`, () => {
+    // Twice over: the site also runs it on labels it READS, which may already be tidy.
+    for (const raw of products) {
+      expect(productLabel(raw), `label: ${JSON.stringify(raw)}`).toBe(bot.productLabel(raw));
+      const once = bot.productLabel(raw);
+      expect(productLabel(once), `label twice: ${JSON.stringify(raw)}`).toBe(once);
+    }
+  });
+
   it("normalizeProduct agrees when an alias applies", () => {
     const aliases = { "95120834": "Prismatic Evolutions Booster Bundle" };
     for (const raw of [...products, "95120834", "95120834 ", "  Mixed  Case  "]) {
@@ -317,6 +402,27 @@ describe.skipIf(!botAvailable)("parity with okie-aco-mirror", () => {
       "carter",
       "Target",
       "  ",
+      // What productLabel branches on: link markup, a bracketed store id, the phrase in its
+      // spellings, a decomposed é, and the dashes vendors put after it.
+      "[",
+      "]",
+      "(",
+      ")",
+      "](https://x.co/p/1)",
+      "(10-10425-120) ",
+      "(6673600)",
+      "Pokémon",
+      "Pokemon ",
+      "POKÉMON ",
+      "Poke\u0301mon ",
+      " TCG",
+      "TCG: ",
+      " Trading Card Game",
+      " Trading Card Games ",
+      "–",
+      "\u2010",
+      " : ",
+      "Booster Bundle",
     ];
 
     for (let i = 0; i < 5000; i++) {
@@ -330,6 +436,7 @@ describe.skipIf(!botAvailable)("parity with okie-aco-mirror", () => {
       expect(normalizeProduct(s), `product fuzz: ${JSON.stringify(s)}`).toEqual(
         bot.normalizeProduct(s),
       );
+      expect(productLabel(s), `productLabel fuzz: ${JSON.stringify(s)}`).toBe(bot.productLabel(s));
       expect(safeLabel(s), `safeLabel fuzz: ${JSON.stringify(s)}`).toBe(botRender.safeLabel(s));
       expect(parseQuantity(s), `quantity fuzz: ${JSON.stringify(s)}`).toEqual(bot.parseQuantity(s));
     }

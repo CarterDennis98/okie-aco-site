@@ -52,6 +52,44 @@ export function normalizeProfile(raw: string | null | undefined): NormalizedProf
   };
 }
 
+/**
+ * What a product is CALLED, as against what it is keyed by. Vendors wrap the name in noise a
+ * member should never see:
+ *
+ *   [(10-10425-120) Pokémon TCG: Mega Evolution-Pitch Black Booster Display Box (36 Packs)](https://www.pokemoncenter.com/product/10-10425-120)
+ *     -> Mega Evolution-Pitch Black Booster Display Box (36 Packs)
+ *
+ *   - a markdown link, from the vendors that link the product (Valor, Refract)
+ *   - Valor's retailer id in brackets ahead of the name: Pokémon Center's "10-10425-120",
+ *     Best Buy's "6673600"
+ *   - "Pokémon Trading Card Game" ahead of nearly every Pokémon product, in all its spellings:
+ *     "Pokemon TCG:", "Pokémon Trading Card Game :", "Pokemon Trading Card Games"
+ *
+ * DISPLAY ONLY. The product key is still built from the raw string, so every fee, alias and
+ * item already keyed off it keeps matching -- this changes what is read, never what joins.
+ *
+ * Also applied where labels are READ (the feed, the drop cards, charge lines), because items
+ * and bill lines stored before this existed carry the old text, and a curated label may
+ * still lead with the phrase. Safe to run twice; the parity suite checks both.
+ */
+const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(\s*https?:\/\/[^)\s]*\s*\)/g;
+const STORE_ID_PREFIX_RE = /^\(\s*(?:\d+(?:-\d+)+|\d{5,})\s*\)\s*/;
+const TCG_PREFIX_RE =
+  /^pok(?:é|e\u0301?)mon\s+(?:trading\s+card\s+games?|tcg)\b\s*[:\-\u2010-\u2015]?\s*/i;
+
+export function productLabel(text: string): string {
+  const unlinked = String(text)
+    .replace(MARKDOWN_LINK_RE, "$1")
+    .replace(/\*\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const named = unlinked.replace(STORE_ID_PREFIX_RE, "") || unlinked;
+  // Kept when it is most of the name: "Pokémon Trading Card Game Classic" is a product, and
+  // "Classic" is not.
+  const rest = named.replace(TCG_PREFIX_RE, "");
+  return rest.split(" ").length >= 2 ? rest : named;
+}
+
 export function normalizeProduct(
   raw: string | null | undefined,
   aliases: Record<string, string> = {},
@@ -63,12 +101,13 @@ export function normalizeProduct(
   const cleaned = String(raw).replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
 
   const alias = aliases[cleaned.toLowerCase()];
-  if (alias) return { productKey: alias.toLowerCase(), label: alias, unreadable: false };
+  if (alias)
+    return { productKey: alias.toLowerCase(), label: productLabel(alias), unreadable: false };
 
   // Bare SKUs (Swft) are meaningless to a member reading their bill
   const unreadable = /^\d{6,}$/.test(cleaned);
 
-  return { productKey: cleaned.toLowerCase(), label: cleaned, unreadable };
+  return { productKey: cleaned.toLowerCase(), label: productLabel(cleaned), unreadable };
 }
 
 export function parseQuantity(raw: string | number | null | undefined): {

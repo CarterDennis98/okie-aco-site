@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { billCoversSite } from "@/lib/billing/payees";
+import { productLabel } from "@/lib/normalize";
 import { resolveSiteLogo } from "@/lib/site-logo";
 
 /**
@@ -112,7 +113,7 @@ function toCheckout(row: CheckoutRow): DropCheckout {
     site: row.site,
     siteLogo: resolveSiteLogo(row.site),
     quantity: row.quantity,
-    label: row.item?.label ?? row.productRaw ?? "an item",
+    label: productLabel(row.item?.label ?? row.productRaw ?? "an item"),
     imageUrl: row.item?.imageUrl ?? row.imageUrl,
   };
 }

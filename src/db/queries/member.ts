@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { getMemberAcoCredit } from "@/db/queries/aco-credit";
+import { productLabel } from "@/lib/normalize";
 import { resolveSiteLogo } from "@/lib/site-logo";
 
 /**
@@ -195,7 +196,7 @@ export async function getMemberDashboard(discordUserId: string): Promise<MemberD
       site: row.site,
       siteLogo: resolveSiteLogo(row.site),
       quantity: row.quantity,
-      label: row.item?.label ?? row.productRaw ?? "an item",
+      label: productLabel(row.item?.label ?? row.productRaw ?? "an item"),
       imageUrl: row.item?.imageUrl ?? row.imageUrl,
       // Falls back to the joined row only for checkouts ingested before profileRaw was
       // recorded; those are the ones with nothing more precise to show.
@@ -320,7 +321,9 @@ export async function getMemberCharge(
     sites,
     lines: bill.lines.map((line) => ({
       id: line.id,
-      label: line.label,
+      // The stored label is left alone -- it is the record of what was billed -- and read
+      // through the same tidying as everything else. See productLabel.
+      label: productLabel(line.label),
       qty: line.qty,
       feeCents: line.feeCents,
       subtotalCents: line.subtotalCents,
