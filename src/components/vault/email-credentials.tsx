@@ -13,6 +13,7 @@ import {
   type ActionResult,
 } from "@/lib/vault/actions";
 import { TestButton } from "@/components/vault/imap-test-controls";
+import { PasswordInput } from "@/components/vault/password-input";
 
 /**
  * Email app passwords, for reading checkout verification codes over IMAP.
@@ -433,10 +434,10 @@ export function EmailCredentials({
             >
               App password
             </label>
-            <input
+            <PasswordInput
               id="appPassword"
               name="appPassword"
-              type="password"
+              noun="app password"
               required
               autoComplete="off"
               placeholder="xxxx xxxx xxxx xxxx"

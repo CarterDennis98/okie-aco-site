@@ -13,6 +13,7 @@ import {
 } from "@/lib/sites";
 import { POSTAL_CODE_RE } from "@/lib/vault/profile-input";
 import { randomFirstName, randomLastName, randomPhone } from "@/lib/vault/random-identity";
+import { PasswordInput } from "@/components/vault/password-input";
 
 /**
  * The server's ZIP rule, handed to the browser.
@@ -150,38 +151,55 @@ function Field({
         {text}
         {required && <span className="ml-0.5 text-[var(--color-brand)]">*</span>}
       </label>
-      <div className="relative">
-        <input
+      {type === "password" ? (
+        // The show / hide eye takes the trailing edge, so a password field never gets a die.
+        // Never prefilled either: the value is write-only, so there is nothing to put in it.
+        <PasswordInput
           id={name}
           name={name}
-          type={type}
-          {...(controlled
-            ? { value, onChange: (e) => onChange?.(e.currentTarget.value) }
-            : { defaultValue: defaultValue ?? "" })}
           placeholder={placeholder}
           maxLength={maxLength}
           required={required}
           pattern={pattern}
           title={patternTitle}
-          // Browsers and password managers should not be storing these for us.
           autoComplete="off"
-          className={field + (randomize ? " pr-11" : "")}
+          noun={text.toLowerCase()}
+          className={field}
         />
-        {randomize && (
-          // `title` is the hover tooltip and `aria-label` carries the same text, because a
-          // tooltip does not exist for a screen reader or on a touch screen. 44px wide and
-          // the full height of the field, so it is a real target on a phone.
-          <button
-            type="button"
-            onClick={randomize.onClick}
-            title={randomize.title}
-            aria-label={randomize.title}
-            className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)]"
-          >
-            <DieIcon />
-          </button>
-        )}
-      </div>
+      ) : (
+        <div className="relative">
+          <input
+            id={name}
+            name={name}
+            type={type}
+            {...(controlled
+              ? { value, onChange: (e) => onChange?.(e.currentTarget.value) }
+              : { defaultValue: defaultValue ?? "" })}
+            placeholder={placeholder}
+            maxLength={maxLength}
+            required={required}
+            pattern={pattern}
+            title={patternTitle}
+            // Browsers and password managers should not be storing these for us.
+            autoComplete="off"
+            className={field + (randomize ? " pr-11" : "")}
+          />
+          {randomize && (
+            // `title` is the hover tooltip and `aria-label` carries the same text, because a
+            // tooltip does not exist for a screen reader or on a touch screen. 44px wide and
+            // the full height of the field, so it is a real target on a phone.
+            <button
+              type="button"
+              onClick={randomize.onClick}
+              title={randomize.title}
+              aria-label={randomize.title}
+              className="absolute inset-y-0 right-0 flex w-11 items-center justify-center rounded-r-lg text-[var(--color-muted)] transition-colors hover:text-[var(--color-brand)]"
+            >
+              <DieIcon />
+            </button>
+          )}
+        </div>
+      )}
       {hint && <p className="mt-1 text-[11px] text-[var(--color-muted)]">{hint}</p>}
     </div>
   );

@@ -12,6 +12,7 @@ import {
   setLoginActive,
   type ActionResult,
 } from "@/lib/vault/actions";
+import { PasswordInput } from "@/components/vault/password-input";
 import { RevealAppPassword } from "@/components/vault/reveal-app-password";
 
 /**
@@ -109,10 +110,9 @@ function LoginForm({
             Password
             {!isEdit && <span className="ml-0.5 text-[var(--color-brand)]">*</span>}
           </label>
-          <input
+          <PasswordInput
             id="accountPassword"
             name="accountPassword"
-            type="password"
             placeholder={isEdit ? "•••••••• (unchanged)" : ""}
             required={!isEdit}
             // Browsers and password managers should not be storing these for us.
@@ -136,10 +136,10 @@ function LoginForm({
                   and for the same reason: a blank field on an edit means "keep it". */}
               {!isEdit && <span className="ml-0.5 text-[var(--color-brand)]">*</span>}
             </label>
-            <input
+            <PasswordInput
               id="cardCvv"
               name="cardCvv"
-              type="password"
+              noun="security code"
               inputMode="numeric"
               // 4 rather than 3: Amex codes are four digits, and there is no card number
               // here to tell us which kind this is. See isPlausibleCvv.
