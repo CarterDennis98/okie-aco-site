@@ -12,7 +12,7 @@ import { AdminMemberPicker } from "@/components/vault/admin-member-picker";
 import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
 import { RunnerSelect } from "@/components/vault/runner-select";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
-import { EVERYONE, vaultScopeFor } from "@/lib/auth/admin-scope";
+import { EVERYONE, operatorId, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
 import { count, plural } from "@/lib/format";
 import {
@@ -49,7 +49,7 @@ import { RevealAppPassword } from "@/components/vault/reveal-app-password";
  *
  * Card brand, last four, and expiry only -- never a card number or CVV. The one secret
  * readable here is an app password, behind an explicit reveal that writes a
- * `vault_reveals` row; everything else leaves only through the audited export.
+ * `vault_reveals` row; everything else leaves only through an audited export.
  *
  * APP PASSWORDS AS A WHOLE live on /admin/imap, not here. A mailbox belongs to a person
  * and routinely serves their accounts on three retailers at once, so managing them behind
@@ -269,6 +269,14 @@ export default async function AdminProfilesPage({
               IMAP
             </Link>
           )}
+          {viewer.discordUserId === operatorId() && (
+            <Link
+              href="/admin/export"
+              className="text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)]"
+            >
+              Export
+            </Link>
+          )}
         </div>
 
         <h1 className="mt-5 text-3xl font-black tracking-tight text-white">Profiles</h1>
@@ -310,6 +318,9 @@ export default async function AdminProfilesPage({
           extraParams={carried}
           viewerId={viewer.discordUserId}
           runnerNames={names}
+          // The queue as drawn now: "Confirm all" covers nothing that arrives after this.
+          seenAt={new Date().toISOString()}
+          runner={runnerParam ?? null}
         />
 
         {/* --- site picker --- */}

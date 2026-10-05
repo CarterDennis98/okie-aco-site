@@ -230,9 +230,12 @@ function address(parts: {
  *
  * Seeded by the profile id rather than drawn fresh, so the number holds still: a profile
  * exports with the same phone every time, and two exports of the same data are the same
- * file.
+ * file. Exported for the Shikari export, which must hand a profile the SAME number this
+ * file does -- otherwise one profile's phone would depend on which export loaded it.
  */
-function exportPhone(profile: ExportableProfile): string {
+export function exportPhone(
+  profile: Pick<ExportableProfile, "id" | "siteKey" | "phone" | "shipState">,
+): string {
   const stored = profile.phone?.trim() ?? "";
   if (siteBotGeneratesPhone(profile.siteKey)) return stored || BOT_SENTINEL_PHONE;
   if (stored && stored !== BOT_SENTINEL_PHONE) return stored;

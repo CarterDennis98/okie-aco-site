@@ -10,10 +10,13 @@ import {
 } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { toAccountList, toAycdProfile } from "@/lib/vault/aycd";
+import { profilesForBot, type BotScope } from "@/lib/vault/bot-split";
 import { decrypt } from "@/lib/vault/crypto";
 
 /**
- * Profile export — the ONLY place in the system that decrypts stored secrets.
+ * Profile export — one of the two audited exports that decrypt stored secrets. The other is
+ * the operator's Shikari export (lib/shikari/payload.ts), built the same way: scoped to a
+ * runner's share, split by the same bot rule, and recorded in `vault_exports` first.
  *
  *   /api/admin/vault/export?site=target                  your members, main bot
  *   /api/admin/vault/export?site=target&bot=backup       your members, past the cap
@@ -77,8 +80,6 @@ import { decrypt } from "@/lib/vault/crypto";
  * to run.
  */
 export const dynamic = "force-dynamic";
-
-type BotScope = "main" | "backup" | "all";
 
 /** Ceiling on `?member=` repeats. See the check in GET for why it refuses rather than trims. */
 const MAX_MEMBERS = 200;
@@ -260,7 +261,8 @@ export async function GET(request: Request) {
     ]);
   }
 
-  // Apply the soft cap PER MEMBER, in the same name order the UI shows.
+  // Apply the soft cap PER MEMBER, in the same name order the UI shows -- by the one rule
+  // the Shikari export shares. See bot-split.ts.
   const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
   const cap = siteStyle(siteKey).profileSoftCap;
   const byMember = new Map<string, typeof rows>();
@@ -271,18 +273,7 @@ export async function GET(request: Request) {
   }
 
   const selected: typeof rows = [];
-  for (const list of byMember.values()) {
-    list.sort((a, b) => collator.compare(a.name, b.name));
-    if (bot === "all" || cap === undefined) {
-      // No cap configured means the main bot runs everything; a backup export is empty.
-      if (bot === "backup" && cap === undefined) continue;
-      selected.push(...list);
-    } else if (bot === "main") {
-      selected.push(...list.slice(0, cap));
-    } else {
-      selected.push(...list.slice(cap));
-    }
-  }
+  for (const list of byMember.values()) selected.push(...profilesForBot(list, cap, bot));
   selected.sort((a, b) => collator.compare(a.name, b.name));
 
   // Mailboxes, not profiles. Ten accounts forwarding into one inbox need that inbox's

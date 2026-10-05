@@ -111,14 +111,15 @@ model DiscordMember {
   leftAt        DateTime? @map("left_at") @db.Timestamptz(3)
   syncedAt      DateTime  @default(now()) @map("synced_at") @db.Timestamptz(3)
 
-  user             User?
-  profiles         Profile[]
-  pasBills         PasBill[]
-  vaultAccounts    VaultAccount[]
-  vaultProfiles    VaultProfile[]
-  emailCredentials EmailCredential[]
-  emailAliases     EmailAlias[]
-  acoCredits       AcoCredit[]
+  user              User?
+  profiles          Profile[]
+  pasBills          PasBill[]
+  vaultAccounts     VaultAccount[]
+  vaultProfiles     VaultProfile[]
+  emailCredentials  EmailCredential[]
+  emailAliases      EmailAlias[]
+  acoCredits        AcoCredit[]
+  productSelections ProductSelection[]
 
   @@index([leftAt])
   @@map("discord_members")
@@ -419,15 +420,15 @@ model PasBill {
 // the operator's own fees: the bot never spends it on a bill owed to chess, peacemaker or
 // CrispHeinz, since that money was never the operator's to give away.
 model AcoCredit {
-  id            String @id @default(uuid())
-  discordUserId String @map("discord_user_id")
+  id            String   @id @default(uuid())
+  discordUserId String   @map("discord_user_id")
   // Positive to give, negative to take back. Never zero.
-  amountCents   Int    @map("amount_cents")
+  amountCents   Int      @map("amount_cents")
   // Why, as the operator typed it. Shown to the member beside their balance.
   note          String?
-  issuedBy      String @map("issued_by")
+  issuedBy      String   @map("issued_by")
   // Minted by the dialog when it opens, so a double-click or a retried POST is one grant.
-  requestKey    String @unique @map("request_key")
+  requestKey    String   @unique @map("request_key")
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   member DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
@@ -663,6 +664,10 @@ model VaultProfile {
   account VaultAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
   member  DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
 
+  // The products this profile was picked for by name, when its owner chose "only some
+  // profiles" rather than all of them. See ProductSelection.
+  productSelections ProductSelectionProfile[]
+
   @@unique([siteKey, name])
   @@index([discordUserId, siteKey])
   @@index([profileKey])
@@ -853,6 +858,130 @@ model VaultReveal {
   @@index([at(sort: Desc)])
   @@index([ownerDiscordId])
   @@map("vault_reveals")
+}
+
+// ---------------------------------------------------------------------------
+// Drop products, and who wants to be run for them
+// ---------------------------------------------------------------------------
+// Replaces the ✅ reactions on the Target drops channel (the bot's /reacts): the operator
+// lists the products a drop will run for, and each member says which ones they want --
+// for every profile they hold there, or only for the ones they pick. What goes out to the
+// bot is built from these rows, so a member who switches a product off before the export
+// is never run for it.
+//
+// OPT-IN, like the reactions were. A member with no row for a product is not run for it:
+// every checkout here is a fee, and nobody should be billed for something they never asked
+// for because they didn't open the page.
+
+model DropProduct {
+  id      String @id @default(uuid())
+  // The retailer it runs on. Only Target today, but the key keeps a second retailer from
+  // needing a second table.
+  siteKey String @map("site_key")
+
+  // What groups it on the page, e.g. "Mega Evolution — Phantasmal Flames". Free text: a set
+  // is just the products that share one, so there is nothing to create first.
+  setName String @map("set_name")
+  name    String
+  url     String
+  // The retailer's own product id -- Target's TCIN. What the bot's tasks actually watch.
+  sku     String
+
+  // Retail price, shown to members deciding what they want. Never a fee: fees live on Item.
+  priceCents Int?    @map("price_cents")
+  imageUrl   String? @map("image_url")
+
+  // Where it sits in its set on the page, lowest first -- the order an admin arranges in the
+  // set editor. A product added later goes to the end of its set. Display only: exports
+  // watch products in the order they were added (see getCatalog).
+  sortOrder Int @default(0) @map("sort_order")
+
+  // Retired, not deleted: a drop that has passed leaves the page and stops going out to the
+  // bot, while the choices members made stay on file in case it comes back. Deleting a whole
+  // set, picks and all, is the set editor's.
+  active Boolean @default(true)
+
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  selections ProductSelection[]
+
+  // One entry per product: a second row for the same TCIN would run every member on it twice.
+  @@unique([siteKey, sku])
+  @@index([siteKey, active])
+  @@map("drop_products")
+}
+
+// Where a set sits on Target Products, as an admin arranged the sets. A set is only the
+// products that share a name (DropProduct.setName), so this is a position kept against that
+// name: a set with no row here hasn't been placed yet -- it's new -- and shows above the
+// placed ones. Renaming a set carries its row along; deleting the set deletes it.
+model DropSet {
+  id        String   @id @default(uuid())
+  siteKey   String   @map("site_key")
+  name      String
+  sortOrder Int      @map("sort_order")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([siteKey, name])
+  @@map("drop_sets")
+}
+
+// "Run me for this." One row per member per product; its absence means no.
+model ProductSelection {
+  id            String @id @default(uuid())
+  productId     String @map("product_id")
+  discordUserId String @map("discord_user_id")
+
+  // True: every profile the member holds on the retailer, INCLUDING ones added later -- the
+  // default, and what a ✅ always meant. False: only the profiles listed beneath it.
+  allProfiles Boolean @default(true) @map("all_profiles")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  product  DropProduct               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  member   DiscordMember             @relation(fields: [discordUserId], references: [discordUserId])
+  profiles ProductSelectionProfile[]
+
+  @@unique([productId, discordUserId])
+  @@index([discordUserId])
+  @@map("product_selections")
+}
+
+// The profiles a selection is narrowed to, when it isn't all of them. Deleting a profile
+// deletes its picks with it, so a narrowed selection never points at a profile that's gone.
+model ProductSelectionProfile {
+  selectionId String @map("selection_id")
+  profileId   String @map("profile_id")
+
+  selection ProductSelection @relation(fields: [selectionId], references: [id], onDelete: Cascade)
+  profile   VaultProfile     @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([selectionId, profileId])
+  @@index([profileId])
+  @@map("product_selection_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Shikari quick export
+// ---------------------------------------------------------------------------
+// How each of the operator's Shikari instances is set up -- whose profiles it runs and
+// which parts of its backup the export rewrites -- so a drop's export starts from last
+// time's choices rather than from nothing. One row per instance, "Instance 1" first.
+//
+// The backup itself is never stored, here or anywhere: it is read and rebuilt in the
+// operator's browser, and only the instance's settings come back to the server.
+model ShikariInstance {
+  position  Int      @id
+  // Validated by shikariInstanceConfig (lib/shikari/config.ts) on the way in AND out: a
+  // JSON column takes anything, and a stale shape must fall back to defaults, not crash.
+  config    Json
+  updatedBy String   @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("shikari_instances")
 }
 
 // Lets the one-time history backfill resume after a crash instead of restarting.

@@ -30,8 +30,8 @@ import {
  * Callers MUST have passed `requireAdmin()` first -- nothing here re-checks, because a
  * query module that quietly enforced authorization would make it tempting to skip the
  * guard on the page. Same split as the member queries: reads never decrypt, and the
- * `*_enc` columns are not selected at all. The only decryption in the system is the
- * export route.
+ * `*_enc` columns are not selected at all. Decryption happens only behind an audit row: the
+ * two exports (the export route and lib/shikari/payload.ts) and the app-password reveal.
  *
  * The exceptions are the reads the profiles page makes, which also serve a RUNNER behind
  * `requireAnyAdmin()`: those take a `VaultScope` from `vaultScopeFor` and MUST be given it
@@ -922,6 +922,29 @@ export type PendingChangeRow = {
  * retailer -- and those are grouped under their own bucket rather than dropped.
  */
 export type PendingChangeGroup = { siteKey: string | null; siteLabel: string; count: number };
+
+/**
+ * The pending changes in ONE bucket of a scope's queue, made no later than `seenAt` -- what
+ * a tab's "Confirm all" may confirm.
+ *
+ * Built from the same `changesIn` the queue is, so the button can never reach a change its
+ * tab didn't list; and cut off at the moment the page was drawn, so a change that arrived
+ * while the operator was reading is not confirmed unseen.
+ */
+export function pendingInBucket(
+  scope: VaultScope | undefined,
+  bucket: string,
+  seenAt: Date,
+): Prisma.VaultChangeWhereInput {
+  return {
+    AND: [
+      { appliedAt: null },
+      changesIn(scope),
+      bucket === EMAIL_BUCKET ? { siteKey: null } : { siteKey: bucket },
+      { at: { lte: seenAt } },
+    ],
+  };
+}
 
 /**
  * Just the number, for the nav badge. Cheap enough to call on every admin page.

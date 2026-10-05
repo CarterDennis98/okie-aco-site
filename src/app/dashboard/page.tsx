@@ -12,7 +12,7 @@ import { otherPayee, payHint } from "@/lib/billing/payees";
 import { count, plural } from "@/lib/format";
 import { money } from "@/lib/money";
 import { signOutOfSite } from "@/lib/auth/actions";
-import { hasAdminArea, vaultScopeFor } from "@/lib/auth/admin-scope";
+import { hasAdminArea, operatorId, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { chargeScopeOf, requireMember } from "@/lib/auth/guard";
 
 // Never a build-time artifact and never cached: this is one member's private data.
@@ -101,12 +101,22 @@ export default async function DashboardPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* Wraps rather than overflowing: the operator's row is seven links long, and on a
+              phone it would otherwise push "Sign out" off the screen. */}
+          <div className="flex flex-wrap items-center gap-2">
             <Link
               href="/dashboard/profiles"
               className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
             >
               Profiles
+            </Link>
+            {/* Target Products: which ones to be run for. Every member's. "SKUs" here, to keep
+                a long row of links short. */}
+            <Link
+              href="/dashboard/products"
+              className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
+            >
+              SKUs
             </Link>
             {showAdmin && (
               <>
@@ -158,6 +168,16 @@ export default async function DashboardPage() {
                     className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
                   >
                     IMAP
+                  </Link>
+                )}
+                {/* Quick exports load the operator's own bots, so the tab is theirs alone --
+                    and the page 404s for anyone else, whatever the link does. */}
+                {viewer.discordUserId === operatorId() && (
+                  <Link
+                    href="/admin/export"
+                    className="inline-flex min-h-11 items-center rounded-lg px-3 py-2 text-sm font-medium text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-fg)] sm:min-h-0"
+                  >
+                    Export
                   </Link>
                 )}
               </>

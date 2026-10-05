@@ -1,5 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 # Shell scripts must keep LF endings: a CRLF shebang makes the kernel look
-# for an interpreter literally named "bash".
+# for an interpreter literally named "bash".
 *.sh text eol=lf
+# The vendored SQLite build the Shikari export runs in the browser. Auto-detection would
+# almost certainly call it binary anyway, but one CRLF "fix" corrupts it silently.
+*.wasm binary

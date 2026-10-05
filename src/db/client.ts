@@ -1,7 +1,7 @@
 import "server-only";
 
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/generated/prisma/client";
+import { Prisma, PrismaClient } from "@/generated/prisma/client";
 
 // Prisma 7 dropped the Rust query engine; a driver adapter is now required and
 // `new PrismaClient()` with no arguments is a compile error. Pool settings live on
@@ -53,8 +53,29 @@ function buildAdapter() {
 
 // Next's dev server re-evaluates modules on every edit; without this each reload
 // would open another pool and exhaust Postgres within a few saves.
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+//
+// Kept with the schema it was generated from. After a schema change and `prisma generate`,
+// a client cached from before doesn't know the new tables or columns, and every query that
+// touches them fails until the dev server restarts -- so one from another generation isn't
+// reused. Compared by content (every model's fields), not by class, because the dev server
+// can hold more than one copy of the generated module at once, and they must share. The old
+// client is left open rather than closed, for the same reason: one idle pool, in dev only.
+const generation = JSON.stringify(
+  Object.entries(Prisma)
+    .filter(([name]) => name.endsWith("ScalarFieldEnum"))
+    .sort(([a], [b]) => a.localeCompare(b)),
+);
 
-export const prisma = globalForPrisma.prisma ?? new PrismaClient({ adapter: buildAdapter() });
+const globalForPrisma = globalThis as unknown as {
+  prisma?: PrismaClient;
+  prismaGeneration?: string;
+};
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+export const prisma =
+  (globalForPrisma.prismaGeneration === generation ? globalForPrisma.prisma : undefined) ??
+  new PrismaClient({ adapter: buildAdapter() });
+
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+  globalForPrisma.prismaGeneration = generation;
+}

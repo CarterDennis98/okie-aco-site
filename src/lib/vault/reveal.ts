@@ -8,9 +8,10 @@ import { decrypt } from "@/lib/vault/crypto";
  * Showing a stored app password on screen.
  *
  * The vault is otherwise write-only: secrets go in, and the only way plaintext comes
- * back out is the audited export. A reveal is the second such door, so it is built like
- * the first one -- the audit row is written BEFORE anything is decrypted, so a crash
- * mid-request still leaves the record that someone asked.
+ * back out is an audited export -- the AYCD route, or the operator's Shikari export. A
+ * reveal is the other kind of door, so it is built like them -- the audit row is written
+ * BEFORE anything is decrypted, so a crash mid-request still leaves the record that
+ * someone asked.
  *
  * Only app passwords are revealable. Card numbers and CVVs deliberately are not: an app
  * password is provider-issued, scoped to one application, and revocable in a click,

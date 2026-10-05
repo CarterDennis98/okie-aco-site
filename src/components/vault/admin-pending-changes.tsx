@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState } from "react";
+import { useActionState, useEffect, useState, useTransition } from "react";
 import type { PendingChangeGroup, PendingChangeRow } from "@/db/queries/admin-vault";
 import { CHANGE_FILTER_PARAM, EMAIL_BUCKET } from "@/lib/vault/pending-filter";
 import { relativeTime } from "@/lib/format";
-import { markChangesApplied } from "@/lib/vault/site-admin-actions";
+import { confirmAllPendingChanges, markChangesApplied } from "@/lib/vault/site-admin-actions";
 
 /**
  * Edits members have made that nobody has confirmed yet.
@@ -16,10 +16,12 @@ import { markChangesApplied } from "@/lib/vault/site-admin-actions";
  * green tick, which is the whole reason the queue exists -- people were asking in the channel
  * whether their new card had taken effect.
  *
- * ONE ROW AT A TIME, and no bulk control anywhere. Confirming is a claim that a specific
- * edit is live; a single mis-click on a "confirm everything" button would tell every member
- * their changes had landed when nothing had been loaded, and the column never unsets so
- * there is no undo. The same rule is enforced in markChangesApplied rather than only here.
+ * ONE ROW AT A TIME by default. Confirming is a claim that a specific edit is live, and the
+ * column never unsets, so there is no undo. The exception is "Confirm all" on ONE
+ * retailer's tab, for after its whole export is loaded -- and it takes two clicks, the
+ * second deliberately slower than a double-click, so a stray one never confirms a queue.
+ * Never on "All": a bot is loaded one retailer at a time, and so is confirmed one at a time.
+ * The server holds the same line -- see confirmAllPendingChanges.
  *
  * The retailer chips FILTER the queue rather than acting on it -- same shape and behaviour
  * as the charges page's filter tabs. They live in the URL, so a filtered queue can be linked
@@ -144,6 +146,94 @@ function ConfirmButton({ changeIds, label = "Confirm" }: { changeIds: string[]; 
   );
 }
 
+/** How long the armed state waits for the second click, and how soon it may come. */
+const ARMED_MS = 6000;
+const DOUBLE_CLICK_MS = 400;
+
+/**
+ * "Confirm all N" for one tab. The first click only arms it -- it turns amber and says what a
+ * second click will do -- and a second click inside a few seconds confirms. A second click
+ * faster than a double-click is ignored: two clicks in one gesture are one click.
+ */
+function ConfirmAllButton({
+  bucket,
+  label,
+  count,
+  seenAt,
+  runner,
+}: {
+  bucket: string;
+  label: string;
+  count: number;
+  seenAt: string;
+  runner: string | null;
+}) {
+  const [armedAt, setArmedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  useEffect(() => {
+    if (armedAt === null) return;
+    const timer = setTimeout(() => setArmedAt(null), ARMED_MS);
+    return () => clearTimeout(timer);
+  }, [armedAt]);
+
+  function click() {
+    const now = Date.now();
+    if (armedAt === null) {
+      setError(null);
+      setArmedAt(now);
+      return;
+    }
+    if (now - armedAt < DOUBLE_CLICK_MS) return;
+    setArmedAt(null);
+    const form = new FormData();
+    form.set("bucket", bucket);
+    form.set("seenAt", seenAt);
+    form.set("expected", String(count));
+    if (runner) form.set("runner", runner);
+    startTransition(async () => {
+      const result = await confirmAllPendingChanges(form);
+      if (!result.ok) setError(result.error);
+    });
+  }
+
+  const armed = armedAt !== null;
+  return (
+    <span className="ml-auto inline-flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={click}
+        // Leaving the button disarms it: an armed button left behind is a trap for later.
+        onBlur={() => setArmedAt(null)}
+        onKeyDown={(event) => event.key === "Escape" && setArmedAt(null)}
+        disabled={pending}
+        aria-describedby={armed ? `${bucket}-confirm-all-hint` : undefined}
+        className={
+          "inline-flex min-h-11 items-center rounded-lg border px-3 text-xs font-semibold transition-colors disabled:opacity-60 sm:min-h-0 sm:py-1 " +
+          (armed
+            ? "border-[var(--color-warn)] bg-[var(--color-warn)]/15 text-[var(--color-warn)]"
+            : "border-[var(--color-edge)] text-[var(--color-fg)] hover:border-[var(--color-brand)]/50")
+        }
+      >
+        {pending
+          ? "Confirming…"
+          : armed
+            ? `Click again to confirm all ${count}`
+            : `Confirm all ${count} ${label} change${count === 1 ? "" : "s"}`}
+      </button>
+      <span id={`${bucket}-confirm-all-hint`} role="status" className="sr-only">
+        {armed ? `Click again to confirm all ${count} ${label} changes. There is no undo.` : ""}
+      </span>
+      {error && (
+        <span role="alert" className="text-[11px] text-[var(--color-warn)]">
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function AdminPendingChanges({
   rows,
   groups,
@@ -155,6 +245,8 @@ export function AdminPendingChanges({
   extraParams,
   viewerId,
   runnerNames,
+  seenAt,
+  runner,
 }: {
   rows: PendingChangeRow[];
   groups: PendingChangeGroup[];
@@ -189,6 +281,10 @@ export function AdminPendingChanges({
   viewerId: string;
   /** Runner id -> name, for the changes that belong on somebody else's bot. */
   runnerNames: Record<string, string>;
+  /** When the page was drawn: "Confirm all" covers nothing made after it. ISO, to cross the boundary. */
+  seenAt: string;
+  /** Whose queue a full admin has open (`?runner=`), so "Confirm all" covers that same one. */
+  runner: string | null;
 }) {
   const hrefFor = (bucket: string | null) => {
     const params = new URLSearchParams({ site: siteKey });
@@ -197,6 +293,23 @@ export function AdminPendingChanges({
     if (bucket) params.set(CHANGE_FILTER_PARAM, bucket);
     return `/admin/profiles?${params.toString()}`;
   };
+
+  // "Confirm all" belongs to ONE bucket: the tab that is open, or the only one there is when
+  // there are no tabs. On "All" there is nothing to offer -- pick the retailer you loaded.
+  const bucket = active ?? (groups.length === 1 ? (groups[0].siteKey ?? EMAIL_BUCKET) : null);
+  const bucketGroup = groups.find((g) => (g.siteKey ?? EMAIL_BUCKET) === bucket);
+  const confirmAll =
+    bucket && bucketGroup ? (
+      <ConfirmAllButton
+        // Remounted when the count moves, so a confirm that landed leaves nothing armed.
+        key={`${bucket}-${bucketGroup.count}`}
+        bucket={bucket}
+        label={bucketGroup.siteLabel}
+        count={bucketGroup.count}
+        seenAt={seenAt}
+        runner={runner}
+      />
+    ) : null;
 
   if (total === 0) {
     return (
@@ -217,28 +330,32 @@ export function AdminPendingChanges({
 
       <p className="mt-1 text-[11px] text-[var(--color-muted)]">
         Confirming turns the member&rsquo;s &ldquo;pending confirmation&rdquo; tag into a green
-        tick. Do it after you have loaded the export, not before — one row at a time, and there is
-        no undo.
+        tick. Do it after you have loaded the export, not before — row by row, or a whole
+        retailer&rsquo;s tab with Confirm all. There is no undo.
       </p>
 
-      {/* Filter tabs, not bulk actions. The counts are unfiltered on purpose: a tab that
-          renumbered itself depending on which tab was open would be unreadable. Only shown
-          when there is more than one bucket -- a single tab filters nothing. */}
-      {groups.length > 1 && (
+      {/* Filter tabs, plus the open tab's "Confirm all". The counts are unfiltered on purpose:
+          a tab that renumbered itself depending on which tab was open would be unreadable.
+          Tabs only when there is more than one bucket -- a single tab filters nothing. */}
+      {(groups.length > 1 || confirmAll) && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <FilterTab href={hrefFor(null)} label="All" count={total} active={active === null} />
-          {groups.map((group) => {
-            const bucket = group.siteKey ?? EMAIL_BUCKET;
-            return (
-              <FilterTab
-                key={bucket}
-                href={hrefFor(bucket)}
-                label={group.siteLabel}
-                count={group.count}
-                active={active === bucket}
-              />
-            );
-          })}
+          {groups.length > 1 && (
+            <FilterTab href={hrefFor(null)} label="All" count={total} active={active === null} />
+          )}
+          {groups.length > 1 &&
+            groups.map((group) => {
+              const key = group.siteKey ?? EMAIL_BUCKET;
+              return (
+                <FilterTab
+                  key={key}
+                  href={hrefFor(key)}
+                  label={group.siteLabel}
+                  count={group.count}
+                  active={active === key}
+                />
+              );
+            })}
+          {confirmAll}
         </div>
       )}
 

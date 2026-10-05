@@ -12,8 +12,8 @@ import { nextProfileName, profileBaseFor } from "@/lib/vault/profile-input";
  *
  * **Nothing here decrypts.** Every field returned is a clear column -- brand, last 4,
  * expiry, email, address. The `*_enc` columns are not selected at all, so no page that
- * renders this data can leak a secret even by accident. Decryption happens in exactly
- * one place: the audited export.
+ * renders this data can leak a secret even by accident. Decryption happens only behind an
+ * audit row: the two exports, and the app-password reveal.
  *
  * Same ownership rule as the rest of the dashboard: `discordUserId` is a required first
  * argument, sourced only from `requireMember()`, and every lookup by id carries both
