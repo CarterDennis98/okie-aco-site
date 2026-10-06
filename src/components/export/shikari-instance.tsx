@@ -665,8 +665,8 @@ function MemberList({
 }
 
 /**
- * "3333, 4444, 5555": one watchdog per number, in each list. Typed freely and read when the
- * field is left -- read on every keystroke, the comma before the next number would vanish.
+ * "3333, 4444": one watchdog per number, in each list. Typed freely and read when the field
+ * is left -- read on every keystroke, the comma before the next number would vanish.
  */
 function IntervalsInput({
   intervals,
@@ -737,8 +737,8 @@ function TaskSettingsForm({
       <summary className="cursor-pointer text-sm font-bold text-white">
         Task settings{" "}
         <span className="text-xs font-normal text-[var(--color-muted)]">
-          — as this backup has them: qty {settings.checkoutQty}, {settings.watchdogIntervals.length}{" "}
-          watchdogs per {settings.skusPerWatchdog} products, {settings.remoteWatchdogs} remote
+          — qty {settings.checkoutQty}, {settings.watchdogIntervals.length} watchdogs per{" "}
+          {settings.skusPerWatchdog} products, {settings.remoteWatchdogs} remote
         </span>
       </summary>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

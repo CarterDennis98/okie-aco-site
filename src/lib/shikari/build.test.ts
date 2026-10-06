@@ -8,7 +8,9 @@
  *   - what changes is updated where it stands -- ids survive, so do sessions, browsers and
  *     sticky proxies -- and nothing that isn't Target is touched;
  *   - every profile is sorted into new, activated, updated, deactivated or removed, with why;
- *   - watchdogs split at 30 products, three per list, plus the remote one;
+ *   - watchdogs split at 30 products, two per list, plus the remote one;
+ *   - the Target group reads in order -- watchdogs first, then each member's tasks together --
+ *     however the edits in place left its ids;
  *   - a swapped proxy list keeps its ids and re-pins what lost its proxy;
  *   - wipes are copied from the backup's own Wipe Account task, or built in Shikari's shape.
  */
@@ -108,11 +110,12 @@ describe("buildInstance", () => {
       address: { added: 0, removed: 2, changed: 0 },
       credit_card: { added: 0, removed: 2, changed: 0 },
       account: { added: 0, removed: 3, changed: 0 },
-      // stranger's checkout task and alice's old wipe, with their browsers and cookie jars.
-      task: { added: 0, removed: 2, changed: 0 },
-      browser: { added: 0, removed: 2, changed: 0 },
-      cookie_jar: { added: 0, removed: 2, changed: 0 },
-      target_product: { added: 0, removed: 1, changed: 0 },
+      // stranger's checkout task, alice's old wipe and the 5555 watchdog, with their browsers
+      // and cookie jars, and the products stranger's task and the watchdog had.
+      task: { added: 0, removed: 3, changed: 0 },
+      browser: { added: 0, removed: 3, changed: 0 },
+      cookie_jar: { added: 0, removed: 3, changed: 0 },
+      target_product: { added: 0, removed: 3, changed: 0 },
       task_group: { added: 0, removed: 1, changed: 0 },
       profile_group: { added: 0, removed: 1, changed: 0 },
     });
@@ -137,7 +140,7 @@ describe("buildInstance", () => {
     expect(report.strays).toBe(0);
     expect(report.groupsRemoved).toEqual({ profile: [], task: [] });
     expect(report.watchdogs.after).toEqual(
-      [3333, 4444, 5555].map((interval) => ({ interval, skus: [SKU_A, SKU_B] })),
+      [3333, 4444].map((interval) => ({ interval, skus: [SKU_A, SKU_B] })),
     );
   });
 
@@ -442,17 +445,15 @@ describe("buildInstance", () => {
     expect(report.accounts.removed).toBe(0);
   });
 
-  it("splits watchdogs at 30 products, three per list, each new one on a fresh device", async () => {
+  it("splits watchdogs at 30 products, two per list, each new one on a fresh device", async () => {
     const skus = Array.from({ length: 35 }, (_, i) => String(91000000 + i));
     const list = profiles((all) => (all[0].skus = skus));
     const { db, report } = await build(list);
     expect(report.watchdogs.after.map((w) => [w.interval, w.skus.length])).toEqual([
       [3333, 30],
       [4444, 30],
-      [5555, 30],
       [3333, 7],
       [4444, 7],
-      [5555, 7],
     ]);
     // 35 of the new ones plus A and B, which the other two profiles still run.
     expect(new Set(report.watchdogs.after.flatMap((w) => w.skus)).size).toBe(37);
@@ -467,8 +468,23 @@ describe("buildInstance", () => {
         expect(JSON.parse(t.state).ios_device_data.device_id).toBe(generic);
         return generic;
       });
-    expect(devices).toHaveLength(6);
-    expect(new Set(devices).size).toBe(6);
+    expect(devices).toHaveLength(4);
+    expect(new Set(devices).size).toBe(4);
+  });
+
+  it("takes the 5555 watchdog out of a list set up with three, keeping the other two", async () => {
+    const { db, report } = await build(undefined, {}, fixtureBackup);
+    expect(report.watchdogs.before.map((w) => w.interval)).toEqual([3333, 4444, 5555]);
+    expect(report.watchdogs.after.map((w) => w.interval)).toEqual([3333, 4444]);
+    // The same two rows, where they were: only the 5555 one (task 4) is gone.
+    expect(
+      db.all(
+        "SELECT id, options FROM task WHERE flow_key = 'watchdog' AND target_kind = 'tcins' ORDER BY id",
+      ),
+    ).toEqual([
+      { id: 2, options: '{"check_interval": 3333}' },
+      { id: 3, options: '{"check_interval": 4444}' },
+    ]);
   });
 
   it("removes surplus watchdogs, and their browsers, when the list shrinks", async () => {
@@ -481,18 +497,182 @@ describe("buildInstance", () => {
 
     const shrunk = openBackup(SQL, bigger);
     const report = buildInstance(shrunk.db, desiredInstance(), options());
-    expect(report.watchdogs.before).toHaveLength(6);
-    expect(report.watchdogs.after).toHaveLength(3);
+    expect(report.watchdogs.before).toHaveLength(4);
+    expect(report.watchdogs.after).toHaveLength(2);
     expect(
       shrunk.db.get(
         "SELECT COUNT(*) AS n FROM task WHERE flow_key = 'watchdog' AND target_kind = 'tcins'",
       ),
-    ).toEqual({ n: 3 });
+    ).toEqual({ n: 2 });
     expect(
       shrunk.db.get(
         "SELECT COUNT(*) AS n FROM browser WHERE id NOT IN (SELECT browser_id FROM task UNION SELECT browser_id FROM harvester)",
       ),
     ).toEqual({ n: 0 });
+  });
+
+  describe("the Target group's order", () => {
+    /**
+     * A drop that editing in place alone would scatter: alice gets a third profile, bob a
+     * second under another name, a new member arrives, and alice - 1 runs past 30 products so
+     * a second list of watchdogs is made. Every new task's id comes after bob's.
+     */
+    const scattering = () =>
+      profiles((all) => {
+        const [alice, , bob] = all;
+        all.push(
+          {
+            ...structuredClone(alice),
+            key: "vault-alice-3",
+            name: "alice - 3",
+            email: "alice3@example.com",
+            skus: [SKU_A],
+          },
+          {
+            ...structuredClone(bob),
+            key: "vault-bob-zed",
+            name: "zed - 1",
+            email: "zed1@example.com",
+          },
+          {
+            ...structuredClone(bob),
+            key: "vault-carol-1",
+            ownerId: "999900000000000503",
+            ownerName: "carol",
+            name: "carol - 1",
+            email: "carol1@example.com",
+            skus: [SKU_A],
+          },
+        );
+        alice.skus = [SKU_A, SKU_B, ...Array.from({ length: 33 }, (_, i) => String(91000000 + i))];
+      });
+
+    /** The "Target" group's Target tasks in the order Shikari lists them: by id. */
+    const layout = (db: ShikariDb) =>
+      db
+        .all<{
+          id: number;
+          flow_key: string;
+          target_kind: string;
+          options: string;
+          name: string | null;
+        }>(
+          `SELECT t.id, t.flow_key, t.target_kind, t.options, p.name
+             FROM task t LEFT JOIN profile p ON p.id = t.profile_id
+            WHERE t.task_group_id = 1 AND t.website_id = 5 ORDER BY t.id`,
+        )
+        .map((t) => ({
+          id: t.id,
+          what:
+            t.flow_key !== "watchdog"
+              ? t.name
+              : t.target_kind === "remote"
+                ? "remote watchdog"
+                : `watchdog ${JSON.parse(t.options).check_interval}`,
+        }));
+
+    const IN_ORDER = [
+      "remote watchdog",
+      "watchdog 3333",
+      "watchdog 4444",
+      "watchdog 3333",
+      "watchdog 4444",
+      "alice - 1",
+      "alice - 2",
+      "alice - 3",
+      // bob's second profile is under another name, and still beside his first.
+      "bob - 1",
+      "zed - 1",
+      "carol - 1",
+    ];
+
+    const productsOf = (db: ShikariDb, taskId: number) =>
+      db
+        .all<{ target_data: string }>(
+          "SELECT target_data FROM target_product WHERE task_id = ? ORDER BY id",
+          [taskId],
+        )
+        .map((p) => p.target_data);
+
+    it("puts the watchdogs at the top, then each member's checkout tasks together", async () => {
+      const list = scattering();
+      const { db, report, open } = await build(list);
+      const tasks = layout(db);
+      expect(tasks.map((t) => t.what)).toEqual(IN_ORDER);
+
+      // Every task took its products with it: each watchdog watches its own list...
+      expect(
+        tasks.filter((t) => t.what?.startsWith("watchdog")).map((t) => productsOf(db, t.id)),
+      ).toEqual(report.watchdogs.after.map((w) => w.skus));
+      // ...and each checkout task what its profile picked.
+      for (const d of list) {
+        expect(productsOf(db, tasks.find((t) => t.what === d.name)!.id)).toEqual(d.skus);
+      }
+      expect(
+        db.get(
+          "SELECT COUNT(*) AS n FROM target_product WHERE task_id NOT IN (SELECT id FROM task)",
+        ),
+      ).toEqual({ n: 0 });
+      // alice - 1's is the same task, further down: its browser and preload state came along.
+      expect(db.get("SELECT browser_id, preloaded FROM task WHERE id = 7")).toEqual({
+        browser_id: 6,
+        preloaded: 1,
+      });
+
+      // The next export with the same picks finds it in order, and changes nothing at all.
+      const again = openBackup(await sqljs(), backupBytes(open));
+      const baseline = tableHashes(again.db);
+      buildInstance(again.db, desiredInstance(list), options());
+      expect(touched(diffTables(baseline, tableHashes(again.db)))).toEqual({});
+    });
+
+    it("leaves another site's task in the group at its id", async () => {
+      const { bytes } = await cleanBackup();
+      const open = openBackup(await sqljs(), bytes);
+      // Walmart's, parked in "Target" at the id the 5555 watchdog left free.
+      open.db.run(
+        "INSERT INTO browser (id, created_at, proxy_group_id, proxy_id, fingerprint_name, cookie_jar_id) VALUES (90, NULL, 1, NULL, 'x.json', NULL)",
+      );
+      open.db.run(
+        "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind) VALUES (4, NULL, 1, 0, 0, 'Draw Joiner', 3, NULL, '{}', 90, 'draw_joiner', '{}', '{}', 'pid')",
+      );
+      const walmart = open.db.get("SELECT * FROM task WHERE id = 4");
+      buildInstance(open.db, desiredInstance(scattering()), options());
+      expect(open.db.get("SELECT * FROM task WHERE id = 4")).toEqual(walmart);
+      // Target's own are in order around it.
+      expect(layout(open.db).map((t) => t.what)).toEqual(IN_ORDER);
+    });
+
+    it("doesn't blame itself for a broken reference a task it moved came in with", async () => {
+      const { bytes } = await cleanBackup();
+      const open = openBackup(await sqljs(), bytes);
+      // bob - 1's task points at a captcha service that is long gone: Shikari's doing.
+      open.db.run("UPDATE task SET captcha_service_id = 999 WHERE id = 7");
+      buildInstance(open.db, desiredInstance(scattering()), options());
+      // It moved down the list, and its broken reference went with it -- nothing new.
+      expect(
+        open.db.get(
+          "SELECT t.id, t.captcha_service_id FROM task t JOIN profile p ON p.id = t.profile_id WHERE p.name = 'bob - 1'",
+        ),
+      ).toEqual({ id: 10, captcha_service_id: 999 });
+    });
+
+    it("makes the wipes in member order too", async () => {
+      const list = scattering();
+      for (const d of list) {
+        if (["bob - 1", "carol - 1", "zed - 1"].includes(d.name)) d.pending = { fields: ["card"] };
+      }
+      const { db } = await build(list);
+      expect(
+        db
+          .all<{ name: string }>(
+            `SELECT p.name FROM task t JOIN profile p ON p.id = t.profile_id
+               JOIN task_group g ON g.id = t.task_group_id
+              WHERE g.name = 'Target - Profile Updates' ORDER BY t.id`,
+          )
+          .map((t) => t.name),
+      ).toEqual(["bob - 1", "zed - 1", "carol - 1"]);
+    });
   });
 
   it("swaps a proxy list position by position, re-pinning browsers whose proxy went away", async () => {

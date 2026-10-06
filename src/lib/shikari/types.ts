@@ -128,7 +128,7 @@ export type TaskSettings = {
   checkoutQty: number;
   checkoutProxyGroupId: number | null;
   watchdogProxyGroupId: number | null;
-  /** One check interval per watchdog in a list, in ms. Three today: 3333, 4444, 5555. */
+  /** One check interval per watchdog in a list, in ms. Two by default: 3333 and 4444. */
   watchdogIntervals: number[];
   /** Shikari's ceiling is 30 products per watchdog. */
   skusPerWatchdog: number;

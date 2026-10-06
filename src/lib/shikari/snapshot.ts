@@ -593,8 +593,15 @@ export function summarize(snapshot: ShikariSnapshot): BackupSummary {
 }
 
 /**
- * Task settings as the backup has them now -- what "leave it as it is" means, and what the
- * page pre-fills so the operator only ever edits what they mean to change.
+ * The watchdogs on each product list, one per check interval, in ms. Two since 2026-10-06:
+ * lists were set up by hand with a third at 5555, which an export now takes out.
+ */
+export const WATCHDOG_INTERVALS = [3333, 4444];
+
+/**
+ * The task settings the page pre-fills, so the operator only ever edits what they mean to
+ * change: qty and proxy groups as the backup has them now -- what "leave it as it is" means
+ * -- and the standard watchdog layout, which an export brings every backup to.
  */
 export function currentTaskSettings(snapshot: ShikariSnapshot): TaskSettings {
   const target = targetGroups(snapshot).tasks;
@@ -610,13 +617,6 @@ export function currentTaskSettings(snapshot: ShikariSnapshot): TaskSettings {
     return id !== null && live.has(id) ? id : null;
   };
 
-  // Three per list is how they are set up by hand; their intervals, in order, are the
-  // pattern every list repeats.
-  const intervals = watchdogs
-    .slice(0, 3)
-    .map(checkInterval)
-    .filter((v): v is number => v !== null);
-
   return {
     checkoutQty:
       mostCommon(
@@ -626,7 +626,7 @@ export function currentTaskSettings(snapshot: ShikariSnapshot): TaskSettings {
       ) ?? 1,
     checkoutProxyGroupId: mostCommon(checkouts.map(browserGroup).filter((id) => id !== null)),
     watchdogProxyGroupId: mostCommon(watchdogs.map(browserGroup).filter((id) => id !== null)),
-    watchdogIntervals: intervals.length > 0 ? intervals : [3333, 4444, 5555],
+    watchdogIntervals: [...WATCHDOG_INTERVALS],
     skusPerWatchdog: 30,
     remoteWatchdogs: Math.max(1, inTarget.filter(isRemoteWatchdog).length),
   };

@@ -12,7 +12,8 @@
  *   Profiles (group "Target Paused")  Target 11      a house profile the site knows
  *   Task group "Target"     a checkout task per profile above but Target 11 (SKUs A and B
  *                           in various mixes), one remote watchdog, and three TCIN
- *                           watchdogs on A and B at 3333/4444/5555
+ *                           watchdogs on A and B at 3333/4444/5555 -- the layout before
+ *                           the 5555 one was dropped
  *   Task group "Target Wipe"  one old Wipe Account task, alice - 1's: what wipes are copied
  *                           from, and what a clean export clears
  *   Proxy groups            "ISP - Monitor" (4) for watchdogs, "Resi" (6) for checkouts,
@@ -23,8 +24,8 @@
  *                           things an export must never touch
  *
  * So a first export cleans: stranger - 1 and Target 11 come out, with their tasks and logins,
- * the old login, alice's old wipe, and the two groups that leaves empty. `cleanBackup` is the
- * file after that, for tests about one change at a time.
+ * the old login, alice's old wipe, the 5555 watchdog, and the two groups that leaves empty.
+ * `cleanBackup` is the file after that, for tests about one change at a time.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -596,7 +597,7 @@ export const TASKS: TaskSettings = {
   checkoutQty: 2,
   checkoutProxyGroupId: 1,
   watchdogProxyGroupId: 0,
-  watchdogIntervals: [3333, 4444, 5555],
+  watchdogIntervals: [3333, 4444],
   skusPerWatchdog: 30,
   remoteWatchdogs: 1,
 };
@@ -612,8 +613,8 @@ export const ALL_SECTIONS: Sections = {
 
 /**
  * The fixture after one export of the vault as it stands, so holding exactly what's ours:
- * stranger - 1, Target 11, the old login, alice's old wipe and the two groups that left
- * empty are gone. Ids of everything kept are the fixture's own.
+ * stranger - 1, Target 11, the old login, alice's old wipe, the 5555 watchdog and the two
+ * groups that left empty are gone. Ids of everything kept are the fixture's own.
  */
 export async function cleanBackup(): Promise<{ db: ShikariDb; bytes: Uint8Array }> {
   const { db } = await fixtureBackup();

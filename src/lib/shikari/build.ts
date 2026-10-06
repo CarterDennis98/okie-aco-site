@@ -62,6 +62,10 @@ import type {
  *
  * The report names every one of those, with the reason, before anything is downloaded.
  *
+ * IN ORDER. The "Target" task group comes out laid out the way it is built by hand: the
+ * watchdogs at the top, then each member's checkout tasks together. Shikari lists a group by
+ * task id, so that is done by handing the group's own ids back out -- see orderTargetTasks.
+ *
  * WHAT IS NEVER TOUCHED: anything that isn't Target. One instance runs Walmart from the same
  * database, and 131 of its emails and 141 of its names are also a Target profile's -- so a
  * profile outside the Target groups is never matched or deleted, no other site's login or
@@ -244,6 +248,10 @@ class InstanceBuilder {
   private targetProfileGroupId: number | null = null;
   /** The task group this export rebuilds as "Target", once claimed. */
   private targetTaskGroupId: number | null = null;
+  /** Its tasks in the order orderTargetTasks lays them out, once they are synced. */
+  private targetOrder: number[] = [];
+  /** A task's id now -> the id the backup gave it, for each task orderTargetTasks moved. */
+  private readonly renumbered = new Map<number, number>();
 
   constructor(
     private readonly db: ShikariDb,
@@ -309,6 +317,17 @@ class InstanceBuilder {
     return [...this.desired.profiles].sort((a, b) => collator.compare(a.name, b.name));
   }
 
+  /**
+   * Desired profiles as the task lists read: each member's together, members by their first
+   * profile's name, and each member's profiles in name order -- the order every page of the
+   * site lists them in (see bot-split).
+   */
+  private get byMember(): DesiredProfile[] {
+    const members = new Map<string, DesiredProfile[]>();
+    for (const d of this.people) push(members, d.ownerId, d);
+    return [...members.values()].flat();
+  }
+
   /** A Target checkout task -- website matters: Walmart has checkout tasks too. */
   private isTargetCheckout(task: STask): boolean {
     return isCheckout(task) && task.websiteId === this.s.targetWebsiteId;
@@ -339,6 +358,9 @@ class InstanceBuilder {
     if (sections.imap) this.pruneMailboxes();
     if (sections.profiles) this.pruneStrays();
     this.dropEmptiedGroups();
+    // Last of the edits: it renumbers tasks, and everything above finds them by the id the
+    // backup gave them.
+    if (sections.tasks) this.orderTargetTasks();
 
     this.sortProfiles();
     this.checkIntegrity();
@@ -1177,6 +1199,8 @@ class InstanceBuilder {
     // Tasks already dealt with: synced, created, or removed as a duplicate.
     const handled = new Set<number>();
     const running: string[] = [];
+    // Each running profile's one checkout task, by desired key.
+    const taskByKey = new Map<string, number>();
 
     for (const d of this.people) {
       const profileId = this.profileIdByKey.get(d.key);
@@ -1199,11 +1223,14 @@ class InstanceBuilder {
         handled.add(copy.id);
       }
       if (!task) {
-        handled.add(this.createCheckoutTask(groupId, profileId, d));
+        const id = this.createCheckoutTask(groupId, profileId, d);
+        handled.add(id);
+        taskByKey.set(d.key, id);
         report.added.push({ profile: d.name, skus: d.skus.length });
         continue;
       }
       handled.add(task.id);
+      taskByKey.set(d.key, task.id);
       const change = this.syncCheckoutTask(task, d, groupId, groupNames.get(task.groupId ?? -1));
       if (change) report.changed.push(change);
       else report.unchanged += 1;
@@ -1254,12 +1281,17 @@ class InstanceBuilder {
       skus: productsOf(w.id),
     }));
     const after: WatchList[] = [];
+    const watching: number[] = [];
     let slot = 0;
     for (const skus of lists) {
       for (const interval of settings.watchdogIntervals.slice(0, perList)) {
         const existing = watchdogs[slot];
-        if (existing) this.syncWatchdog(existing, skus, interval);
-        else this.createWatchdog(groupId, skus, interval, template, false);
+        if (existing) {
+          this.syncWatchdog(existing, skus, interval);
+          watching.push(existing.id);
+        } else {
+          watching.push(this.createWatchdog(groupId, skus, interval, template, false));
+        }
         after.push({ interval, skus });
         slot += 1;
       }
@@ -1268,10 +1300,17 @@ class InstanceBuilder {
     this.report.watchdogs.after = after;
 
     const wantRemote = Math.max(0, settings.remoteWatchdogs);
+    const remote = remotes.slice(0, wantRemote).map((t) => t.id);
     for (let i = remotes.length; i < wantRemote; i++)
-      this.createWatchdog(groupId, [], null, remotes[0] ?? template, true);
+      remote.push(this.createWatchdog(groupId, [], null, remotes[0] ?? template, true));
     for (const extra of remotes.slice(wantRemote)) this.deleteTask(extra.id);
     this.report.watchdogs.remote = { before: remotes.length, after: wantRemote };
+
+    this.targetOrder = [
+      ...remote,
+      ...watching,
+      ...this.byMember.flatMap((d) => taskByKey.get(d.key) ?? []),
+    ];
   }
 
   private syncCheckoutTask(
@@ -1368,7 +1407,7 @@ class InstanceBuilder {
     interval: number | null,
     template: STask | null,
     remote: boolean,
-  ) {
+  ): number {
     const generic = template ? jsonObject(template.genericData) : { ...DEFAULT_WATCHDOG_DATA };
     const state = template
       ? jsonObject(template.state)
@@ -1399,6 +1438,58 @@ class InstanceBuilder {
       state: pyJson(state),
     });
     if (skus.length > 0) this.syncProducts(id, skus, null);
+    return id;
+  }
+
+  /**
+   * Lays the "Target" group out the way the operator builds it by hand: the watchdogs at the
+   * top -- the remote one, then each product list's in interval order -- and below them every
+   * member's checkout tasks together (see byMember). Anything else follows, as it was.
+   *
+   * Shikari has no column for this: it lists a group's tasks by id. Edited in place alone, a
+   * group would keep its old order and gain every new task at the bottom -- a watchdog for a
+   * longer product list under all the checkout tasks, a member's new profile far from their
+   * others. So the group's tasks trade ids: the same ids, handed out in this order, each
+   * task's products moving with it. Nothing else in a backup holds a task id, so nothing is
+   * left pointing at the wrong task. Another site's task in the group keeps its id, like
+   * everything else of another site's. A group already in order is left exactly as it is.
+   */
+  private orderTargetTasks() {
+    const groupId = this.targetTaskGroupId;
+    if (groupId === null) return;
+    const ids = this.db
+      .all<{ id: number }>(
+        "SELECT id FROM task WHERE task_group_id = ? AND website_id = ? ORDER BY id",
+        [groupId, this.s.targetWebsiteId],
+      )
+      .map((r) => Number(r.id));
+    const here = new Set(ids);
+    const first = this.targetOrder.filter((id) => here.has(id));
+    const placed = new Set(first);
+    const layout = [...first, ...ids.filter((id) => !placed.has(id))];
+    // The i-th task in the layout takes the i-th smallest id.
+    const moves = layout.flatMap((from, i) => (from === ids[i] ? [] : [{ from, to: ids[i] }]));
+    if (moves.length === 0) return;
+
+    // By way of ids no task has, so no two tasks ever hold the same one.
+    const top = Number(this.db.get<{ id: number }>("SELECT MAX(id) AS id FROM task")?.id);
+    const task = this.db.prepare("UPDATE task SET id = ? WHERE id = ?");
+    const products = this.db.prepare("UPDATE target_product SET task_id = ? WHERE task_id = ?");
+    try {
+      for (const step of [
+        moves.map((m, i) => [top + 1 + i, m.from]),
+        moves.map((m, i) => [m.to, top + 1 + i]),
+      ]) {
+        for (const params of step) {
+          task.run(params);
+          products.run(params);
+        }
+      }
+    } finally {
+      task.free();
+      products.free();
+    }
+    for (const m of moves) this.renumbered.set(m.to, m.from);
   }
 
   // -------------------------------------------------------------------------
@@ -1445,7 +1536,9 @@ class InstanceBuilder {
       if (old && this.deleteTask(task.id)) report.removed += 1;
     }
 
-    const pending = this.people.filter((d) => d.pending);
+    // Made in the order the "Target" group reads. The group starts empty and each new task's
+    // id follows the last, so that is the order Shikari lists them in.
+    const pending = this.byMember.filter((d) => d.pending);
     // Nothing pending and no group yet: the backup isn't given an empty group it never had.
     if (pending.length === 0 && !owned) return;
     const groupId = owned?.id ?? this.ensureGroup("task_group", UPDATES_GROUP, UPDATES_COLOR);
@@ -1793,7 +1886,7 @@ class InstanceBuilder {
    * not blamed on -- or allowed to block -- the export.
    */
   private checkIntegrity() {
-    const after = foreignKeyProblems(this.db);
+    const after = foreignKeyProblems(this.db, this.renumbered);
     const introduced = [...after].filter((problem) => !this.fkBefore.has(problem));
     if (introduced.length > 0) {
       throw new BuildError(
@@ -1849,14 +1942,21 @@ export function addressChanges(current: SAddress, next: ShikariAddress): string[
   return changes;
 }
 
-/** Every broken reference in the file, as comparable strings. */
-function foreignKeyProblems(db: ShikariDb): Set<string> {
+/**
+ * Every broken reference in the file, as comparable strings. A task orderTargetTasks moved is
+ * named by the id the backup gave it, so one that came in broken still reads the same.
+ */
+function foreignKeyProblems(db: ShikariDb, renumbered = new Map<number, number>()): Set<string> {
   return new Set(
     db
       .all<{ table: string; rowid: number; parent: string; fkid: number }>(
         "PRAGMA foreign_key_check",
       )
-      .map((row) => `${row.table}#${row.rowid}->${row.parent}`),
+      .map((row) => {
+        const rowid = Number(row.rowid);
+        const id = row.table === "task" ? (renumbered.get(rowid) ?? rowid) : rowid;
+        return `${row.table}#${id}->${row.parent}`;
+      }),
   );
 }
 

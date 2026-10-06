@@ -40,6 +40,7 @@ import {
   groupsToClear,
   isCheckout,
   isTargetGroupName,
+  isWatchdog,
   readSnapshot,
   summarize,
   targetGroups,
@@ -117,10 +118,12 @@ function desiredFromBackup(s: ShikariSnapshot): DesiredInstance {
     const card = s.cards.get(p.cardId);
     const task = tasks.get(p.id);
     const box = task?.imapId != null ? imap.get(task.imapId) : undefined;
+    // Members are told apart by the name their profiles start with ("shockereyes - 6").
+    const member = p.name.replace(/\s*-\s*\d+$/, "");
     profiles.push({
       key: `backup-${p.id}`,
-      ownerId: "0",
-      ownerName: p.name.replace(/\s*-\s*\d+$/, ""),
+      ownerId: lower(member),
+      ownerName: member,
       name: p.name,
       email: p.email,
       shipping: toAddress(p.shippingId)!,
@@ -325,6 +328,28 @@ function checkFile(
   check(
     built.report.watchdogs.after.every((w) => w.skus.length <= 30),
     "no watchdog over 30 products",
+  );
+
+  // In order, as Shikari lists the group (by id): the watchdogs at the top, then each
+  // member's checkout tasks together.
+  const taskGroup = findGroup(s.taskGroups, TARGET_GROUP);
+  const listed = s.tasks.filter(
+    (t) => t.groupId === taskGroup?.id && t.websiteId === s.targetWebsiteId,
+  );
+  const lastWatchdog = listed.map(isWatchdog).lastIndexOf(true);
+  check(
+    lastWatchdog < listed.findIndex(isCheckout) || !listed.some(isCheckout),
+    `the ${listed.filter(isWatchdog).length} watchdogs at the top of "${TARGET_GROUP}"`,
+  );
+  const ownerOf = new Map(desired.profiles.map((d) => [lower(d.email), d.ownerId]));
+  const emailOf = new Map(s.profiles.map((p) => [p.id, lower(p.email)]));
+  const owners = listed
+    .filter(isCheckout)
+    .map((t) => ownerOf.get(emailOf.get(t.profileId ?? -1) ?? "") ?? "?");
+  const runs = owners.filter((owner, i) => i === 0 || owners[i - 1] !== owner).length;
+  check(
+    runs === new Set(owners).size,
+    `each member's checkout tasks together (${new Set(owners).size} members)`,
   );
 
   const out = backupBytes(built.open);

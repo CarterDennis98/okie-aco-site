@@ -82,13 +82,14 @@ describe("reading a backup", () => {
     ]);
   });
 
-  it("reads the task settings the backup runs on now", async () => {
+  it("reads the task settings the backup runs on now, with the standard watchdog layout", async () => {
     const { db } = await fixtureBackup();
     expect(currentTaskSettings(readSnapshot(db))).toEqual({
       checkoutQty: 2,
       checkoutProxyGroupId: 1,
       watchdogProxyGroupId: 0,
-      watchdogIntervals: [3333, 4444, 5555],
+      // Not the 3333/4444/5555 the fixture still has: the third comes out on export.
+      watchdogIntervals: [3333, 4444],
       skusPerWatchdog: 30,
       remoteWatchdogs: 1,
     });
