@@ -7,6 +7,9 @@ export default defineConfig({
     include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
     // Vitest doesn't read .env on its own; the DB-backed guards need DATABASE_URL.
     setupFiles: ["dotenv/config"],
+    // next-auth imports `next/server` without an extension, which Node's ESM resolver
+    // refuses (next has no exports map). Inlined, Vite resolves it instead.
+    server: { deps: { inline: ["next-auth"] } },
   },
   resolve: {
     alias: {

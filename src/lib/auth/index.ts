@@ -118,6 +118,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     Discord({
       clientId: process.env.AUTH_DISCORD_ID,
       clientSecret: process.env.AUTH_DISCORD_SECRET,
+      // Discord began appending `iss=https://discord.com` to the OAuth redirect on
+      // 2026-10-06 (RFC 9207). Without an issuer here, Auth.js compares it against its
+      // "https://authjs.dev" placeholder and rejects every callback. This only sets what
+      // `iss` is checked against: the endpoints below are explicit, so no OIDC discovery
+      // runs, and a callback without `iss` is still accepted.
+      issuer: "https://discord.com",
       authorization: { params: { scope: "identify guilds.members.read" } },
 
       profile(profile: DiscordProfile) {
