@@ -182,7 +182,7 @@ export async function fixtureBackup(): Promise<{ db: ShikariDb; bytes: Uint8Arra
   const db = new ShikariDb(raw);
   const run = (sql: string, params: (string | number | null)[] = []) => db.run(sql, params);
 
-  run("INSERT INTO alembic_version VALUES ('d4e8b21c7f05')");
+  run("INSERT INTO alembic_version VALUES ('e5b1c9d3a7f2')");
   run(
     "INSERT INTO config (id, created_at, license_key, stealth_browser_headless, cookie_lifetime) VALUES (1, NULL, 'SH-TEST-LICENCE', 1, 400)",
   );
@@ -356,6 +356,8 @@ export async function fixtureBackup(): Promise<{ db: ShikariDb; bytes: Uint8Arra
     `INSERT INTO task_group (id, created_at, name, color, order_index) VALUES (2, '${T0}', 'Target Wipe', '#0B8043', 1)`,
   );
 
+  // Each task's place in its group is its id: how Shikari numbered every task it already had
+  // when it added drag-and-drop order.
   let taskId = 0;
   const task = (t: {
     group: number;
@@ -372,7 +374,7 @@ export async function fixtureBackup(): Promise<{ db: ShikariDb; bytes: Uint8Arra
   }) => {
     taskId += 1;
     run(
-      "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, imap_account_id, flow_key, options, state, target_kind) VALUES (?, ?, ?, 0, ?, ?, 5, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, imap_account_id, flow_key, options, state, target_kind, order_index) VALUES (?, ?, ?, 0, ?, ?, 5, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         taskId,
         T0,
@@ -387,6 +389,7 @@ export async function fixtureBackup(): Promise<{ db: ShikariDb; bytes: Uint8Arra
         t.options ?? "{}",
         t.state ?? "{}",
         t.kind,
+        taskId,
       ],
     );
     return taskId;
@@ -551,7 +554,7 @@ export async function mainInstanceBackup(): Promise<{ db: ShikariDb; bytes: Uint
   );
   browser(20, 1);
   run(
-    "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind) VALUES (20, ?, 4, 0, 0, 'Draw Joiner', 3, 6, '{}', 20, 'draw_joiner', '{}', '{}', 'pid')",
+    "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind, order_index) VALUES (20, ?, 4, 0, 0, 'Draw Joiner', 3, 6, '{}', 20, 'draw_joiner', '{}', '{}', 'pid', 20)",
     [T0],
   );
 
@@ -575,11 +578,11 @@ export async function mainInstanceBackup(): Promise<{ db: ShikariDb; bytes: Uint
   browser(21, 1);
   browser(22, 0);
   run(
-    "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind) VALUES (21, ?, 5, 0, 1, 'Checkout', 5, 8, '{}', 21, 'checkout', '{}', '{}', 'tcins')",
+    "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind, order_index) VALUES (21, ?, 5, 0, 1, 'Checkout', 5, 8, '{}', 21, 'checkout', '{}', '{}', 'tcins', 21)",
     [T0],
   );
   run(
-    "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind) VALUES (22, ?, 5, 0, 0, 'Watchdog', 5, NULL, '{}', 22, 'watchdog', '{\"check_interval\": 3333}', '{}', 'tcins')",
+    "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind, order_index) VALUES (22, ?, 5, 0, 0, 'Watchdog', 5, NULL, '{}', 22, 'watchdog', '{\"check_interval\": 3333}', '{}', 'tcins', 22)",
     [T0],
   );
   for (const taskId of [21, 22]) {
@@ -627,6 +630,22 @@ export async function cleanBackup(): Promise<{ db: ShikariDb; bytes: Uint8Array 
     random: seeded(9),
   });
   return { db, bytes: db.bytes() };
+}
+
+/**
+ * A fixture as Shikari had it before tasks had drag-and-drop order (d4e8b21c7f05): no
+ * task.order_index, so a group is listed by task id. Everything else is the same.
+ */
+export function legacy(
+  fixture: () => Promise<{ db: ShikariDb }>,
+): () => Promise<{ db: ShikariDb; bytes: Uint8Array }> {
+  return async () => {
+    const { db } = await fixture();
+    db.run("DROP INDEX ix_task_task_group_id_order_index");
+    db.run("ALTER TABLE task DROP COLUMN order_index");
+    db.run("UPDATE alembic_version SET version_num = 'd4e8b21c7f05'");
+    return { db, bytes: db.bytes() };
+  };
 }
 
 /** The vault's view of "alice - 6", parked in "Target - Secondary" in the main instance. */

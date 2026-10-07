@@ -7,7 +7,13 @@ import {
   summarize,
   userOf,
 } from "@/lib/shikari/snapshot";
-import { SKU_A, SKU_B, fixtureBackup, mainInstanceBackup } from "../../../tests/shikari/fixture";
+import {
+  SKU_A,
+  SKU_B,
+  fixtureBackup,
+  legacy,
+  mainInstanceBackup,
+} from "../../../tests/shikari/fixture";
 
 describe("userOf", () => {
   it.each([
@@ -105,11 +111,22 @@ describe("reading a backup", () => {
     const { db } = await fixtureBackup();
     expect(checkShikariSchema(db)).toEqual({
       ok: true,
-      version: "d4e8b21c7f05",
+      version: "e5b1c9d3a7f2",
       newerVersion: false,
     });
     db.run("UPDATE alembic_version SET version_num = 'ffffffffffff'");
     expect(checkShikariSchema(db)).toMatchObject({ ok: true, newerVersion: true });
+  });
+
+  it("takes a backup from before tasks had drag-and-drop order", async () => {
+    const { db } = await legacy(fixtureBackup)();
+    expect(checkShikariSchema(db)).toEqual({
+      ok: true,
+      version: "d4e8b21c7f05",
+      newerVersion: false,
+    });
+    expect(readSnapshot(db).taskOrder).toBe(false);
+    expect(readSnapshot((await fixtureBackup()).db).taskOrder).toBe(true);
   });
 
   it("takes a new column with a default in its stride", async () => {

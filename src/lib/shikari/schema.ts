@@ -5,21 +5,25 @@ import type { ShikariDb } from "@/lib/shikari/sqlite";
  * still has them.
  *
  * Shikari is someone else's software and updates on its own schedule; its schema is
- * migrated with Alembic, and the version these were read from is below. A newer one is not
+ * migrated with Alembic, and the versions these were read from are below. A newer one is not
  * refused on sight -- most migrations add a table or a nullable column that changes nothing
  * here -- but anything that WOULD change something is: a missing column, or a new required
  * column on a table the export inserts into, which Shikari's own code fills in and ours
  * would leave empty. Better a clear refusal on upload than a backup Shikari can't open.
  */
 
-/** The Alembic revision of the backup these tables were read from (2026-10-05). */
-export const KNOWN_SHIKARI_VERSION = "d4e8b21c7f05";
+/**
+ * The Alembic revisions of the backups these tables were read from: 2026-10-05's, and
+ * 2026-10-06's, which gave tasks drag-and-drop order (see hasTaskOrder).
+ */
+export const KNOWN_SHIKARI_VERSIONS = ["d4e8b21c7f05", "e5b1c9d3a7f2"];
 
 /**
  * Every column the export touches, per table. `inserts` marks the tables it creates rows
- * in -- the ones where an unknown NOT NULL column without a default is fatal.
+ * in -- the ones where an unknown NOT NULL column without a default is fatal. `optional`
+ * columns are filled when a version has them, and done without when it doesn't.
  */
-const TABLES: Record<string, { columns: string[]; inserts: boolean }> = {
+const TABLES: Record<string, { columns: string[]; optional?: string[]; inserts: boolean }> = {
   profile_group: {
     columns: ["id", "created_at", "updated_at", "name", "order_index"],
     inserts: true,
@@ -135,6 +139,7 @@ const TABLES: Record<string, { columns: string[]; inserts: boolean }> = {
       "state",
       "target_kind",
     ],
+    optional: ["order_index"],
     inserts: true,
   },
   target_product: {
@@ -200,9 +205,10 @@ export function checkShikariSchema(db: ShikariDb): SchemaCheck {
       if (!names.has(column)) problems.push(`no ${table}.${column} column`);
     }
     if (!spec.inserts) continue;
+    const known = new Set([...spec.columns, ...(spec.optional ?? [])]);
     for (const column of columns) {
       const required = column.notnull === 1 && column.dflt_value === null && column.pk === 0;
-      if (required && !spec.columns.includes(column.name)) {
+      if (required && !known.has(column.name)) {
         problems.push(
           `${table}.${column.name} is required and the export doesn't know how to fill it`,
         );
@@ -211,5 +217,18 @@ export function checkShikariSchema(db: ShikariDb): SchemaCheck {
   }
 
   if (problems.length > 0) return { ok: false, version, problems };
-  return { ok: true, version, newerVersion: version !== null && version !== KNOWN_SHIKARI_VERSION };
+  return {
+    ok: true,
+    version,
+    newerVersion: version !== null && !KNOWN_SHIKARI_VERSIONS.includes(version),
+  };
+}
+
+/**
+ * Whether a backup's tasks have a place in their group: `task.order_index`, which Shikari
+ * added with drag-and-drop reordering (e5b1c9d3a7f2) and lists a group by. Before it,
+ * Shikari listed a group by task id.
+ */
+export function hasTaskOrder(db: ShikariDb): boolean {
+  return db.all<ColumnInfo>('PRAGMA table_info("task")').some((c) => c.name === "order_index");
 }

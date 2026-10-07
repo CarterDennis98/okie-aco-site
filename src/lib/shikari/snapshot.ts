@@ -1,5 +1,5 @@
 import { jsonObject } from "@/lib/shikari/format";
-import { checkShikariSchema } from "@/lib/shikari/schema";
+import { checkShikariSchema, hasTaskOrder } from "@/lib/shikari/schema";
 import type { ShikariDb } from "@/lib/shikari/sqlite";
 import type { TaskSettings } from "@/lib/shikari/types";
 
@@ -110,6 +110,16 @@ export type ShikariSnapshot = {
   imap: SImap[];
   proxyGroups: SProxyGroup[];
   taskGroups: STaskGroup[];
+  /**
+   * Whether tasks have a place in their group (`order_index`) or are listed by id -- see
+   * hasTaskOrder.
+   */
+  taskOrder: boolean;
+  /**
+   * In the order they were made, by id -- which since drag-and-drop isn't always the order
+   * Shikari lists them in. A watchdog matched to a product list by its position here keeps
+   * its list however it was dragged.
+   */
   tasks: STask[];
   products: SProduct[];
   browsers: Map<number, SBrowser>;
@@ -372,6 +382,7 @@ export function readSnapshot(db: ShikariDb): ShikariSnapshot {
         name: text(r.name),
         orderIndex: Number(r.order_index),
       })),
+    taskOrder: hasTaskOrder(db),
     tasks,
     products: db
       .all("SELECT id, task_id, target_method, target_data, qty FROM target_product ORDER BY id")

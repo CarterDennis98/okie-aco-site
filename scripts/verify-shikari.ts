@@ -330,12 +330,29 @@ function checkFile(
     "no watchdog over 30 products",
   );
 
-  // In order, as Shikari lists the group (by id): the watchdogs at the top, then each
-  // member's checkout tasks together.
+  // In order, as Shikari lists the group -- by each task's place, or by id before tasks had
+  // one: the watchdogs at the top, then each member's checkout tasks together.
   const taskGroup = findGroup(s.taskGroups, TARGET_GROUP);
-  const listed = s.tasks.filter(
-    (t) => t.groupId === taskGroup?.id && t.websiteId === s.targetWebsiteId,
+  const position = new Map(
+    db
+      .values(
+        `SELECT id FROM task WHERE task_group_id = ? ORDER BY ${s.taskOrder ? "order_index, " : ""}id`,
+        [taskGroup?.id ?? -1],
+      )
+      .map(([id], i) => [Number(id), i]),
   );
+  const listed = s.tasks
+    .filter((t) => t.groupId === taskGroup?.id && t.websiteId === s.targetWebsiteId)
+    .sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
+  if (s.taskOrder) {
+    check(
+      db.get<{ apart: number }>(
+        "SELECT COUNT(DISTINCT order_index) = COUNT(*) AS apart FROM task WHERE task_group_id = ?",
+        [taskGroup?.id ?? -1],
+      )?.apart === 1,
+      `each task in "${TARGET_GROUP}" on a place of its own`,
+    );
+  }
   const lastWatchdog = listed.map(isWatchdog).lastIndexOf(true);
   check(
     lastWatchdog < listed.findIndex(isCheckout) || !listed.some(isCheckout),

@@ -64,7 +64,8 @@ import type {
  *
  * IN ORDER. The "Target" task group comes out laid out the way it is built by hand: the
  * watchdogs at the top, then each member's checkout tasks together. Shikari lists a group by
- * task id, so that is done by handing the group's own ids back out -- see orderTargetTasks.
+ * each task's place in it (by task id before drag-and-drop), so that is done by handing the
+ * group's own places back out -- see orderTargetTasks.
  *
  * WHAT IS NEVER TOUCHED: anything that isn't Target. One instance runs Walmart from the same
  * database, and 131 of its emails and 141 of its names are also a Target profile's -- so a
@@ -358,8 +359,8 @@ class InstanceBuilder {
     if (sections.imap) this.pruneMailboxes();
     if (sections.profiles) this.pruneStrays();
     this.dropEmptiedGroups();
-    // Last of the edits: it renumbers tasks, and everything above finds them by the id the
-    // backup gave them.
+    // Last of the edits: in a backup from before drag-and-drop it renumbers tasks, and
+    // everything above finds them by the id the backup gave them.
     if (sections.tasks) this.orderTargetTasks();
 
     this.sortProfiles();
@@ -1322,7 +1323,17 @@ class InstanceBuilder {
     const products = this.syncProducts(task.id, d.skus, this.options.tasks.checkoutQty);
     const other: string[] = [];
     if (task.groupId !== groupId) {
-      this.db.run("UPDATE task SET task_group_id = ? WHERE id = ?", [groupId, task.id]);
+      // In at the bottom, like a task added to the group: its place in the one it came from
+      // means nothing here. orderTargetTasks finds it its own.
+      if (this.s.taskOrder) {
+        this.db.run("UPDATE task SET task_group_id = ?, order_index = ? WHERE id = ?", [
+          groupId,
+          this.endOfGroup(groupId),
+          task.id,
+        ]);
+      } else {
+        this.db.run("UPDATE task SET task_group_id = ? WHERE id = ?", [groupId, task.id]);
+      }
       other.push(fromGroup ? `moved in from "${fromGroup}"` : "moved in");
     }
     if (products.qtyChanged) other.push(`qty ${this.options.tasks.checkoutQty}`);
@@ -1446,32 +1457,51 @@ class InstanceBuilder {
    * top -- the remote one, then each product list's in interval order -- and below them every
    * member's checkout tasks together (see byMember). Anything else follows, as it was.
    *
-   * Shikari has no column for this: it lists a group's tasks by id. Edited in place alone, a
-   * group would keep its old order and gain every new task at the bottom -- a watchdog for a
-   * longer product list under all the checkout tasks, a member's new profile far from their
-   * others. So the group's tasks trade ids: the same ids, handed out in this order, each
-   * task's products moving with it. Nothing else in a backup holds a task id, so nothing is
-   * left pointing at the wrong task. Another site's task in the group keeps its id, like
+   * Edited in place alone, a group would keep its old order and gain every new task at the
+   * bottom -- a watchdog for a longer product list under all the checkout tasks, a member's
+   * new profile far from their others. So the group's tasks trade places: the places they
+   * hold, handed out in this order. Another site's task in the group keeps its place, like
    * everything else of another site's. A group already in order is left exactly as it is.
+   *
+   * A task's place is its `order_index`, which Shikari lists a group by since drag-and-drop.
+   * Before that it listed a group by id, so a backup from then has its tasks trade ids, each
+   * task's products moving with it. Nothing else in a backup holds a task id, so nothing is
+   * left pointing at the wrong task.
    */
   private orderTargetTasks() {
     const groupId = this.targetTaskGroupId;
     if (groupId === null) return;
-    const ids = this.db
-      .all<{ id: number }>(
-        "SELECT id FROM task WHERE task_group_id = ? AND website_id = ? ORDER BY id",
-        [groupId, this.s.targetWebsiteId],
-      )
-      .map((r) => Number(r.id));
-    const here = new Set(ids);
-    const first = this.targetOrder.filter((id) => here.has(id));
+    const ordered = this.s.taskOrder;
+    // The group's Target tasks as Shikari lists them, with the place each one holds.
+    const rows = this.db.all<{ id: number; place: number }>(
+      `SELECT id, ${ordered ? "order_index" : "id"} AS place FROM task
+        WHERE task_group_id = ? AND website_id = ? ORDER BY place, id`,
+      [groupId, this.s.targetWebsiteId],
+    );
+    const place = new Map(rows.map((r) => [Number(r.id), Number(r.place)]));
+    const first = this.targetOrder.filter((id) => place.has(id));
     const placed = new Set(first);
-    const layout = [...first, ...ids.filter((id) => !placed.has(id))];
-    // The i-th task in the layout takes the i-th smallest id.
-    const moves = layout.flatMap((from, i) => (from === ids[i] ? [] : [{ from, to: ids[i] }]));
+    const layout = [...first, ...[...place.keys()].filter((id) => !placed.has(id))];
+    // The i-th task in the layout takes the i-th place. No two share one, which would leave
+    // their order to Shikari: ids can't repeat, but an order_index can.
+    const places = rows.map((r) => Number(r.place));
+    for (let i = 1; i < places.length; i++) places[i] = Math.max(places[i], places[i - 1] + 1);
+    const moves = layout.flatMap((from, i) =>
+      place.get(from) === places[i] ? [] : [{ from, to: places[i] }],
+    );
     if (moves.length === 0) return;
 
-    // By way of ids no task has, so no two tasks ever hold the same one.
+    if (ordered) {
+      const update = this.db.prepare("UPDATE task SET order_index = ? WHERE id = ?");
+      try {
+        for (const m of moves) update.run([m.to, m.from]);
+      } finally {
+        update.free();
+      }
+      return;
+    }
+
+    // Ids, by way of ids no task has, so no two tasks ever hold the same one.
     const top = Number(this.db.get<{ id: number }>("SELECT MAX(id) AS id FROM task")?.id);
     const task = this.db.prepare("UPDATE task SET id = ? WHERE id = ?");
     const products = this.db.prepare("UPDATE target_product SET task_id = ? WHERE task_id = ?");
@@ -1536,8 +1566,8 @@ class InstanceBuilder {
       if (old && this.deleteTask(task.id)) report.removed += 1;
     }
 
-    // Made in the order the "Target" group reads. The group starts empty and each new task's
-    // id follows the last, so that is the order Shikari lists them in.
+    // Made in the order the "Target" group reads. The group starts empty and each new task
+    // goes in at the bottom, so that is the order Shikari lists them in.
     const pending = this.byMember.filter((d) => d.pending);
     // Nothing pending and no group yet: the backup isn't given an empty group it never had.
     if (pending.length === 0 && !owned) return;
@@ -1617,11 +1647,15 @@ class InstanceBuilder {
     options: string | null;
     state: string;
   }): number {
+    // At the bottom of its group. Before tasks had a place, a new one's id put it there.
+    const place = this.s.taskOrder ? [this.endOfGroup(t.groupId)] : [];
     return this.db.insert(
       `INSERT INTO task (created_at, updated_at, task_group_id, running, preloaded, start_time, type,
                          website_id, profile_id, generic_data, captcha_service_id, browser_id,
-                         sms_service_id, imap_account_id, flow_key, options, state, target_kind)
-       VALUES (?, NULL, ?, 0, 0, NULL, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)`,
+                         sms_service_id, imap_account_id, flow_key, options, state, target_kind
+                         ${place.length > 0 ? ", order_index" : ""})
+       VALUES (?, NULL, ?, 0, 0, NULL, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?
+               ${place.length > 0 ? ", ?" : ""})`,
       [
         this.now,
         t.groupId,
@@ -1635,7 +1669,18 @@ class InstanceBuilder {
         t.options,
         t.state,
         t.targetKind,
+        ...place,
       ],
+    );
+  }
+
+  /** The place after a task group's last task: where one added to it goes. */
+  private endOfGroup(groupId: number): number {
+    return Number(
+      this.db.get<{ place: number }>(
+        "SELECT COALESCE(MAX(order_index), -1) + 1 AS place FROM task WHERE task_group_id = ?",
+        [groupId],
+      )?.place,
     );
   }
 

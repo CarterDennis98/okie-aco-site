@@ -1,6 +1,7 @@
 -- Shikari's schema, copied verbatim from a real backup's sqlite_master (Alembic revision
--- d4e8b21c7f05, 2026-10-05). The fixture builds synthetic backups on it, so the tests run
--- against the exact tables, constraints and quirks the export meets in production.
+-- e5b1c9d3a7f2, 2026-10-06). The fixture builds synthetic backups on it, so the tests run
+-- against the exact tables, constraints and quirks the export meets in production. `legacy`
+-- in fixture.ts takes a backup back to d4e8b21c7f05, from before tasks had an order_index.
 
 CREATE TABLE alembic_version (
 	version_num VARCHAR(32) NOT NULL, 
@@ -204,31 +205,6 @@ CREATE TABLE sms_service (
 	username VARCHAR(100)
 , config TEXT);
 
-CREATE TABLE "task" (
-	id INTEGER NOT NULL, 
-	created_at DATETIME, 
-	updated_at DATETIME, 
-	task_group_id INTEGER, 
-	running BOOLEAN, 
-	preloaded BOOLEAN, 
-	start_time DATETIME, 
-	type VARCHAR(50), 
-	website_id INTEGER NOT NULL, 
-	profile_id INTEGER, 
-	generic_data TEXT, 
-	captcha_service_id INTEGER, 
-	browser_id INTEGER NOT NULL, 
-	sms_service_id INTEGER, 
-	imap_account_id INTEGER, flow_key VARCHAR(50), options TEXT, state TEXT, target_kind VARCHAR(30), 
-	PRIMARY KEY (id), 
-	CONSTRAINT fk_task_sms_service_id_sms_service FOREIGN KEY(sms_service_id) REFERENCES sms_service (id), 
-	CONSTRAINT fk_task_task_group_id_task_group FOREIGN KEY(task_group_id) REFERENCES task_group (id), 
-	CONSTRAINT fk_task_profile_id_profile FOREIGN KEY(profile_id) REFERENCES profile (id), 
-	CONSTRAINT fk_task_captcha_service_id_captcha_service FOREIGN KEY(captcha_service_id) REFERENCES captcha_service (id), 
-	CONSTRAINT fk_task_browser_id_browser FOREIGN KEY(browser_id) REFERENCES browser (id), 
-	CONSTRAINT fk_task_imap_account_id_imap_account FOREIGN KEY(imap_account_id) REFERENCES imap_account (id) ON DELETE SET NULL
-);
-
 CREATE TABLE notification_config (
 	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT, 
 	created_at DATETIME, 
@@ -276,3 +252,34 @@ CREATE TABLE "account" (
 	CONSTRAINT fk_account_mobile_cookie_jar_id_cookie_jar FOREIGN KEY(mobile_cookie_jar_id) REFERENCES cookie_jar (id)
 );
 
+CREATE TABLE "task" (
+	id INTEGER NOT NULL, 
+	created_at DATETIME, 
+	updated_at DATETIME, 
+	task_group_id INTEGER, 
+	running BOOLEAN, 
+	preloaded BOOLEAN, 
+	start_time DATETIME, 
+	type VARCHAR(50), 
+	website_id INTEGER NOT NULL, 
+	profile_id INTEGER, 
+	generic_data TEXT, 
+	captcha_service_id INTEGER, 
+	browser_id INTEGER NOT NULL, 
+	sms_service_id INTEGER, 
+	imap_account_id INTEGER, 
+	flow_key VARCHAR(50), 
+	options TEXT, 
+	state TEXT, 
+	target_kind VARCHAR(30), 
+	order_index INTEGER NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT fk_task_imap_account_id_imap_account FOREIGN KEY(imap_account_id) REFERENCES imap_account (id) ON DELETE SET NULL, 
+	CONSTRAINT fk_task_captcha_service_id_captcha_service FOREIGN KEY(captcha_service_id) REFERENCES captcha_service (id), 
+	CONSTRAINT fk_task_task_group_id_task_group FOREIGN KEY(task_group_id) REFERENCES task_group (id), 
+	CONSTRAINT fk_task_sms_service_id_sms_service FOREIGN KEY(sms_service_id) REFERENCES sms_service (id), 
+	CONSTRAINT fk_task_browser_id_browser FOREIGN KEY(browser_id) REFERENCES browser (id), 
+	CONSTRAINT fk_task_profile_id_profile FOREIGN KEY(profile_id) REFERENCES profile (id)
+);
+
+CREATE INDEX ix_task_task_group_id_order_index ON task (task_group_id, order_index);

@@ -10,7 +10,7 @@
  *   - every profile is sorted into new, activated, updated, deactivated or removed, with why;
  *   - watchdogs split at 30 products, two per list, plus the remote one;
  *   - the Target group reads in order -- watchdogs first, then each member's tasks together --
- *     however the edits in place left its ids;
+ *     however the edits in place left it, by drag-and-drop place or, in an older Shikari, by id;
  *   - a swapped proxy list keeps its ids and re-pins what lost its proxy;
  *   - wipes are copied from the backup's own Wipe Account task, or built in Shikari's shape.
  */
@@ -28,6 +28,7 @@ import {
   cleanBackup,
   desiredInstance,
   fixtureBackup,
+  legacy,
   mainInstanceBackup,
   seeded,
   sqljs,
@@ -242,7 +243,7 @@ describe("buildInstance", () => {
       "INSERT INTO browser (id, created_at, proxy_group_id, proxy_id, fingerprint_name, cookie_jar_id) VALUES (90, NULL, 1, NULL, 'x.json', NULL)",
     );
     open.db.run(
-      "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind) VALUES (90, NULL, 1, 0, 0, 'Draw Joiner', 3, 3, '{}', 90, 'draw_joiner', '{}', '{}', 'pid')",
+      "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind, order_index) VALUES (90, NULL, 1, 0, 0, 'Draw Joiner', 3, 3, '{}', 90, 'draw_joiner', '{}', '{}', 'pid', 90)",
     );
     const report = buildInstance(
       open.db,
@@ -511,11 +512,14 @@ describe("buildInstance", () => {
     ).toEqual({ n: 0 });
   });
 
-  describe("the Target group's order", () => {
+  describe.each([
+    { shikari: "with drag-and-drop order", fixture: cleanBackup, byId: false },
+    { shikari: "from before it, listed by id", fixture: legacy(cleanBackup), byId: true },
+  ])("the Target group's order, Shikari $shikari", ({ fixture, byId }) => {
     /**
      * A drop that editing in place alone would scatter: alice gets a third profile, bob a
      * second under another name, a new member arrives, and alice - 1 runs past 30 products so
-     * a second list of watchdogs is made. Every new task's id comes after bob's.
+     * a second list of watchdogs is made. Every new task goes in below bob's.
      */
     const scattering = () =>
       profiles((all) => {
@@ -547,7 +551,10 @@ describe("buildInstance", () => {
         alice.skus = [SKU_A, SKU_B, ...Array.from({ length: 33 }, (_, i) => String(91000000 + i))];
       });
 
-    /** The "Target" group's Target tasks in the order Shikari lists them: by id. */
+    /** How Shikari lists a group: by each task's place in it, or by id before tasks had one. */
+    const listed = byId ? "t.id" : "t.order_index, t.id";
+
+    /** The "Target" group's Target tasks in the order Shikari lists them. */
     const layout = (db: ShikariDb) =>
       db
         .all<{
@@ -559,7 +566,7 @@ describe("buildInstance", () => {
         }>(
           `SELECT t.id, t.flow_key, t.target_kind, t.options, p.name
              FROM task t LEFT JOIN profile p ON p.id = t.profile_id
-            WHERE t.task_group_id = 1 AND t.website_id = 5 ORDER BY t.id`,
+            WHERE t.task_group_id = 1 AND t.website_id = 5 ORDER BY ${listed}`,
         )
         .map((t) => ({
           id: t.id,
@@ -596,9 +603,17 @@ describe("buildInstance", () => {
 
     it("puts the watchdogs at the top, then each member's checkout tasks together", async () => {
       const list = scattering();
-      const { db, report, open } = await build(list);
+      const { db, report, open } = await build(list, {}, fixture);
       const tasks = layout(db);
       expect(tasks.map((t) => t.what)).toEqual(IN_ORDER);
+      // Each on a place of its own, new ones too: two on one would leave the order to Shikari.
+      if (!byId) {
+        expect(
+          db.get(
+            "SELECT COUNT(DISTINCT order_index) = COUNT(*) AS apart FROM task WHERE task_group_id = 1",
+          ),
+        ).toEqual({ apart: 1 });
+      }
 
       // Every task took its products with it: each watchdog watches its own list...
       expect(
@@ -614,10 +629,12 @@ describe("buildInstance", () => {
         ),
       ).toEqual({ n: 0 });
       // alice - 1's is the same task, further down: its browser and preload state came along.
-      expect(db.get("SELECT browser_id, preloaded FROM task WHERE id = 7")).toEqual({
-        browser_id: 6,
-        preloaded: 1,
-      });
+      // Its id did too, unless the ids are what Shikari lists by.
+      expect(
+        db.get(
+          "SELECT t.id, t.browser_id, t.preloaded FROM task t JOIN profile p ON p.id = t.profile_id WHERE p.name = 'alice - 1'",
+        ),
+      ).toEqual({ id: byId ? 7 : 5, browser_id: 6, preloaded: 1 });
 
       // The next export with the same picks finds it in order, and changes nothing at all.
       const again = openBackup(await sqljs(), backupBytes(open));
@@ -626,15 +643,16 @@ describe("buildInstance", () => {
       expect(touched(diffTables(baseline, tableHashes(again.db)))).toEqual({});
     });
 
-    it("leaves another site's task in the group at its id", async () => {
-      const { bytes } = await cleanBackup();
+    it("leaves another site's task in the group where it is", async () => {
+      const { bytes } = await fixture();
       const open = openBackup(await sqljs(), bytes);
-      // Walmart's, parked in "Target" at the id the 5555 watchdog left free.
+      // Walmart's, parked in "Target" at the id and place the 5555 watchdog left free.
       open.db.run(
         "INSERT INTO browser (id, created_at, proxy_group_id, proxy_id, fingerprint_name, cookie_jar_id) VALUES (90, NULL, 1, NULL, 'x.json', NULL)",
       );
       open.db.run(
-        "INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind) VALUES (4, NULL, 1, 0, 0, 'Draw Joiner', 3, NULL, '{}', 90, 'draw_joiner', '{}', '{}', 'pid')",
+        `INSERT INTO task (id, created_at, task_group_id, running, preloaded, type, website_id, profile_id, generic_data, browser_id, flow_key, options, state, target_kind${byId ? "" : ", order_index"})
+         VALUES (4, NULL, 1, 0, 0, 'Draw Joiner', 3, NULL, '{}', 90, 'draw_joiner', '{}', '{}', 'pid'${byId ? "" : ", 4"})`,
       );
       const walmart = open.db.get("SELECT * FROM task WHERE id = 4");
       buildInstance(open.db, desiredInstance(scattering()), options());
@@ -644,7 +662,7 @@ describe("buildInstance", () => {
     });
 
     it("doesn't blame itself for a broken reference a task it moved came in with", async () => {
-      const { bytes } = await cleanBackup();
+      const { bytes } = await fixture();
       const open = openBackup(await sqljs(), bytes);
       // bob - 1's task points at a captcha service that is long gone: Shikari's doing.
       open.db.run("UPDATE task SET captcha_service_id = 999 WHERE id = 7");
@@ -654,7 +672,7 @@ describe("buildInstance", () => {
         open.db.get(
           "SELECT t.id, t.captcha_service_id FROM task t JOIN profile p ON p.id = t.profile_id WHERE p.name = 'bob - 1'",
         ),
-      ).toEqual({ id: 10, captcha_service_id: 999 });
+      ).toEqual({ id: byId ? 10 : 7, captcha_service_id: 999 });
     });
 
     it("makes the wipes in member order too", async () => {
@@ -662,16 +680,96 @@ describe("buildInstance", () => {
       for (const d of list) {
         if (["bob - 1", "carol - 1", "zed - 1"].includes(d.name)) d.pending = { fields: ["card"] };
       }
-      const { db } = await build(list);
+      const { db } = await build(list, {}, fixture);
       expect(
         db
           .all<{ name: string }>(
             `SELECT p.name FROM task t JOIN profile p ON p.id = t.profile_id
                JOIN task_group g ON g.id = t.task_group_id
-              WHERE g.name = 'Target - Profile Updates' ORDER BY t.id`,
+              WHERE g.name = 'Target - Profile Updates' ORDER BY ${listed}`,
           )
           .map((t) => t.name),
       ).toEqual(["bob - 1", "zed - 1", "carol - 1"]);
+    });
+
+    it("takes a checkout task moved in from another group to its member's place", async () => {
+      const { db } = await build(
+        undefined,
+        {},
+        byId ? legacy(mainInstanceBackup) : mainInstanceBackup,
+      );
+      // alice - 2's came in from "NO IMAP".
+      expect(layout(db).map((t) => t.what)).toEqual([
+        "remote watchdog",
+        "watchdog 3333",
+        "watchdog 4444",
+        "alice - 1",
+        "alice - 2",
+        "bob - 1",
+      ]);
+    });
+  });
+
+  describe("a group with drag-and-drop order", () => {
+    const listed = (db: ShikariDb) =>
+      db
+        .all<{ id: number; place: number }>(
+          "SELECT id, order_index AS place FROM task WHERE task_group_id = 1 ORDER BY order_index, id",
+        )
+        .map((t) => [t.id, t.place]);
+
+    it("lays out again a group rearranged by hand, moving tasks by their places alone", async () => {
+      const { bytes } = await cleanBackup();
+      const open = openBackup(await sqljs(), bytes);
+      // Dragged in Shikari: bob - 1's task to the top, and the 3333 watchdog to the bottom.
+      open.db.run("UPDATE task SET order_index = 0 WHERE id = 7");
+      open.db.run("UPDATE task SET order_index = 8 WHERE id = 2");
+      const before = tableHashes(open.db);
+      buildInstance(open.db, desiredInstance(), options());
+      // Back in order, on the places the group already had: each task keeps its id.
+      expect(listed(open.db)).toEqual([
+        [1, 0],
+        [2, 1],
+        [3, 3],
+        [5, 5],
+        [6, 6],
+        [7, 8],
+      ]);
+      expect(touched(diffTables(before, tableHashes(open.db)))).toEqual({
+        task: { added: 0, removed: 0, changed: 3 },
+      });
+    });
+
+    it("brings a task in from another group at the bottom, whatever its place there", async () => {
+      const { bytes } = await mainInstanceBackup();
+      const open = openBackup(await sqljs(), bytes);
+      // alice - 2's, first in "NO IMAP".
+      open.db.run("UPDATE task SET order_index = 0 WHERE id = 6");
+      buildInstance(open.db, desiredInstance(), options());
+      // In below bob - 1's, then up beside alice - 1's: only the two from there down move.
+      expect(listed(open.db)).toEqual([
+        [1, 1],
+        [2, 2],
+        [3, 3],
+        [5, 5],
+        [6, 7],
+        [7, 8],
+      ]);
+    });
+
+    it("never leaves two tasks on one place", async () => {
+      const { bytes } = await cleanBackup();
+      const open = openBackup(await sqljs(), bytes);
+      open.db.run("UPDATE task SET order_index = 3 WHERE task_group_id = 1");
+      buildInstance(open.db, desiredInstance(), options());
+      expect(listed(open.db)).toEqual([
+        [1, 3],
+        [2, 4],
+        [3, 5],
+        [5, 6],
+        [6, 7],
+        [7, 8],
+      ]);
     });
   });
 
