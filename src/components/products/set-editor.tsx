@@ -35,7 +35,14 @@ import { useReorder } from "@/components/products/use-reorder";
  * check that holds.
  */
 
-type NewFields = { url: string; sku: string; name: string; price: string; imageUrl: string };
+type NewFields = {
+  url: string;
+  sku: string;
+  name: string;
+  price: string;
+  pasFee: string;
+  imageUrl: string;
+};
 type Row =
   | { key: string; kind: "listed"; product: CatalogProduct }
   | { key: string; kind: "new"; fields: NewFields };
@@ -155,7 +162,7 @@ export function SetEditor({
         continue;
       }
       if (product.sku) inList.add(product.sku);
-      fresh.push({ key: newKey(), kind: "new", fields: { ...product, imageUrl: "" } });
+      fresh.push({ key: newKey(), kind: "new", fields: { ...product, pasFee: "", imageUrl: "" } });
     }
     setRows((current) => [...current, ...fresh]);
     setPaste("");
@@ -242,6 +249,7 @@ export function SetEditor({
                   url: row.fields.url,
                   sku: row.fields.sku,
                   price: row.fields.price,
+                  pasFee: row.fields.pasFee,
                   imageUrl: row.fields.imageUrl,
                 },
               },
@@ -432,12 +440,23 @@ export function SetEditor({
                           />
                           {row.kind === "listed" ? (
                             <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm text-white">{row.product.name}</p>
-                              <p className="text-xs text-[var(--color-muted)]">
-                                SKU <span className="tabular-nums">{row.product.sku}</span>
-                                {row.product.priceCents !== null &&
-                                  ` · ${money(row.product.priceCents)}`}
+                              {/* The name gives way to the price, never the other way. */}
+                              <p className="flex items-baseline gap-1.5 text-sm">
+                                <span className="truncate text-white">{row.product.name}</span>
+                                {row.product.priceCents !== null && (
+                                  <span className="shrink-0 text-xs text-[var(--color-muted)] tabular-nums">
+                                    {money(row.product.priceCents)}
+                                  </span>
+                                )}
                               </p>
+                              <div className="text-xs text-[var(--color-muted)]">
+                                {row.product.pasFeeCents !== null && (
+                                  <p>PAS: {money(row.product.pasFeeCents)}/unit</p>
+                                )}
+                                <p>
+                                  SKU <span className="tabular-nums">{row.product.sku}</span>
+                                </p>
+                              </div>
                             </div>
                           ) : (
                             <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -486,7 +505,7 @@ export function SetEditor({
                         </div>
 
                         {row.kind === "new" && (
-                          <div className="mt-2 grid grid-cols-2 gap-2 sm:ml-[4.75rem] sm:grid-cols-[1fr_8rem_6.5rem]">
+                          <div className="mt-2 grid grid-cols-2 gap-2 sm:ml-[4.75rem] sm:grid-cols-[1fr_8rem_6.5rem_6.5rem]">
                             <input
                               aria-label={`Name of product ${index + 1}`}
                               value={row.fields.name}
@@ -518,6 +537,16 @@ export function SetEditor({
                               className={field}
                             />
                             <input
+                              aria-label={`PAS fee per unit of product ${index + 1}`}
+                              value={row.fields.pasFee}
+                              onChange={(event) =>
+                                edit(row.key, { pasFee: event.currentTarget.value })
+                              }
+                              inputMode="decimal"
+                              placeholder="PAS fee"
+                              className={field}
+                            />
+                            <input
                               aria-label={`Image link of product ${index + 1}`}
                               value={row.fields.imageUrl}
                               onChange={(event) =>
@@ -525,7 +554,7 @@ export function SetEditor({
                               }
                               inputMode="url"
                               placeholder="Image link (optional)"
-                              className={`${field} col-span-2 sm:col-span-3`}
+                              className={`${field} sm:col-span-4`}
                             />
                           </div>
                         )}

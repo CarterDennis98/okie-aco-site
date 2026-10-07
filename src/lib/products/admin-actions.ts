@@ -60,6 +60,7 @@ export async function updateDropProduct(form: FormData): Promise<ProductResult> 
     url: text(form, "url"),
     sku: text(form, "sku"),
     price: text(form, "price"),
+    pasFee: text(form, "pasFee"),
     imageUrl: text(form, "imageUrl"),
   });
   if (!parsed.ok) return parsed;
@@ -74,6 +75,7 @@ export async function updateDropProduct(form: FormData): Promise<ProductResult> 
         url: true,
         sku: true,
         priceCents: true,
+        pasFeeCents: true,
         imageUrl: true,
       },
     });
@@ -166,6 +168,7 @@ const newProduct = z
     url: z.string().max(2000),
     sku: z.string().max(40),
     price: z.string().max(40),
+    pasFee: z.string().max(40),
     imageUrl: z.string().max(2000),
   })
   .strict();

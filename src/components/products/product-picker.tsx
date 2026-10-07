@@ -480,7 +480,8 @@ function SetSection({
                 />
                 <ProductImage src={product.imageUrl} />
                 <div className="min-w-0 flex-1">
-                  {/* Underlined throughout, so it reads as a link without an icon. */}
+                  {/* Underlined throughout, so it reads as a link without an icon. The price
+                      follows it outside the link, and wraps as one piece. */}
                   <a
                     href={product.url}
                     target="_blank"
@@ -490,12 +491,24 @@ function SetSection({
                     {product.name}
                     <span className="sr-only"> (opens Target in a new tab)</span>
                   </a>
-                  <p className="mt-0.5 text-xs text-[var(--color-muted)]">
-                    {product.priceCents !== null && `${money(product.priceCents)} · `}SKU{" "}
-                    <span className="tabular-nums">{product.sku}</span>
-                    {count &&
-                      ` · ${count.members} member${count.members === 1 ? "" : "s"}, ${count.profiles} profile${count.profiles === 1 ? "" : "s"}`}
-                  </p>
+                  {product.priceCents !== null && (
+                    <span className="ml-1.5 text-xs whitespace-nowrap text-[var(--color-muted)] tabular-nums">
+                      {money(product.priceCents)}
+                    </span>
+                  )}
+                  {/* One fact a line: run together, they wrap mid-way on a phone. */}
+                  <div className="mt-0.5 text-xs text-[var(--color-muted)]">
+                    {product.pasFeeCents !== null && <p>PAS: {money(product.pasFeeCents)}/unit</p>}
+                    <p>
+                      SKU <span className="tabular-nums">{product.sku}</span>
+                    </p>
+                    {count && (
+                      <p>
+                        {count.members} member{count.members === 1 ? "" : "s"}, {count.profiles}{" "}
+                        profile{count.profiles === 1 ? "" : "s"}
+                      </p>
+                    )}
+                  </div>
 
                   {choice && choosable && (
                     <ProfileChoice

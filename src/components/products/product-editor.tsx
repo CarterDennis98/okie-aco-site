@@ -38,6 +38,7 @@ function fieldsOf(product: CatalogProduct): ProductFields {
     url: product.url,
     sku: product.sku,
     price: product.priceCents === null ? "" : (product.priceCents / 100).toFixed(2),
+    pasFee: product.pasFeeCents === null ? "" : (product.pasFeeCents / 100).toFixed(2),
     imageUrl: product.imageUrl ?? "",
   };
 }
@@ -202,7 +203,7 @@ export function ProductEditor({
             />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-[9rem_1fr]">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-[9rem_9rem]">
             <div>
               <label htmlFor={`product-${id}-price`} className={label}>
                 Price <span className="font-normal">(retail)</span>
@@ -217,18 +218,32 @@ export function ProductEditor({
               />
             </div>
             <div>
-              <label htmlFor={`product-${id}-image`} className={label}>
-                Image link
+              <label htmlFor={`product-${id}-pas`} className={label}>
+                PAS fee <span className="font-normal">(per unit)</span>
               </label>
               <input
-                id={`product-${id}-image`}
-                value={fields.imageUrl}
-                onChange={(event) => set("imageUrl", event.currentTarget.value)}
-                inputMode="url"
-                placeholder="https://target.scene7.com/…"
+                id={`product-${id}-pas`}
+                value={fields.pasFee}
+                onChange={(event) => set("pasFee", event.currentTarget.value)}
+                inputMode="decimal"
+                placeholder="$5"
                 className={field}
               />
             </div>
+          </div>
+
+          <div>
+            <label htmlFor={`product-${id}-image`} className={label}>
+              Image link
+            </label>
+            <input
+              id={`product-${id}-image`}
+              value={fields.imageUrl}
+              onChange={(event) => set("imageUrl", event.currentTarget.value)}
+              inputMode="url"
+              placeholder="https://target.scene7.com/…"
+              className={field}
+            />
           </div>
 
           {preview && (

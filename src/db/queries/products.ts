@@ -20,6 +20,8 @@ export type CatalogProduct = {
   url: string;
   sku: string;
   priceCents: number | null;
+  /** The PAS fee per unit members are shown. Display only; see DropProduct. */
+  pasFeeCents: number | null;
   imageUrl: string | null;
   /** Its place in its set on the page; see lib/products/sets.ts. */
   sortOrder: number;
@@ -35,6 +37,7 @@ const PRODUCT_SELECT = {
   url: true,
   sku: true,
   priceCents: true,
+  pasFeeCents: true,
   imageUrl: true,
   sortOrder: true,
   active: true,

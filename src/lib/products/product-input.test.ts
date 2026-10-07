@@ -16,6 +16,7 @@ const fields = (over: Partial<Parameters<typeof parseProductInput>[0]> = {}) => 
   url: LINK,
   sku: "",
   price: "",
+  pasFee: "",
   imageUrl: "",
   ...over,
 });
@@ -56,9 +57,22 @@ describe("parseProductInput", () => {
         url: "https://www.target.com/p/pokemon-trading-card-game-mega-evolution-phantasmal-flames-elite-trainer-box/-/A-95082118",
         sku: "95082118",
         priceCents: 4999,
+        pasFeeCents: null,
         imageUrl: null,
       },
     });
+  });
+
+  it("reads the PAS fee per unit, where $0 is a fee and blank is none", () => {
+    const fee = (pasFee: string) => {
+      const parsed = parseProductInput(fields({ pasFee }));
+      return parsed.ok ? parsed.value.pasFeeCents : parsed.error;
+    };
+    expect(fee("$5")).toBe(500);
+    expect(fee(" 12.50 ")).toBe(1250);
+    expect(fee("0")).toBe(0);
+    expect(fee("")).toBeNull();
+    expect(fee("five")).toBe("That PAS fee isn't a number.");
   });
 
   it("refuses a SKU that disagrees with the link", () => {

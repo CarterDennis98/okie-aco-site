@@ -35,7 +35,13 @@ const PREFIX = "set-editor-spec-";
 const SET = `${PREFIX}Phantasmal Flames`;
 const OTHER = `${PREFIX}Surging Sparks`;
 
-type NewOver = Partial<{ name: string; sku: string; price: string; imageUrl: string }>;
+type NewOver = Partial<{
+  name: string;
+  sku: string;
+  price: string;
+  pasFee: string;
+  imageUrl: string;
+}>;
 
 /** A new product as the editor sends one: its link, and whatever was filled in. */
 const added = (sku: string, over: NewOver = {}) => ({
@@ -44,6 +50,7 @@ const added = (sku: string, over: NewOver = {}) => ({
     url: `https://www.target.com/p/x/-/A-${sku}`,
     sku: "",
     price: "",
+    pasFee: "",
     imageUrl: "",
     ...over,
   },
@@ -54,7 +61,14 @@ const inSet = (setName: string) =>
   prisma.dropProduct.findMany({
     where: { siteKey: SITE, setName },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-    select: { id: true, sku: true, sortOrder: true, active: true, priceCents: true },
+    select: {
+      id: true,
+      sku: true,
+      sortOrder: true,
+      active: true,
+      priceCents: true,
+      pasFeeCents: true,
+    },
   });
 
 const skus = async (setName: string) => (await inSet(setName)).map((p) => p.sku);
@@ -81,13 +95,19 @@ describe.skipIf(!canRun)("the set editor", () => {
     const result = await saveDropSet({
       setName: `  ${SET} `,
       previousName: null,
-      items: [added("98000001", { price: "$49.99" }), added("98000002"), added("98000003")],
+      items: [
+        added("98000001", { price: "$49.99", pasFee: "$5" }),
+        added("98000002", { pasFee: "0" }),
+        added("98000003"),
+      ],
     });
     expect(result).toEqual({ ok: true, added: 3 });
-    expect((await inSet(SET)).map((p) => [p.sku, p.sortOrder, p.priceCents])).toEqual([
-      ["98000001", 0, 4999],
-      ["98000002", 1, null],
-      ["98000003", 2, null],
+    expect(
+      (await inSet(SET)).map((p) => [p.sku, p.sortOrder, p.priceCents, p.pasFeeCents]),
+    ).toEqual([
+      ["98000001", 0, 4999, 500],
+      ["98000002", 1, null, 0],
+      ["98000003", 2, null, null],
     ]);
     expect(
       await prisma.adminAudit.count({
@@ -112,6 +132,10 @@ describe.skipIf(!canRun)("the set editor", () => {
     expect(await send(added("98000002"), added("98000003", { price: "free" }))).toEqual({
       ok: false,
       error: "Product 2: That price isn't a number.",
+    });
+    expect(await send(added("98000002", { pasFee: "a lot" }))).toEqual({
+      ok: false,
+      error: "Product 1: That PAS fee isn't a number.",
     });
     expect(await send()).toEqual({ ok: false, error: "Paste at least one product link." });
     // None of the good ones in those batches went in on their own.
@@ -199,6 +223,38 @@ describe.skipIf(!canRun)("the set editor", () => {
       ["98000002", 1],
       ["98000009", 2],
     ]);
+  });
+
+  it("sets and clears a product's PAS fee, and audits the change", async () => {
+    const [p1] = await listed(SET, "98000001");
+    const edit = (pasFee: string) => {
+      const form = new FormData();
+      for (const [key, value] of Object.entries({
+        id: p1.id,
+        setName: SET,
+        name: `${PREFIX}98000001`,
+        url: "https://www.target.com/p/x/-/A-98000001",
+        sku: "98000001",
+        price: "$49.99",
+        pasFee,
+        imageUrl: "",
+      }))
+        form.set(key, value);
+      return updateDropProduct(form);
+    };
+
+    expect(await edit("7.50")).toEqual({ ok: true, id: p1.id });
+    expect((await inSet(SET))[0]).toMatchObject({ priceCents: 4999, pasFeeCents: 750 });
+    expect(
+      await prisma.adminAudit.findFirst({
+        where: { actorDiscordId: ADMIN, action: "drop_product.update", entityId: p1.id },
+        select: { before: true, after: true },
+      }),
+    ).toMatchObject({ before: { pasFeeCents: null }, after: { pasFeeCents: 750 } });
+
+    expect(await edit("")).toEqual({ ok: true, id: p1.id });
+    expect((await inSet(SET))[0].pasFeeCents).toBeNull();
+    expect(await edit("free")).toEqual({ ok: false, error: "That PAS fee isn't a number." });
   });
 
   it("deletes a set with its retired products and members' picks, only as the page showed it", async () => {

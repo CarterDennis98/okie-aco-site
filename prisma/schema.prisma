@@ -888,8 +888,12 @@ model DropProduct {
   sku     String
 
   // Retail price, shown to members deciding what they want. Never a fee: fees live on Item.
-  priceCents Int?    @map("price_cents")
-  imageUrl   String? @map("image_url")
+  priceCents  Int?    @map("price_cents")
+  // The PAS fee per unit, shown beside the price ("PAS: $5/unit") so members know what a
+  // checkout will cost them. Display only, like the price: a bill takes its fee from the PAS
+  // run (PasBillLine.feeCents), never from here. Null: no fee listed.
+  pasFeeCents Int?    @map("pas_fee_cents")
+  imageUrl    String? @map("image_url")
 
   // Where it sits in its set on the page, lowest first -- the order an admin arranges in the
   // set editor. A product added later goes to the end of its set. Display only: exports

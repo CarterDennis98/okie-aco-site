@@ -51,6 +51,7 @@ export type ProductInput = {
   url: string;
   sku: string;
   priceCents: number | null;
+  pasFeeCents: number | null;
   imageUrl: string | null;
 };
 
@@ -60,6 +61,8 @@ export type ProductFields = {
   url: string;
   sku: string;
   price: string;
+  /** The PAS fee per unit. */
+  pasFee: string;
   imageUrl: string;
 };
 
@@ -169,6 +172,13 @@ export function parseProductInput(
       return { ok: false, error: "That price isn't a number." };
   }
 
+  // Blank lists no fee. $0 is one: a product run for free says so.
+  let pasFeeCents: number | null = null;
+  if (fields.pasFee.trim()) {
+    pasFeeCents = parseCents(fields.pasFee);
+    if (pasFeeCents === null) return { ok: false, error: "That PAS fee isn't a number." };
+  }
+
   let imageUrl: string | null = null;
   if (fields.imageUrl.trim()) {
     const image = httpsUrl(fields.imageUrl);
@@ -181,5 +191,8 @@ export function parseProductInput(
   // which variant the page opens on.
   url.hash = "";
   url.search = preselect ? `?preselect=${encodeURIComponent(preselect)}` : "";
-  return { ok: true, value: { setName, name, url: url.href, sku, priceCents, imageUrl } };
+  return {
+    ok: true,
+    value: { setName, name, url: url.href, sku, priceCents, pasFeeCents, imageUrl },
+  };
 }
