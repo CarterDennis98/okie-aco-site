@@ -2,7 +2,7 @@ import { useState, type DragEvent } from "react";
 
 /**
  * Reordering a list by dragging a row by its handle, or with its arrows: the set editor's
- * products, and the set arranger's sets.
+ * products, the set arranger's sets, and a member's profiles (vault/profile-arranger.tsx).
  *
  * Native drag and drop. A row is only draggable while its handle is held, so text in the
  * row's inputs can still be selected with the mouse. Native dragging doesn't work on touch

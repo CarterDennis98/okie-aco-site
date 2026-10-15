@@ -13,11 +13,13 @@ import {
   setProfilesActive,
   type ActionResult,
 } from "@/lib/vault/actions";
+import { ProfileArranger } from "@/components/vault/profile-arranger";
 import { ProfileForm } from "@/components/vault/profile-form";
 import { RevealAppPassword } from "@/components/vault/reveal-app-password";
 
 /**
- * One retailer's profiles, with add / edit / enable / remove.
+ * One retailer's profiles, with add / edit / enable / remove, reorder (ProfileArranger), and
+ * an AYCD export of the member's own profiles (api/vault/export).
  *
  * The edit form fetches the full profile on demand rather than the page shipping every
  * field for every profile up front -- a member with 90 profiles would otherwise send a
@@ -436,14 +438,18 @@ export function ProfileManager({
   siteLogo,
   profiles,
   nextName,
+  renumbered,
 }: {
   siteKey: string;
   siteLogo: string | null;
   profiles: VaultProfileSummary[];
   nextName: string;
+  /** The name each position takes when the member reorders. See ProfileArranger. */
+  renumbered: string[];
 }) {
   const [editing, setEditing] = useState<VaultProfileDetail | null>(null);
   const [adding, setAdding] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const style = siteStyle(siteKey);
@@ -515,17 +521,68 @@ export function ProfileManager({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setAdding((v) => !v);
-            setEditing(null);
-          }}
-          className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 sm:min-h-0"
-        >
-          {adding ? "Cancel" : "Add profile"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {profiles.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setExporting((v) => !v)}
+              aria-expanded={exporting}
+              className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 sm:min-h-0"
+            >
+              Export to AYCD
+            </button>
+          )}
+          {/* Nothing to arrange with one. */}
+          {profiles.length > 1 && (
+            <ProfileArranger siteKey={siteKey} profiles={profiles} renumbered={renumbered} />
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setAdding((v) => !v);
+              setEditing(null);
+            }}
+            className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 sm:min-h-0"
+          >
+            {adding ? "Cancel" : "Add profile"}
+          </button>
+        </div>
       </header>
+
+      {/* A step before the download rather than a bare link: the file holds every full card
+          number and security code on this retailer, in plain text, and that is worth one
+          sentence before it lands in someone's Downloads folder. */}
+      {exporting && (
+        <div className="mb-4 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-5">
+          <p className="text-sm font-semibold text-white">Export to AYCD</p>
+          <p className="mt-1 max-w-2xl text-sm text-[var(--color-muted)]">
+            Downloads{" "}
+            {profiles.length === 1
+              ? `your ${style.label} profile`
+              : `all ${profiles.length} of your ${style.label} profiles, enabled or not,`}{" "}
+            as an AYCD profile file. It has your full card numbers and security codes in it, so keep
+            it somewhere safe. Every export is logged.
+          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <a
+              href={`/api/vault/export?site=${encodeURIComponent(siteKey)}`}
+              // Plain anchor, not a Link: this is a file download, not a route transition.
+              download
+              onClick={() => setExporting(false)}
+              className="inline-flex min-h-11 items-center rounded-lg bg-[var(--color-brand)] px-4 py-2 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] sm:min-h-0"
+            >
+              Download
+            </a>
+            <button
+              type="button"
+              onClick={() => setExporting(false)}
+              className="inline-flex min-h-11 items-center text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] sm:min-h-0"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       {adding && (
         <div className="mb-4 rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] p-5">

@@ -5,7 +5,7 @@ import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { loginOnlySiteKeys, siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
 import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
-import { nextProfileName, profileBaseFor } from "@/lib/vault/profile-input";
+import { nextProfileName, profileBaseFor, renumberedNames } from "@/lib/vault/profile-input";
 
 /**
  * Member-scoped reads for the profile manager.
@@ -544,24 +544,29 @@ export async function getEmailsNeedingAppPassword(discordUserId: string): Promis
 }
 
 /**
- * The name a member's next profile on a site will be given.
+ * The names a member's profiles on a site will be given: the next one added, and each
+ * position's when they are reordered (`renumbered[0]` is the first's).
  *
- * Computed here so the add form can show it before saving. The action recomputes it at
- * write time rather than trusting this -- a preview rendered minutes ago can be stale
- * if another profile was added in the meantime.
+ * Computed here so the add form and the reorder dialog can show them before saving. The
+ * actions recompute both at write time rather than trusting these -- a preview rendered
+ * minutes ago can be stale if another profile was added in the meantime.
  */
-export async function getNextProfileName(
+export async function getProfileNaming(
   discordUserId: string,
   siteKey: string,
   discordUsername: string,
-): Promise<string> {
+): Promise<{ next: string; renumbered: string[] }> {
   const all = await prisma.vaultProfile.findMany({
     where: { siteKey },
     select: { name: true, discordUserId: true },
   });
   const mine = all.filter((p) => p.discordUserId === discordUserId).map((p) => p.name);
-  return nextProfileName(
-    profileBaseFor(mine, discordUsername),
-    all.map((p) => p.name),
-  );
+  const theirs = all.filter((p) => p.discordUserId !== discordUserId).map((p) => p.name);
+  return {
+    next: nextProfileName(
+      profileBaseFor(mine, discordUsername),
+      all.map((p) => p.name),
+    ),
+    renumbered: renumberedNames(mine, theirs, discordUsername),
+  };
 }

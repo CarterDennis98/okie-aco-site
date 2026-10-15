@@ -29,12 +29,15 @@ export function SiteSwitcher({
   profilesBySite,
   loginsBySite,
   nextNames,
+  renumbered,
   logos,
 }: {
   siteKeys: string[];
   profilesBySite: Record<string, VaultProfileSummary[]>;
   loginsBySite: Record<string, VaultLoginSummary[]>;
   nextNames: Record<string, string>;
+  /** Each position's name after a reorder, per retailer. See getProfileNaming. */
+  renumbered: Record<string, string[]>;
   logos: Record<string, string | null>;
 }) {
   // What a chip counts, and what "most" means when picking which one opens.
@@ -122,6 +125,7 @@ export function SiteSwitcher({
           siteLogo={logos[active] ?? null}
           profiles={profilesBySite[active] ?? []}
           nextName={nextNames[active] ?? ""}
+          renumbered={renumbered[active] ?? []}
         />
       ) : (
         <LoginManager

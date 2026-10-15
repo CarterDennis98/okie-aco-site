@@ -7,6 +7,7 @@
  * records. Card numbers below are Luhn-valid but not real.
  */
 import { describe, expect, it } from "vitest";
+import { profilesForBot } from "@/lib/vault/bot-split";
 import {
   BOT_SENTINEL_PHONE,
   nextProfileName,
@@ -14,6 +15,7 @@ import {
   profileBaseFor,
   profileFieldsFromForm,
   profileIdentity,
+  renumberedNames,
   validateProfileForm,
 } from "@/lib/vault/profile-input";
 
@@ -337,7 +339,9 @@ describe("family grouping", () => {
     // the next name as "target 1 - 2".
     const house = Array.from({ length: 59 }, (_, i) => `Target ${i + 1}`);
     expect(profileBaseFor(house, "ou1998")).toBe("target");
-    expect(nextProfileName("target", house)).toBe("target - 60");
+    // And it carries on in their numbering. This was "target - 60", which sorts ahead of
+    // "Target 1" -- onto the main bot -- because names are the order.
+    expect(nextProfileName("target", house)).toBe("Target 60");
   });
 
   it("counts hyphenated and spaced members of a family together", () => {
@@ -349,5 +353,172 @@ describe("family grouping", () => {
   it("does not pull an unrelated name into a family", () => {
     // "carterson" starts with "carter" but is a different person.
     expect(nextProfileName("carter", ["carterson", "carterson - 4"])).toBe("carter");
+  });
+
+  it("groups names numbered with # or carrying AYCD's noise", () => {
+    expect(profileBaseFor(["Walmart sahab #4", "Walmart sahab #9", "oddone"], "sahab")).toBe(
+      "walmart sahab",
+    );
+    expect(profileBaseFor(["Walmart 82-!50", "Walmart 3-#12", "carter"], "carter")).toBe("walmart");
+  });
+});
+
+describe("the next name in a member's own numbering", () => {
+  /** What a member gets from Add profile: the base from their names, against the whole site. */
+  const next = (mine: string[], others: string[] = []) =>
+    nextProfileName(profileBaseFor(mine, "whoever"), [...mine, ...others]);
+
+  it("carries on a house or legacy scheme rather than starting a ' - N' one", () => {
+    expect(next(Array.from({ length: 81 }, (_, i) => `PKC ${i + 1}`))).toBe("PKC 82");
+    expect(next(Array.from({ length: 136 }, (_, i) => `Walmart sahab #${i + 1}`))).toBe(
+      "Walmart sahab #137",
+    );
+    // AYCD gave two profiles "2" and told them apart with noise; both still hold 2.
+    expect(next(["Walmart 1-!50", "Walmart 2-#12", "Walmart 2-!7"])).toBe("Walmart 3");
+  });
+
+  it("fills the lowest free number in any scheme", () => {
+    expect(next(["PKC 1", "PKC 3"])).toBe("PKC 2");
+    expect(next(["Walmart sahab #2", "Walmart sahab #3"])).toBe("Walmart sahab #1");
+  });
+
+  it("keeps the spelling the member's names use", () => {
+    // The key drops the underscore, so this used to come out "mugiawarasunny - 3" -- the
+    // same profile key, and a different-looking name.
+    expect(next(["mugiawara_sunny", "mugiawara_sunny - 2"])).toBe("mugiawara_sunny - 3");
+  });
+
+  it("steps over a number another member holds in the family, under any spelling", () => {
+    expect(next(["carter", "carter - 2"], ["Carter 3"])).toBe("carter - 4");
+    expect(next(["PKC 1"], ["PKC 2"])).toBe("PKC 3");
+  });
+
+  it("gives a name that sorts after the member's others", () => {
+    // Appended in place, so a new profile never takes a main-bot slot by sorting ahead.
+    for (const scheme of [
+      (n: number) => (n === 1 ? "carter" : `carter - ${n}`),
+      (n: number) => `PKC ${n}`,
+      (n: number) => `Walmart sahab #${n}`,
+    ]) {
+      const mine = Array.from({ length: 120 }, (_, i) => scheme(i + 1));
+      const name = next(mine);
+      const sorted = profilesForBot(
+        [...mine, name].map((n) => ({ name: n })),
+        undefined,
+        "all",
+      ).map((p) => p.name);
+      expect(sorted.at(-1)).toBe(name);
+    }
+  });
+});
+
+describe("renumberedNames", () => {
+  /** Sorted by the rule the bot split uses, which is what decides the main bot. */
+  const inSplitOrder = (names: string[]) =>
+    profilesForBot(
+      names.map((name) => ({ name })),
+      undefined,
+      "all",
+    ).map((p) => p.name);
+
+  it("numbers the usual family from the bare name, closing any gaps", () => {
+    expect(renumberedNames(["carter", "carter - 2", "carter - 4"], [], "whoever")).toEqual([
+      "carter",
+      "carter - 2",
+      "carter - 3",
+    ]);
+  });
+
+  it("keeps a family that starts from - 1", () => {
+    expect(renumberedNames(["carter - 3", "carter - 1"], [], "whoever")).toEqual([
+      "carter - 1",
+      "carter - 2",
+    ]);
+  });
+
+  it("keeps the member's own scheme and spelling", () => {
+    // House profiles and the legacy Walmart import: renumbered, not renamed to "pkc - 2".
+    expect(renumberedNames(["PKC 1", "PKC 2", "PKC 7"], [], "whoever")).toEqual([
+      "PKC 1",
+      "PKC 2",
+      "PKC 3",
+    ]);
+    expect(renumberedNames(["Walmart sahab #4", "Walmart sahab #9"], [], "whoever")).toEqual([
+      "Walmart sahab #1",
+      "Walmart sahab #2",
+    ]);
+  });
+
+  it("drops AYCD's collision noise", () => {
+    expect(
+      renumberedNames(["Walmart 82-!50", "Walmart 3-#12", "Walmart 4"], [], "whoever"),
+    ).toEqual(["Walmart 1", "Walmart 2", "Walmart 3"]);
+  });
+
+  it("pulls a stray name into the family most of them share", () => {
+    // Left as it was, "oddone" would sort after every carter whatever position it was
+    // dragged to.
+    expect(renumberedNames(["carter", "carter - 2", "oddone"], [], "whoever")).toEqual([
+      "carter",
+      "carter - 2",
+      "carter - 3",
+    ]);
+  });
+
+  it("leaves a handle that ends in digits whole", () => {
+    expect(renumberedNames(["thisisgold0220", "thisisgold0220 - 3"], [], "whoever")).toEqual([
+      "thisisgold0220",
+      "thisisgold0220 - 2",
+    ]);
+  });
+
+  it("steps over a name another member holds", () => {
+    // (site, name) is unique across members, as in nextProfileName.
+    expect(
+      renumberedNames(["carter", "carter - 2", "carter - 3"], ["Carter - 2"], "whoever"),
+    ).toEqual(["carter", "carter - 3", "carter - 4"]);
+    expect(renumberedNames(["carter - 2", "carter - 3"], ["carter"], "whoever")).toEqual([
+      "carter - 2",
+      "carter - 3",
+    ]);
+    // Their "Carter 2" is the second of the carter family too, though no name collides.
+    expect(
+      renumberedNames(["carter", "carter - 2", "carter - 3"], ["Carter 2"], "whoever"),
+    ).toEqual(["carter", "carter - 3", "carter - 4"]);
+  });
+
+  it("settles a tie between two families by the member's handle, as Add profile does", () => {
+    const mine = ["carter7", "carter - 2"];
+    expect(renumberedNames(mine, [], "carter7")).toEqual(["carter7", "carter7 - 2"]);
+    expect(nextProfileName(profileBaseFor(mine, "carter7"), mine)).toBe("carter7 - 2");
+    // A handle that is neither: the family that lists first.
+    expect(renumberedNames(mine, [], "whoever")).toEqual(["carter", "carter - 2"]);
+  });
+
+  it("numbers the way Add profile continues", () => {
+    // A reorder and the next profile added must agree on the sequence.
+    const mine = ["mugiawara_sunny", "mugiawara_sunny - 2", "mugiawarasunny - 4"];
+    const renamed = renumberedNames(mine, [], "whoever");
+    expect(renamed).toEqual(["mugiawara_sunny", "mugiawara_sunny - 2", "mugiawara_sunny - 3"]);
+    expect(nextProfileName(profileBaseFor(renamed, "whoever"), renamed)).toBe(
+      "mugiawara_sunny - 4",
+    );
+  });
+
+  it("gives names that sort back into position order", () => {
+    // The whole point: position N must be Nth to the bot split, past 9 and past 99 too.
+    for (const scheme of [
+      (n: number) => (n === 1 ? "carter" : `carter - ${n}`),
+      (n: number) => `PKC ${n}`,
+      (n: number) => `Walmart sahab #${n}`,
+    ]) {
+      const names = renumberedNames(
+        Array.from({ length: 120 }, (_, i) => scheme(i + 1)),
+        [scheme(7), scheme(50)].map((name) => name.toUpperCase()),
+        "whoever",
+      );
+      expect(names).toHaveLength(120);
+      expect(inSplitOrder([...names].reverse())).toEqual(names);
+    }
   });
 });

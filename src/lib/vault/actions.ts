@@ -27,6 +27,7 @@ import {
   profileBaseFor,
   profileFieldsFromForm,
   profileIdentity,
+  renumberedNames,
   text,
   validateProfileForm,
 } from "@/lib/vault/profile-input";
@@ -544,6 +545,121 @@ export async function deleteProfiles(form: FormData): Promise<ActionResult & { r
 
   revalidatePath("/dashboard/profiles");
   return { ok: true, removed: profiles.length };
+}
+
+/**
+ * Put one retailer's profiles in the order the member dragged them into, renumbering their
+ * names to match.
+ *
+ * Names are how order is stored: every list sorts by name, and the main bot runs the first
+ * few (bot-split.ts). So this changes names and only names, and the numbering comes from
+ * renumberedNames. The page's preview came from the same function, and calling it again
+ * here means a name another member took in the meantime is stepped over, not collided with.
+ *
+ * `order` must be EXACTLY the member's profiles on the retailer. A profile added or removed
+ * in another tab since the list was drawn would otherwise be left out of the numbering, or
+ * numbered blind, so a mismatch is refused and the member reloads. Same ownership rule as
+ * everywhere else: the ids are checked against their own rows, never trusted.
+ *
+ * Only the profiles whose names actually change are written and recorded. Each is an
+ * UPDATE of its name in the runner's queue, because the bot is still running the old names
+ * until the new export is loaded. One notification for the whole drag, like the other bulk
+ * actions here.
+ */
+export async function reorderProfiles(input: {
+  siteKey: string;
+  order: string[];
+}): Promise<ActionResult & { renamed?: number }> {
+  const viewer = await requireMember();
+
+  const siteKey = String(input?.siteKey ?? "");
+  if (!isKnownSite(siteKey)) return { ok: false, error: "Unknown retailer." };
+  if (!siteUsesProfiles(siteKey)) {
+    return { ok: false, error: `${siteStyle(siteKey).label} stores a login only.` };
+  }
+  const order = Array.isArray(input?.order) ? input.order.map(String) : [];
+
+  const [mine, others] = await Promise.all([
+    prisma.vaultProfile.findMany({
+      where: { siteKey, discordUserId: viewer.discordUserId },
+      select: { id: true, name: true, account: { select: { assigneeId: true } } },
+    }),
+    prisma.vaultProfile.findMany({
+      where: { siteKey, discordUserId: { not: viewer.discordUserId } },
+      select: { name: true },
+    }),
+  ]);
+
+  const byId = new Map(mine.map((profile) => [profile.id, profile]));
+  if (
+    order.length !== mine.length ||
+    new Set(order).size !== order.length ||
+    order.some((id) => !byId.has(id))
+  ) {
+    return {
+      ok: false,
+      error: "Your profiles changed since this list was opened. Reload the page and try again.",
+    };
+  }
+
+  const names = renumberedNames(
+    mine.map((profile) => profile.name),
+    others.map((profile) => profile.name),
+    viewer.username,
+  );
+  const renames = order
+    .map((id, position) => ({ profile: byId.get(id)!, name: names[position] }))
+    .filter(({ profile, name }) => profile.name !== name);
+  if (renames.length === 0) return { ok: true, renamed: 0 };
+
+  try {
+    // Two passes in one transaction. Swapping "carter - 2" and "carter - 3" in a single
+    // pass would hit (site, name) uniqueness halfway through, so every renamed row first
+    // takes a placeholder no real name can equal, then its new name.
+    await prisma.$transaction([
+      ...renames.map(({ profile }) =>
+        prisma.vaultProfile.update({
+          where: { id: profile.id },
+          data: { name: `~renumbering~${profile.id}` },
+        }),
+      ),
+      ...renames.map(({ profile, name }) =>
+        prisma.vaultProfile.update({
+          where: { id: profile.id },
+          // The key and index move with the name, from the same normalizer the checkout
+          // pipeline uses -- see saveProfile.
+          data: { name, ...profileIdentity(name), updatedBy: viewer.discordUserId },
+        }),
+      ),
+    ]);
+  } catch (error) {
+    // Most likely a name another member took between the read above and this write.
+    console.error(
+      "vault: reorderProfiles failed",
+      error instanceof Error ? error.message : "unknown",
+    );
+    return { ok: false, error: "Couldn't save that order. Reload the page and try again." };
+  }
+
+  await recordBulkChange(
+    renames.map(({ profile, name }) => ({
+      actorDiscordId: viewer.discordUserId,
+      ownerDiscordId: viewer.discordUserId,
+      entity: VaultEntity.VAULT_PROFILE,
+      entityId: profile.id,
+      action: VaultAction.UPDATE,
+      siteKey,
+      assigneeId: profile.account.assigneeId,
+      // Both names: the bot still has the old one, and that is what the runner looks for.
+      label: `${profile.name} → ${name}`,
+      fields: ["name"],
+    })),
+    viewer.displayName,
+    `renumbered ${renames.length} profile${renames.length === 1 ? "" : "s"} by reordering`,
+  );
+
+  revalidatePath("/dashboard/profiles");
+  return { ok: true, renamed: renames.length };
 }
 
 // ---------------------------------------------------------------------------

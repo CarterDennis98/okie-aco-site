@@ -280,7 +280,8 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     logo: "/pokemon-center-logo.png",
     width: 897,
     height: 900,
-    profileSoftCap: 10,
+    // Five on the main bot, as on Target. Was ten until 2026-10.
+    profileSoftCap: 5,
     // Guest checkout: no account, so no password and no verification code to read.
     usesAccounts: false,
     usesEmailCodes: false,

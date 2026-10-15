@@ -8,7 +8,7 @@ import {
   getMemberEmailCredentials,
   getMemberLogins,
   getMemberProfiles,
-  getNextProfileName,
+  getProfileNaming,
 } from "@/db/queries/vault";
 import { requireMember } from "@/lib/auth/guard";
 import { resolveSiteLogo } from "@/lib/site-logo";
@@ -44,17 +44,18 @@ export default async function ProfilesPage() {
   const bySite = new Map(grouped.map((g) => [g.siteKey, g.profiles]));
   const loginsBySite = new Map(logins.map((g) => [g.siteKey, g.logins]));
 
-  // Preview only -- saveProfile recomputes the name at write time, so a stale preview
-  // can never become a wrong name. Login-only retailers are skipped: their rows have no
-  // profile name, and computing one would scan every profile on a site that has none.
+  // Preview only -- saveProfile and reorderProfiles recompute names at write time, so a
+  // stale preview can never become a wrong name. Login-only retailers are skipped: their
+  // rows have no profile name, and computing one would scan every profile on a site that
+  // has none.
   const profileSites = siteKeys.filter((key) => siteUsesProfiles(key));
-  const nextNames = new Map(
+  const naming = new Map(
     await Promise.all(
       profileSites.map(
         async (siteKey) =>
           [
             siteKey,
-            await getNextProfileName(viewer.discordUserId, siteKey, viewer.username),
+            await getProfileNaming(viewer.discordUserId, siteKey, viewer.username),
           ] as const,
       ),
     ),
@@ -79,12 +80,18 @@ export default async function ProfilesPage() {
         </p>
 
         {/* Said once, prominently. A member who doesn't understand this will assume the
-            site lost their card the first time they open the edit form. */}
+            site lost their card the first time they open the edit form.
+
+            "On screen", not "ever": a member's own AYCD export does hand their cards back, in
+            a file, so the sentence that used to say "here or anywhere else" stopped being
+            true when that shipped. */}
         <p className="mt-4 max-w-2xl rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-muted)]">
           Card numbers, security codes, and passwords are encrypted the moment you save them and{" "}
-          <strong className="text-[var(--color-fg)]">can never be shown back to you</strong>, here
-          or anywhere else. You&rsquo;ll see the card brand and last four digits; to change a card,
-          just enter the new one.{" "}
+          <strong className="text-[var(--color-fg)]">never shown back to you on screen</strong>.
+          You&rsquo;ll see the card brand and last four digits; to change a card, just enter the new
+          one. Your cards only come back out in a file you download yourself with{" "}
+          <span className="text-[var(--color-fg)]">Export to AYCD</span>, and every export is
+          logged.{" "}
           <Link
             href="/privacy"
             className="underline underline-offset-2 hover:text-[var(--color-fg)]"
@@ -98,7 +105,8 @@ export default async function ProfilesPage() {
           siteKeys={siteKeys}
           profilesBySite={Object.fromEntries(siteKeys.map((k) => [k, bySite.get(k) ?? []]))}
           loginsBySite={Object.fromEntries(siteKeys.map((k) => [k, loginsBySite.get(k) ?? []]))}
-          nextNames={Object.fromEntries(siteKeys.map((k) => [k, nextNames.get(k) ?? ""]))}
+          nextNames={Object.fromEntries(siteKeys.map((k) => [k, naming.get(k)?.next ?? ""]))}
+          renumbered={Object.fromEntries(siteKeys.map((k) => [k, naming.get(k)?.renumbered ?? []]))}
           logos={Object.fromEntries(siteKeys.map((k) => [k, resolveSiteLogo(k)]))}
         />
 

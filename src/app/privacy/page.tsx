@@ -13,7 +13,8 @@ export const metadata: Metadata = {
  *   "no email"            src/lib/auth/index.ts requests `identify guilds.members.read`
  *   "no OAuth tokens"     src/lib/auth/adapter.ts linkAccount, covered by adapter.test.ts
  *   "secrets encrypted"   src/lib/vault/crypto.ts, AES-256-GCM per field
- *   "cards never shown"   no read path for card_number_enc / card_cvv_enc outside the export
+ *   "cards never shown"   no read path for card_number_enc / card_cvv_enc outside the exports
+ *   "your own export"     src/app/api/vault/export/route.ts, the signed-in member's rows only
  *   "reveals are logged"  vault_reveals table, written before the decrypt
  *   "exports are logged"  vault_exports table
  *   "feed is delayed"     FEED_DELAY_MS in src/db/queries/public.ts
@@ -25,7 +26,7 @@ export const metadata: Metadata = {
  */
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy" lastUpdated="14 August 2026">
+    <LegalPage title="Privacy" lastUpdated="15 October 2026">
       <p>
         Okie ACO is a small, Oklahoma-run Discord community. This page describes exactly what the
         website and the Discord bot store about you, how it is protected, and what they deliberately
@@ -62,11 +63,13 @@ export default function PrivacyPage() {
         never stored alongside it, so a copy of the database on its own is unreadable.
       </p>
       <p>
-        <strong>Card numbers and security codes are never shown back to you.</strong> Once saved,
-        they can be replaced but not displayed again — not on your own page, and not on the staff
-        page either. What anyone sees is the card brand, the last four digits, and the expiry. The
-        only time those values are decrypted is when they are loaded into the checkout bots, and
-        every one of those exports is logged with who ran it, when, and how many records it covered.
+        <strong>Card numbers and security codes are never shown on screen.</strong> Once saved, they
+        can be replaced but not displayed again — not on your own page, and not on the staff page
+        either. What anyone sees is the card brand, the last four digits, and the expiry. They are
+        decrypted only for an export: when staff load them into the checkout bots, or when you
+        download your own profiles as an AYCD file to use elsewhere. Every export is logged with who
+        ran it, when, and how many records it covered. A file you download holds your full card
+        details in plain text, so keep it somewhere safe.
       </p>
       <p>
         <strong>Email app passwords are the one exception.</strong> You can reveal your own, and

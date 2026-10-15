@@ -332,6 +332,20 @@ describe("planImport", () => {
     expect(result.creates.map((c) => c.name)).toEqual(["shockereyes", "shockereyes - 2"]);
   });
 
+  it("carries on the member's own numbering, whatever it is", () => {
+    // "pkc - 3" beside "PKC 1" and "PKC 2" would sort ahead of both, onto the main bot.
+    const result = plan({
+      profiles: [parsedFor("a@example.com", 1), parsedFor("b@example.com", 2)],
+      passwords: new Map([
+        ["a@example.com", "pw"],
+        ["b@example.com", "pw"],
+      ]),
+      myNames: ["PKC 1", "PKC 2"],
+      takenNames: ["PKC 1", "PKC 2"],
+    });
+    expect(result.creates.map((c) => c.name)).toEqual(["PKC 3", "PKC 4"]);
+  });
+
   it("updates in place when the address is already theirs", () => {
     const accounts: ExistingAccount[] = [
       { id: "acc1", email: "new@example.com", discordUserId: "111", profileId: "prof1" },

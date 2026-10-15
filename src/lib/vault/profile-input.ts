@@ -216,40 +216,114 @@ export function profileIdentity(name: string): { profileKey: string; profileInde
   };
 }
 
-/** A trailing " 12" or "-12" on a profile KEY, which the suffix rule left in place. */
-const FAMILY_SUFFIX_RE = /^(.*?)[\s-]+(\d+)$/;
+/**
+ * AYCD's collision noise on an imported name: "Walmart 82-!50", "PKC 32-!5176". AYCD added
+ * it to tell two same-named profiles apart, so it is no part of the name anyone chose.
+ */
+const AYCD_NOISE_RE = /-[!@#$%^&]\w*$/;
 
 /**
- * Collapse a profile key onto its family.
+ * A name's number and what comes before it: "carter - 4", "PKC 7", "Walmart sahab #4".
  *
- * `normalizeProfile` only strips a HYPHENATED suffix, so "Target 9" keys as `target 9`
- * while "carter - 9" keys as `carter`. Both are the ninth of a family, and the bot's
- * own `profileMap.json` matching treats them that way -- so grouping has to as well.
- * Without this, 58 house profiles named "Target 1".."Target 59" look like 58 unrelated
- * bases and the next name comes out as "target 1 - 2".
+ * The separator is required, so a handle that ends in digits is a bare name rather than a
+ * stem and an index. "thisisgold0220" is a real member, and reading it as the 220th
+ * "thisisgold" would rename them "thisisgold - 2".
  */
-export function familyBase(profileKey: string): string {
-  const match = profileKey.match(FAMILY_SUFFIX_RE);
-  return match ? match[1] : profileKey;
+const NUMBERED_RE = /^(.*?\S)(\s*-\s*|\s*#\s*|\s+)(\d+)$/;
+
+/** The separator new profiles have always had, and the one a tie goes to. */
+const CANONICAL_SEPARATOR = " - ";
+
+/**
+ * One name, read as the Nth of a family. A bare name is the first.
+ *
+ * `family` is the stem as the checkout pipeline keys it -- lowercase, markdown stripped --
+ * so "carter", "Carter 3" and "carter - 9" are one family, the way the bot's own
+ * profileMap.json matching treats them. So are "Walmart sahab #4" and "#9", and the house
+ * "Walmart 82-!50" with "Walmart 83", which normalizeProfile alone keys as unrelated names.
+ * Without this, 58 house profiles named "Target 1".."Target 59" looked like 58 unrelated
+ * bases and the next name came out as "target 1 - 2".
+ */
+type NumberedName = { stem: string; separator: string | null; index: number; family: string };
+
+function parseNumbered(name: string): NumberedName {
+  const cleaned = name.trim().replace(AYCD_NOISE_RE, "").trim();
+  const match = cleaned.match(NUMBERED_RE);
+  const stem = match ? match[1] : cleaned;
+  return {
+    stem,
+    separator: match ? match[2] : null,
+    index: match ? Number(match[3]) : 1,
+    family: profileIdentity(stem).profileKey,
+  };
+}
+
+/** The value seen most often. A tie goes to `preferred` if it is one of them, else the first seen. */
+function mostCommon(values: string[], preferred?: string): string {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  let best = values[0];
+  for (const [value, count] of counts) {
+    const bestCount = counts.get(best) ?? 0;
+    if (count > bestCount || (count === bestCount && value === preferred)) best = value;
+  }
+  return best;
+}
+
+/** The order every list and every bot split reads profile names in. See bot-split.ts. */
+const nameOrder = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+/**
+ * The family most of these names belong to, or null for no names. A tie goes to
+ * `preferred` if it is one of them, else to the family listed first.
+ */
+function dominantFamily(names: string[], preferred: string): string | null {
+  if (names.length === 0) return null;
+  const families = [...names].sort(nameOrder.compare).map((name) => parseNumbered(name).family);
+  return mostCommon(families, preferred);
+}
+
+/** How a family numbers its names. See numberingOf. */
+type Numbering = { stem: string; separator: string; bareFirst: boolean };
+
+/**
+ * The numbering a family's names already use: their spelling of the stem, the separator
+ * before the number, and whether the first goes without one. "PKC 1".."PKC 81" continue as
+ * "PKC 82", and "Walmart sahab #1".."#136" as "Walmart sahab #137".
+ *
+ * With no names yet, it's the convention new profiles have always had: the bare family
+ * name, then " - 2", " - 3". Ties go to that convention too. A family split evenly between
+ * "Carter 3" and "carter - 5" carries on as "carter - N".
+ */
+function numberingOf(family: string, members: NumberedName[]): Numbering {
+  if (members.length === 0) {
+    return { stem: family, separator: CANONICAL_SEPARATOR, bareFirst: true };
+  }
+  const separators = members.flatMap((member) => (member.separator ? [member.separator] : []));
+  const separator = separators.length
+    ? mostCommon(separators, CANONICAL_SEPARATOR)
+    : CANONICAL_SEPARATOR;
+  return {
+    stem: mostCommon(
+      members.map((member) => member.stem),
+      family,
+    ),
+    separator,
+    // A bare first where the family already has one. "PKC 1" and "carter - 1" stay
+    // numbered, and a " - " family whose first profile was deleted gets the bare name back.
+    bareFirst:
+      members.some((member) => member.separator === null) ||
+      (separator === CANONICAL_SEPARATOR && !members.some((member) => member.index === 1)),
+  };
+}
+
+function numberedName({ stem, separator, bareFirst }: Numbering, index: number): string {
+  return index === 1 && bareFirst ? stem : `${stem}${separator}${index}`;
 }
 
 /**
- * Which number within `base` an existing profile occupies, or null if it isn't in that
- * family at all. A bare base name counts as 1.
- */
-function familyIndex(
-  identity: { profileKey: string; profileIndex: number | null },
-  base: string,
-): number | null {
-  if (identity.profileKey === base) return identity.profileIndex ?? 1;
-
-  const match = identity.profileKey.match(FAMILY_SUFFIX_RE);
-  if (match && match[1] === base) return Number(match[2]);
-  return null;
-}
-
-/**
- * The base a member's profile names are built from, for one retailer.
+ * The base a member's profile names are built from, for one retailer: the family most of
+ * their names belong to (see NumberedName), keyed as the checkout pipeline keys it.
  *
  * Their EXISTING profiles win over their Discord handle. Those two often disagree --
  * `shockereyes` checks out under that name while their Discord username is something
@@ -257,33 +331,26 @@ function familyIndex(
  * unrelated series of profiles on the same site.
  *
  * Falls back to the Discord username only when they have no profiles for that retailer
- * yet, which is the one moment there is nothing to be consistent with.
+ * yet, which is the one moment there is nothing to be consistent with. The username also
+ * settles a tie: "pokelover23" and "pokelover - 2" carry on as the family their handle is.
+ *
+ * THE ONE PLACE a member's family is chosen. Add profile, the import and a reorder all
+ * come through here, so a reorder and the next profile added agree on the sequence.
  */
 export function profileBaseFor(existingNames: string[], discordUsername: string): string {
-  const counts = new Map<string, number>();
-  for (const name of existingNames) {
-    const key = familyBase(profileIdentity(name).profileKey);
-    if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-
-  let best: string | null = null;
-  let bestCount = 0;
-  for (const [key, count] of counts) {
-    if (count > bestCount) {
-      best = key;
-      bestCount = count;
-    }
-  }
-  if (best) return best;
-
-  return profileIdentity(discordUsername).profileKey || discordUsername.trim().toLowerCase();
+  const handle =
+    profileIdentity(discordUsername).profileKey || discordUsername.trim().toLowerCase();
+  return dominantFamily(existingNames, handle) || handle;
 }
 
 /**
- * The next profile name for a member on one retailer.
+ * The next profile name for a member on one retailer, in `base`'s own numbering.
  *
- * First is the bare base (`shockereyes`), then ` - 2`, ` - 3`, matching the convention
- * already in the data and the one the bot's normalizer understands.
+ * For a member starting out that is the bare base (`shockereyes`), then ` - 2`, ` - 3` --
+ * the convention most of the data is in, and the one the bot's normalizer understands. A
+ * family already numbered some other way carries on in that way: "PKC 81" is followed by
+ * "PKC 82", not by "pkc - 82". That one sorted ahead of "PKC 1" and took a main-bot slot,
+ * because names are the order (bot-split.ts). See numberingOf.
  *
  * **Fills the lowest free number**, so deleting `- 3` and adding one reuses `- 3`
  * rather than drifting to `- 8`. Numbering stays tight, which matters more now that a
@@ -297,19 +364,83 @@ export function profileBaseFor(existingNames: string[], discordUsername: string)
  */
 export function nextProfileName(base: string, existingNames: string[]): string {
   const taken = new Set(existingNames.map((n) => n.trim().toLowerCase()));
-
-  const used = new Set<number>();
-  for (const name of existingNames) {
-    const index = familyIndex(profileIdentity(name), base);
-    if (index !== null) used.add(index);
-  }
+  const family = existingNames.map(parseNumbered).filter((name) => name.family === base);
+  const numbering = numberingOf(base, family);
+  const used = new Set(family.map((name) => name.index));
 
   for (let index = 1; index <= used.size + 500; index++) {
     if (used.has(index)) continue;
-    const candidate = index === 1 ? base : `${base} - ${index}`;
+    const candidate = numberedName(numbering, index);
     // The unique constraint is on (site, name) across ALL members, so a name another
     // member already holds has to be skipped rather than collided with.
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
   throw new Error(`Could not find a free profile name for "${base}".`);
+}
+
+/**
+ * The names a member's profiles on one retailer take when they're renumbered, for the first
+ * position on down. The member drags their profiles into order, and position N gets the Nth
+ * name here.
+ *
+ * Names are how order is stored. Every list sorts by name and the bot split takes the first
+ * few as the main bot's (bot-split.ts), so renumbering is how a member picks which profiles
+ * the main bot runs. That only works if every name sorts where its position says, so all of
+ * them are put on ONE numbering. A name outside it would sort by its own stem, wherever
+ * that falls.
+ *
+ * The numbering is the member's own. It comes from the family most of their names already
+ * share -- profileBaseFor's pick, `discordUsername` settling a tie -- with that family's
+ * spelling, separator and starting point (numberingOf):
+ *
+ *   carter, carter - 2, carter - 4   ->  carter, carter - 2, carter - 3
+ *   PKC 1, PKC 2, PKC 7              ->  PKC 1, PKC 2, PKC 3
+ *   Walmart sahab #4, #9             ->  Walmart sahab #1, Walmart sahab #2
+ *
+ * Mostly that means swapping the numbers. In the usual "carter - N" form the profile key the
+ * checkout pipeline joins on is the part before the number, so a member's checkouts still
+ * reach them under the new names. A name outside the family is pulled into it, and AYCD's
+ * collision noise ("-!50") is dropped. It is the numbering nextProfileName continues, so a
+ * profile added after a reorder lands at the end of the same sequence.
+ *
+ * `othersOnSite` is every other member's names on the same retailer. A number another
+ * member holds in the family is stepped over, under any spelling, the same way
+ * nextProfileName does it. So is any exact name they hold, since (site, name) is unique
+ * across members. The gap that leaves still sorts in order.
+ *
+ * Pure: the profiles page calls it to preview the names, and reorderProfiles calls it again at
+ * write time. That way a preview drawn before another member took a name can't save a
+ * clash.
+ */
+export function renumberedNames(
+  mine: string[],
+  othersOnSite: string[],
+  discordUsername: string,
+): string[] {
+  if (mine.length === 0) return [];
+  const family = profileBaseFor(mine, discordUsername);
+
+  const numbering = numberingOf(
+    family,
+    mine.map(parseNumbered).filter((name) => name.family === family),
+  );
+  const used = new Set(
+    othersOnSite
+      .map(parseNumbered)
+      .filter((name) => name.family === family)
+      .map((name) => name.index),
+  );
+  const taken = new Set(othersOnSite.map((name) => name.trim().toLowerCase()));
+
+  const names: string[] = [];
+  // Every skip is a name somebody else holds, so this never runs past mine plus theirs.
+  for (let index = 1; names.length < mine.length; index++) {
+    if (index > mine.length + othersOnSite.length) {
+      throw new Error(`Could not renumber the profiles named after "${numbering.stem}".`);
+    }
+    if (used.has(index)) continue;
+    const candidate = numberedName(numbering, index);
+    if (!taken.has(candidate.toLowerCase())) names.push(candidate);
+  }
+  return names;
 }

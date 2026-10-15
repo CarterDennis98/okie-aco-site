@@ -9,14 +9,17 @@ import {
   siteUsesProfiles,
 } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
-import { toAccountList, toAycdProfile } from "@/lib/vault/aycd";
+import { toAccountList } from "@/lib/vault/aycd";
 import { profilesForBot, type BotScope } from "@/lib/vault/bot-split";
 import { decrypt } from "@/lib/vault/crypto";
+import { aycdFile, fileResponse } from "@/lib/vault/export-file";
 
 /**
- * Profile export — one of the two audited exports that decrypt stored secrets. The other is
- * the operator's Shikari export (lib/shikari/payload.ts), built the same way: scoped to a
- * runner's share, split by the same bot rule, and recorded in `vault_exports` first.
+ * Profile export — one of the audited exports that decrypt stored secrets. Another is the
+ * operator's Shikari export (lib/shikari/payload.ts), built the same way: scoped to a
+ * runner's share, split by the same bot rule, and recorded in `vault_exports` first. The
+ * third is a member's download of their own profiles (api/vault/export), which writes the
+ * same AYCD file through the same helper.
  *
  *   /api/admin/vault/export?site=target                  your members, main bot
  *   /api/admin/vault/export?site=target&bot=backup       your members, past the cap
@@ -485,30 +488,5 @@ export async function GET(request: Request) {
     return fileResponse(body, `okie-accounts-${suffix}.txt`, "text/plain; charset=utf-8");
   }
 
-  const profiles = selected.map((row) =>
-    toAycdProfile({
-      ...row,
-      email: row.account.email,
-      cardNumber: decrypt(row.cardNumberEnc, { entity: "vault_profile", field: "card_number" }),
-      cardCvv: decrypt(row.cardCvvEnc, { entity: "vault_profile", field: "card_cvv" }),
-    }),
-  );
-
-  return fileResponse(
-    JSON.stringify(profiles, null, 2),
-    `okie-profiles-${suffix}.json`,
-    "application/json",
-  );
-}
-
-function fileResponse(body: string, filename: string, contentType: string): Response {
-  return new Response(body, {
-    headers: {
-      "content-type": contentType,
-      "content-disposition": `attachment; filename="${filename}"`,
-      // Belt and braces: this body is plaintext credentials, so nothing may cache it.
-      "cache-control": "no-store, no-cache, must-revalidate, private",
-      pragma: "no-cache",
-    },
-  });
+  return fileResponse(aycdFile(selected), `okie-profiles-${suffix}.json`, "application/json");
 }
