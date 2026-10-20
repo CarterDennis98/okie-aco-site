@@ -46,7 +46,12 @@ export const checkoutInput = z
     productUrl: z.string().url().max(1000).nullable().optional(),
     imageUrl: z.string().url().max(1000).nullable().optional(),
     profileRaw: z.string().max(200).nullable().optional(),
-    quantity: z.number().int().min(1).max(1000).nullable().optional(),
+    /**
+     * Zero is ACCEPTED: Alpine has sent "Quantity: 0" on real Topps successes, and refusing
+     * one stalled the outbox -- every vendor's checkouts -- for days. The route reads it as
+     * no quantity at all, the way /pas run bills it.
+     */
+    quantity: z.number().int().min(0).max(1000).nullable().optional(),
     quantityAssumed: z.boolean().optional(),
     flags: z.array(z.string().max(60)).max(20).optional(),
     /** Passed through the allowlist server-side; never stored as received. */

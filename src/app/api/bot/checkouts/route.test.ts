@@ -178,6 +178,20 @@ describe.skipIf(!canRun)("POST /api/bot/checkouts", () => {
     await post([checkout("ingest-spec-dots-old")]);
     expect((await ownerOf("ingest-spec-dots-old"))?.discordUserId).toBe(PUNCTUATED);
   });
+
+  it("stores a quantity of zero as one unit, assumed -- what /pas run bills", async () => {
+    // Alpine sends "Quantity: 0" on real successes. Refused, it stalled the bot's outbox.
+    const zero = { ...checkout("ingest-spec-zero"), quantity: 0, quantityAssumed: false };
+    const response = await post([zero]);
+    expect(response.status).toBe(200);
+
+    const row = await prisma.checkout.findUnique({
+      where: { discordMessageId: zero.discordMessageId },
+      select: { quantity: true, quantityAssumed: true, flags: true },
+    });
+    expect(row).toMatchObject({ quantity: 1, quantityAssumed: true });
+    expect(row?.flags).toContain("quantity-assumed");
+  });
 });
 
 async function cleanup() {

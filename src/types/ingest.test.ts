@@ -114,6 +114,31 @@ describe("checkoutInput", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a quantity of zero rather than stalling the outbox", () => {
+    // Alpine sent "Quantity: 0" on 9 of 32 real Topps successes on 2026-10-16. The rejection
+    // held every checkout behind them, from every vendor, for four days. The route reads
+    // zero as no quantity.
+    const result = checkoutBatch.safeParse({
+      checkouts: [
+        {
+          sourceBot: "alpine",
+          discordMessageId: "1554287227834466417",
+          discordChannelId: "1554260403209637899",
+          orderId: "6719874629790",
+          occurredAt: "2026-10-16T16:04:05.000Z",
+          site: "Topps US",
+          productRaw: "2026 Topps Chrome Football - Hobby Box",
+          productUrl: "https://shop.topps.com/products/2026-topps-chrome-football-hobby-box",
+          profileRaw: "carter - 3",
+          quantity: 0,
+          quantityAssumed: false,
+          flags: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
   const vendors = mirrorVendors();
   it.runIf(vendors.length > 0)("accepts every vendor the mirror has fixtures for", () => {
     const known = checkoutInput.shape.sourceBot;

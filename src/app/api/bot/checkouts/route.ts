@@ -98,16 +98,14 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     // Field paths and messages only. A validation echo of the payload would put vendor
     // embed contents in a log.
-    return Response.json(
-      {
-        error: "Invalid payload",
-        issues: parsed.error.issues.slice(0, 10).map((i) => ({
-          path: i.path.join("."),
-          message: i.message,
-        })),
-      },
-      { status: 400 },
-    );
+    const issues = parsed.error.issues.slice(0, 10).map((i) => ({
+      path: i.path.join("."),
+      message: i.message,
+    }));
+    // Logged as well as returned. The bot never prints the body, and a rejected batch
+    // stalls its whole outbox, so this line is the only place the reason shows up.
+    console.warn(`bot ingest: rejected a batch: ${JSON.stringify(issues)}`);
+    return Response.json({ error: "Invalid payload", issues }, { status: 400 });
   }
 
   // Last writer wins within a batch: the bot can legitimately retry a flush that
@@ -122,7 +120,15 @@ export async function POST(request: Request) {
   );
 
   // --- normalize -----------------------------------------------------------
-  const rows = checkouts.map((input) => {
+  const rows = checkouts.map((received) => {
+    // Under 1 is a number the vendor got wrong, not "none": everything posted here went
+    // through. Read as no quantity -- one unit, assumed -- which is what /pas run's
+    // parseQuantity bills, so the site and the bill agree.
+    const input =
+      received.quantity != null && received.quantity < 1
+        ? { ...received, quantity: null, quantityAssumed: true }
+        : received;
+
     const product = normalizeProduct(input.productRaw, aliases);
     const profile = normalizeProfile(input.profileRaw);
     const { embed, dropped, droppedSensitive } = sanitizeEmbed(input.rawEmbed);
