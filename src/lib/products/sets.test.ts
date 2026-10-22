@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupBySet, searchGroups, searchTerms } from "@/lib/products/sets";
+import { groupByLine, groupBySet, searchGroups, searchTerms } from "@/lib/products/sets";
 
 const product = (name: string, setName: string, sortOrder: number, day: number) => ({
   name,
@@ -99,5 +99,60 @@ describe("arranging the sets", () => {
       "Newest",
       "Brand New",
     ]);
+  });
+});
+
+describe("grouping sets under product lines", () => {
+  const lines = [
+    { id: "pokemon", name: "Pokémon" },
+    { id: "topps", name: "Topps" },
+    { id: "onepiece", name: "One Piece" },
+  ];
+  const sets = ["Chrome", "Surging Sparks", "Loose", "Phantasmal Flames", "Orphaned"].map(
+    (setName) => ({ setName }),
+  );
+  const lineOf = (setName: string) =>
+    ({
+      Chrome: "topps",
+      "Surging Sparks": "pokemon",
+      "Phantasmal Flames": "pokemon",
+      Orphaned: "deleted-line",
+    })[setName] ?? null;
+
+  it("lists the lines in their order, each set in the order given, and Other last", () => {
+    expect(
+      groupByLine(sets, lines, lineOf).map((g) => [
+        g.line?.name ?? null,
+        g.sets.map((s) => s.setName),
+      ]),
+    ).toEqual([
+      ["Pokémon", ["Surging Sparks", "Phantasmal Flames"]],
+      ["Topps", ["Chrome"]],
+      [null, ["Loose", "Orphaned"]],
+    ]);
+  });
+
+  it("is one group under no line when no set is in one", () => {
+    expect(groupByLine(sets, [], lineOf)).toEqual([{ line: null, sets }]);
+  });
+
+  it("finds a set by its line's name", () => {
+    const groups = groupBySet([
+      {
+        name: "Elite Trainer Box",
+        sku: "1",
+        setName: "Surging Sparks",
+        sortOrder: 0,
+        createdAt: "2026-10-01",
+      },
+      { name: "Hobby Box", sku: "2", setName: "Chrome", sortOrder: 0, createdAt: "2026-10-01" },
+    ]);
+    const lineName = (setName: string) => lines.find((l) => l.id === lineOf(setName))?.name ?? "";
+    expect(searchGroups(groups, searchTerms("pokemon"), lineName).map((g) => g.setName)).toEqual([
+      "Surging Sparks",
+    ]);
+    expect(
+      searchGroups(groups, searchTerms("topps hobby"), lineName).map((g) => g.setName),
+    ).toEqual(["Chrome"]);
   });
 });

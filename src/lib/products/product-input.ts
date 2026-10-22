@@ -43,6 +43,7 @@ export function nameFromTargetUrl(url: string): string {
 }
 
 export const SET_NAME_LIMIT = 80;
+export const LINE_NAME_LIMIT = 40;
 export const PRODUCT_NAME_LIMIT = 120;
 
 export type ProductInput = {
@@ -83,6 +84,29 @@ export function parseSetName(
   if (!value) return { ok: false, error: "Which set is it in?" };
   if (value.length > SET_NAME_LIMIT) return { ok: false, error: "That set name is too long." };
   return { ok: true, value };
+}
+
+/** A product line's name as stored: spaces collapsed, as a set's are. */
+export function parseLineName(
+  raw: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const value = raw.trim().replace(/\s+/g, " ");
+  if (!value) return { ok: false, error: "Give each product line a name." };
+  if (value.length > LINE_NAME_LIMIT) {
+    return { ok: false, error: `“${value.slice(0, 20)}…” is too long for a product line.` };
+  }
+  return { ok: true, value };
+}
+
+/** A set's or a product line's logo as stored: an https:// link, or null for none. */
+export function parseLogo(
+  raw: string,
+  of: "set" | "product line",
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (!raw.trim()) return { ok: true, value: null };
+  const logo = httpsUrl(raw);
+  if (!logo) return { ok: false, error: `The ${of} logo needs an https:// link.` };
+  return { ok: true, value: logo.href };
 }
 
 /** One product found in pasted text: its link, what the link says, and a price beside it. */

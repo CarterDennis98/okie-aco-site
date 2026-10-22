@@ -1,6 +1,6 @@
 /**
  * The set editor's actions: adding many products at once, arranging a set, renaming it, and
- * deleting it with everything in it.
+ * deleting it with everything in it -- and the product lines sets are listed under.
  *
  * The properties with something behind them: a batch is all or nothing, with the problem
  * named by its place; the order saved is the order sent, without losing a product someone
@@ -12,10 +12,11 @@
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/db/client";
-import { getSetOrder } from "@/db/queries/products";
+import { getProductLines, getSetDetails, getSetOrder } from "@/db/queries/products";
 import {
   deleteDropSet,
   saveDropSet,
+  saveProductLines,
   saveSetOrder,
   updateDropProduct,
 } from "@/lib/products/admin-actions";
@@ -78,6 +79,8 @@ async function listed(setName: string, ...tcins: string[]) {
   const result = await saveDropSet({
     setName,
     previousName: null,
+    logoUrl: "",
+    lineId: null,
     items: tcins.map((sku) => added(sku)),
   });
   expect(result).toEqual({ ok: true, added: tcins.length });
@@ -95,6 +98,8 @@ describe.skipIf(!canRun)("the set editor", () => {
     const result = await saveDropSet({
       setName: `  ${SET} `,
       previousName: null,
+      logoUrl: "",
+      lineId: null,
       items: [
         added("98000001", { price: "$49.99", pasFee: "$5" }),
         added("98000002", { pasFee: "0" }),
@@ -119,7 +124,7 @@ describe.skipIf(!canRun)("the set editor", () => {
   it("refuses the whole batch when any of it is wrong, naming which", async () => {
     await listed(SET, "98000001");
     const send = (...items: ReturnType<typeof added>[]) =>
-      saveDropSet({ setName: SET, previousName: null, items });
+      saveDropSet({ setName: SET, previousName: null, logoUrl: "", lineId: null, items });
 
     expect(await send(added("98000002"), added("98000001"))).toEqual({
       ok: false,
@@ -147,6 +152,8 @@ describe.skipIf(!canRun)("the set editor", () => {
     const result = await saveDropSet({
       setName: SET,
       previousName: SET,
+      logoUrl: "",
+      lineId: null,
       items: [{ id: p3.id }, added("98000004"), { id: p1.id }, { id: p2.id }],
     });
     expect(result).toEqual({ ok: true, added: 1 });
@@ -167,7 +174,13 @@ describe.skipIf(!canRun)("the set editor", () => {
     const [p1, p2] = await listed(SET, "98000001", "98000002", "98000003");
     // Saved by an editor that opened before the third was listed.
     expect(
-      await saveDropSet({ setName: SET, previousName: SET, items: [{ id: p2.id }, { id: p1.id }] }),
+      await saveDropSet({
+        setName: SET,
+        previousName: SET,
+        logoUrl: "",
+        lineId: null,
+        items: [{ id: p2.id }, { id: p1.id }],
+      }),
     ).toEqual({ ok: true, added: 0 });
     expect(await skus(SET)).toEqual(["98000002", "98000001", "98000003"]);
   });
@@ -176,7 +189,13 @@ describe.skipIf(!canRun)("the set editor", () => {
     const [p1] = await listed(SET, "98000001");
     const [q1] = await listed(OTHER, "98000009");
     expect(
-      await saveDropSet({ setName: SET, previousName: SET, items: [{ id: q1.id }, { id: p1.id }] }),
+      await saveDropSet({
+        setName: SET,
+        previousName: SET,
+        logoUrl: "",
+        lineId: null,
+        items: [{ id: q1.id }, { id: p1.id }],
+      }),
     ).toEqual({
       ok: false,
       error: "That set changed since you opened it. Reload the page and try again.",
@@ -189,12 +208,24 @@ describe.skipIf(!canRun)("the set editor", () => {
     await listed(OTHER, "98000009");
 
     expect(
-      await saveDropSet({ setName: OTHER, previousName: SET, items: [{ id: p1.id }] }),
+      await saveDropSet({
+        setName: OTHER,
+        previousName: SET,
+        logoUrl: "",
+        lineId: null,
+        items: [{ id: p1.id }],
+      }),
     ).toEqual({ ok: false, error: `There's already a set called “${OTHER}”.` });
 
     const renamed = `${PREFIX}Renamed`;
     expect(
-      await saveDropSet({ setName: renamed, previousName: SET, items: [{ id: p1.id }] }),
+      await saveDropSet({
+        setName: renamed,
+        previousName: SET,
+        logoUrl: "",
+        lineId: null,
+        items: [{ id: p1.id }],
+      }),
     ).toEqual({ ok: true, added: 0 });
     expect((await inSet(renamed)).map((p) => [p.sku, p.active])).toEqual([
       ["98000001", true],
@@ -325,7 +356,13 @@ describe.skipIf(!canRun)("the set editor", () => {
 
     const renamed = `${PREFIX}Renamed`;
     expect(
-      await saveDropSet({ setName: renamed, previousName: SET, items: [{ id: p1.id }] }),
+      await saveDropSet({
+        setName: renamed,
+        previousName: SET,
+        logoUrl: "",
+        lineId: null,
+        items: [{ id: p1.id }],
+      }),
     ).toEqual({ ok: true, added: 0 });
     expect(await ours()).toEqual([OTHER, renamed]);
 
@@ -354,6 +391,218 @@ describe.skipIf(!canRun)("the set editor", () => {
     expect(await updateDropProduct(form)).toEqual({ ok: true, id: q1.id });
     expect(await ours()).toEqual([SET]);
   });
+
+  /** This file's sets' logos and lines, by name. */
+  const details = async () =>
+    Object.fromEntries(
+      Object.entries(await getSetDetails(SITE)).filter(([name]) => name.startsWith(PREFIX)),
+    );
+
+  it("keeps a set's logo apart from its place, through arranging and a rename, until cleared", async () => {
+    const LOGO = "https://img.example/logos/pfl.png";
+    const logos = async () =>
+      Object.fromEntries(
+        Object.entries(await details()).flatMap(([name, d]) =>
+          d.logoUrl ? [[name, d.logoUrl]] : [],
+        ),
+      );
+    await listed(OTHER, "98000009");
+
+    expect(
+      await saveDropSet({
+        setName: SET,
+        previousName: null,
+        logoUrl: ` ${LOGO} `,
+        lineId: null,
+        items: [added("98000001")],
+      }),
+    ).toEqual({ ok: true, added: 1 });
+    const [p1] = await inSet(SET);
+    expect(await logos()).toEqual({ [SET]: LOGO });
+    // A logo doesn't place the set: it's still new, above the placed ones.
+    expect(await ours()).toEqual([]);
+
+    // A page that didn't list it arranges the others; the logo stays, and the set stays new.
+    expect(await saveSetOrder({ names: [OTHER] })).toEqual({ ok: true });
+    expect(await ours()).toEqual([OTHER]);
+    expect(await logos()).toEqual({ [SET]: LOGO });
+
+    const renamed = `${PREFIX}Renamed`;
+    const edit = (setName: string, previousName: string, logoUrl: string) =>
+      saveDropSet({ setName, previousName, logoUrl, lineId: null, items: [{ id: p1.id }] });
+    expect(await edit(renamed, SET, LOGO)).toEqual({ ok: true, added: 0 });
+    expect(await logos()).toEqual({ [renamed]: LOGO });
+
+    expect(await edit(renamed, renamed, "http://img.example/x.png")).toEqual({
+      ok: false,
+      error: "The set logo needs an https:// link.",
+    });
+    expect(await edit(renamed, renamed, "")).toEqual({ ok: true, added: 0 });
+    expect(await logos()).toEqual({});
+
+    const audits = await prisma.adminAudit.findMany({
+      where: { actorDiscordId: ADMIN, action: "drop_set.update" },
+      select: { before: true, after: true },
+    });
+    expect(audits).toHaveLength(3);
+    expect(audits).toContainEqual({
+      before: expect.objectContaining({ setName: renamed, logoUrl: LOGO }),
+      after: expect.objectContaining({ setName: renamed, logoUrl: null }),
+    });
+  });
+
+  it("takes a set's logo away with the set", async () => {
+    await saveDropSet({
+      setName: SET,
+      previousName: null,
+      logoUrl: "https://img.example/logos/pfl.png",
+      lineId: null,
+      items: [added("98000001")],
+    });
+    expect(await deleteDropSet({ setName: SET, expected: 1 })).toEqual({ ok: true, deleted: 1 });
+    expect((await getSetDetails(SITE))[SET]).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Product lines
+  // ---------------------------------------------------------------------------
+
+  const POKEMON = `${PREFIX}Pokémon`;
+  const TOPPS = `${PREFIX}Topps`;
+  const ONE_PIECE = `${PREFIX}One Piece`;
+  /** This file's lines, in their order. */
+  const lines = async () =>
+    (await getProductLines(SITE)).filter((line) => line.name.startsWith(PREFIX));
+  const line = (name: string, logoUrl = "", id: string | null = null) => ({ id, name, logoUrl });
+
+  it("makes, renames, arranges and gives logos to product lines", async () => {
+    expect(
+      await saveProductLines({
+        lines: [line(` ${POKEMON} `, "https://img.example/pkmn.png"), line(TOPPS)],
+        removed: [],
+      }),
+    ).toEqual({ ok: true });
+    const [pokemon, topps] = await lines();
+    expect([pokemon, topps]).toMatchObject([
+      { name: POKEMON, logoUrl: "https://img.example/pkmn.png" },
+      { name: TOPPS, logoUrl: null },
+    ]);
+
+    // Swapped names, the other way round: no clash on the way.
+    expect(
+      await saveProductLines({
+        lines: [line(POKEMON, "", topps.id), line(TOPPS, "https://img.example/t.png", pokemon.id)],
+        removed: [],
+      }),
+    ).toEqual({ ok: true });
+    expect(await lines()).toEqual([
+      { id: topps.id, name: POKEMON, logoUrl: null },
+      { id: pokemon.id, name: TOPPS, logoUrl: "https://img.example/t.png" },
+    ]);
+    expect(
+      await prisma.adminAudit.count({ where: { actorDiscordId: ADMIN, action: "drop_line.save" } }),
+    ).toBe(2);
+  });
+
+  it("keeps a line made while the dialog was open, after the ones listed", async () => {
+    await saveProductLines({ lines: [line(POKEMON), line(TOPPS)], removed: [] });
+    const [pokemon, topps] = await lines();
+    // Saved by a dialog that opened when Topps was the only line.
+    expect(
+      await saveProductLines({ lines: [line(TOPPS, "", topps.id), line(ONE_PIECE)], removed: [] }),
+    ).toEqual({ ok: true });
+    expect((await lines()).map((l) => l.name)).toEqual([TOPPS, ONE_PIECE, POKEMON]);
+    expect((await lines()).find((l) => l.name === POKEMON)?.id).toBe(pokemon.id);
+  });
+
+  it("refuses lines that clash, have no name or a bad logo, or are gone", async () => {
+    await saveProductLines({ lines: [line(POKEMON)], removed: [] });
+    const [pokemon] = await lines();
+    const save = (...list: ReturnType<typeof line>[]) =>
+      saveProductLines({ lines: list, removed: [] });
+
+    expect(await save(line(TOPPS), line(TOPPS.toUpperCase()))).toEqual({
+      ok: false,
+      error: `There are two product lines called “${TOPPS.toUpperCase()}”.`,
+    });
+    // Pokémon isn't in this list, and isn't removed: it stays, so its name is taken.
+    expect(await save(line(POKEMON.toLowerCase()))).toEqual({
+      ok: false,
+      error: `There's already a product line called “${POKEMON}”.`,
+    });
+    expect(await save(line("  "))).toEqual({ ok: false, error: "Give each product line a name." });
+    expect(await save(line(TOPPS, "http://img.example/t.png"))).toEqual({
+      ok: false,
+      error: `${TOPPS}: The product line logo needs an https:// link.`,
+    });
+    expect(
+      await save(
+        line(TOPPS, "", "00000000-0000-4000-8000-000000000000"),
+        line(POKEMON, "", pokemon.id),
+      ),
+    ).toEqual({
+      ok: false,
+      error: "A product line was removed since you opened this. Reload the page.",
+    });
+    expect((await lines()).map((l) => l.name)).toEqual([POKEMON]);
+  });
+
+  it("puts a set in a line without placing it, and back in Other when the line is removed", async () => {
+    await saveProductLines({ lines: [line(POKEMON), line(TOPPS)], removed: [] });
+    const [pokemon, topps] = await lines();
+    await listed(OTHER, "98000009");
+    await saveSetOrder({ names: [OTHER] });
+
+    expect(
+      await saveDropSet({
+        setName: SET,
+        previousName: null,
+        logoUrl: "https://img.example/logos/pfl.png",
+        lineId: pokemon.id,
+        items: [added("98000001")],
+      }),
+    ).toEqual({ ok: true, added: 1 });
+    const [p1] = await inSet(SET);
+    expect((await details())[SET]).toEqual({
+      logoUrl: "https://img.example/logos/pfl.png",
+      lineId: pokemon.id,
+    });
+    expect(await ours()).toEqual([OTHER]);
+
+    // Moved to another line, and renamed: the line goes with it.
+    const renamed = `${PREFIX}Renamed`;
+    expect(
+      await saveDropSet({
+        setName: renamed,
+        previousName: SET,
+        logoUrl: "https://img.example/logos/pfl.png",
+        lineId: topps.id,
+        items: [{ id: p1.id }],
+      }),
+    ).toEqual({ ok: true, added: 0 });
+    expect((await details())[renamed]?.lineId).toBe(topps.id);
+
+    // Removing the line removes no set: it keeps its logo, and is in no line.
+    expect(
+      await saveProductLines({ lines: [line(POKEMON, "", pokemon.id)], removed: [topps.id] }),
+    ).toEqual({ ok: true });
+    expect((await lines()).map((l) => l.name)).toEqual([POKEMON]);
+    expect((await details())[renamed]).toEqual({
+      logoUrl: "https://img.example/logos/pfl.png",
+      lineId: null,
+    });
+    expect(await inSet(renamed)).toHaveLength(1);
+
+    expect(
+      await saveDropSet({
+        setName: renamed,
+        previousName: renamed,
+        logoUrl: "",
+        lineId: topps.id,
+        items: [{ id: p1.id }],
+      }),
+    ).toEqual({ ok: false, error: "That product line is gone. Reload the page." });
+  });
 });
 
 async function cleanup() {
@@ -361,6 +610,7 @@ async function cleanup() {
     where: { OR: [{ createdBy: ADMIN }, { setName: { startsWith: PREFIX } }] },
   });
   await prisma.dropSet.deleteMany({ where: { name: { startsWith: PREFIX } } });
+  await prisma.dropLine.deleteMany({ where: { name: { startsWith: PREFIX } } });
   await prisma.adminAudit.deleteMany({ where: { actorDiscordId: ADMIN } });
   await prisma.discordMember.deleteMany({ where: { discordUserId: MEMBER } });
 }

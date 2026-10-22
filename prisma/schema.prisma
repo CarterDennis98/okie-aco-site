@@ -917,19 +917,47 @@ model DropProduct {
   @@map("drop_products")
 }
 
-// Where a set sits on Target Products, as an admin arranged the sets. A set is only the
-// products that share a name (DropProduct.setName), so this is a position kept against that
-// name: a set with no row here hasn't been placed yet -- it's new -- and shows above the
+// What's kept about a set on Target Products: where an admin placed it among the sets, its
+// logo, and its product line. A set is only the products that share a name
+// (DropProduct.setName), so this is kept against that name. A set with no place -- no row, or
+// a row with only a logo or a line -- hasn't been placed yet: it's new, and shows above the
 // placed ones. Renaming a set carries its row along; deleting the set deletes it.
 model DropSet {
   id        String   @id @default(uuid())
   siteKey   String   @map("site_key")
   name      String
-  sortOrder Int      @map("sort_order")
+  sortOrder Int?     @map("sort_order")
+  // Shown left of the set's name. Optional; any https:// link, like a product's image.
+  logoUrl   String?  @map("logo_url")
+  // The product line it's listed under. Null: under "Other", after the lines.
+  lineId    String?  @map("line_id")
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
+  line DropLine? @relation(fields: [lineId], references: [id], onDelete: SetNull)
+
   @@unique([siteKey, name])
+  @@index([lineId])
   @@map("drop_sets")
+}
+
+// A product line on Target Products -- Pokémon, Topps, One Piece -- that sets are listed
+// under, each folding away like a set. Made and arranged by an admin in "Product lines".
+// Deleting one deletes no set: its sets go back under "Other".
+model DropLine {
+  id        String   @id @default(uuid())
+  siteKey   String   @map("site_key")
+  name      String
+  // Shown left of the line's name. Optional; any https:// link.
+  logoUrl   String?  @map("logo_url")
+  // Where it sits among the lines, lowest first.
+  sortOrder Int      @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sets DropSet[]
+
+  @@unique([siteKey, name])
+  @@map("drop_lines")
 }
 
 // "Run me for this." One row per member per product; its absence means no.

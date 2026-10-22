@@ -5,7 +5,13 @@ import { z } from "zod";
 import { prisma } from "@/db/client";
 import { Prisma } from "@/generated/prisma/client";
 import { requireAdmin } from "@/lib/auth/guard";
-import { parseProductInput, parseSetName, type ProductInput } from "@/lib/products/product-input";
+import {
+  parseLineName,
+  parseLogo,
+  parseProductInput,
+  parseSetName,
+  type ProductInput,
+} from "@/lib/products/product-input";
 
 /**
  * Adding, editing, arranging, retiring and deleting Target products, and arranging their
@@ -20,6 +26,7 @@ export type ProductResult = { ok: true; id: string } | { ok: false; error: strin
 export type SetResult = { ok: true; added: number } | { ok: false; error: string };
 export type DeleteSetResult = { ok: true; deleted: number } | { ok: false; error: string };
 export type OrderResult = { ok: true } | { ok: false; error: string };
+export type LinesResult = { ok: true } | { ok: false; error: string };
 
 /** Only Target has a product page today; the column exists for the next retailer. */
 const SITE = "target";
@@ -178,6 +185,10 @@ const setRequest = z
     setName: z.string().max(400),
     /** The set being edited, as stored. Null when adding: then `setName` picks the set. */
     previousName: z.string().max(400).nullable(),
+    /** The set's logo link, as the editor left it. Blank for none. */
+    logoUrl: z.string().max(2000),
+    /** The product line it's listed under. Null for none: under "Other". */
+    lineId: z.uuid().nullable(),
     /** The set's products in their new order: ones already listed by id, new ones in full. */
     items: z
       .array(z.union([z.object({ id: z.uuid() }).strict(), z.object({ add: newProduct }).strict()]))
@@ -186,7 +197,7 @@ const setRequest = z
   .strict();
 
 /** A refusal decided inside the transaction, which rolls it back. */
-class SetRefused extends Error {}
+class Refused extends Error {}
 
 /**
  * Saves a set as the set editor left it -- in ONE transaction, so a set is never left half
@@ -197,17 +208,22 @@ class SetRefused extends Error {}
  *   - every product is given its place, in the order the editor sent. One somebody else
  *     added while the editor was open isn't lost: it keeps its place at the end;
  *   - editing a set can rename it, retired products and all -- but not onto another set's
- *     name, which would quietly merge the two.
+ *     name, which would quietly merge the two;
+ *   - the set's logo and product line are set, changed or cleared, under its new name if
+ *     renamed.
  */
 export async function saveDropSet(raw: unknown): Promise<SetResult> {
   const viewer = await requireAdmin();
   const request = setRequest.safeParse(raw);
   if (!request.success)
     return { ok: false, error: "That set didn't arrive whole. Reload the page." };
-  const { previousName, items } = request.data;
+  const { previousName, lineId, items } = request.data;
   const set = parseSetName(request.data.setName);
   if (!set.ok) return set;
   const setName = set.value;
+  const logo = parseLogo(request.data.logoUrl, "set");
+  if (!logo.ok) return logo;
+  const logoUrl = logo.value;
 
   const added: { index: number; value: ProductInput }[] = [];
   const firstAt = new Map<string, number>();
@@ -243,24 +259,37 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
         select: { id: true, sortOrder: true },
       });
       const place = new Map(current.map((p) => [p.id, p.sortOrder]));
+      const kept = await tx.dropSet.findUnique({
+        where: { siteKey_name: { siteKey: SITE, name: home } },
+        select: { logoUrl: true, lineId: true },
+      });
+      const logoBefore = kept?.logoUrl ?? null;
+      const lineBefore = kept?.lineId ?? null;
       if (listedIds.some((id) => !place.has(id))) {
-        throw new SetRefused(
-          "That set changed since you opened it. Reload the page and try again.",
-        );
+        throw new Refused("That set changed since you opened it. Reload the page and try again.");
       }
       if (renaming) {
         const taken = await tx.dropProduct.findFirst({
           where: { siteKey: SITE, setName },
           select: { id: true },
         });
-        if (taken) throw new SetRefused(`There's already a set called “${setName}”.`);
+        if (taken) throw new Refused(`There's already a set called “${setName}”.`);
+      }
+      if (
+        lineId !== null &&
+        !(await tx.dropLine.findFirst({
+          where: { id: lineId, siteKey: SITE },
+          select: { id: true },
+        }))
+      ) {
+        throw new Refused("That product line is gone. Reload the page.");
       }
       if (added.length > 0) {
         const clashes = await tx.dropProduct.findMany({
           where: { siteKey: SITE, sku: { in: added.map((a) => a.value.sku) } },
           select: { sku: true, name: true, setName: true, active: true },
         });
-        if (clashes.length > 0) throw new SetRefused(clashes.map(listedAlready).join(" "));
+        if (clashes.length > 0) throw new Refused(clashes.map(listedAlready).join(" "));
       }
 
       if (renaming) {
@@ -274,6 +303,18 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
         await tx.dropSet.updateMany({
           where: { siteKey: SITE, name: home },
           data: { name: setName },
+        });
+      }
+
+      // A logo or a line on a set that hasn't been placed gives it a row with no place: it's
+      // still new.
+      const relogo = logoUrl !== logoBefore;
+      const reline = lineId !== lineBefore;
+      if (relogo || reline) {
+        await tx.dropSet.upsert({
+          where: { siteKey_name: { siteKey: SITE, name: setName } },
+          create: { siteKey: SITE, name: setName, logoUrl, lineId },
+          update: { logoUrl, lineId },
         });
       }
 
@@ -318,14 +359,19 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
           after: value,
         });
       }
-      if (moved || renaming) {
+      if (moved || renaming || relogo || reline) {
         audits.push({
           actorDiscordId: viewer.discordUserId,
           action: "drop_set.update",
           entity: "drop_set",
           entityId: setName,
-          before: { setName: home, order: current.map((p) => p.id) },
-          after: { setName, order: finalIds },
+          before: {
+            setName: home,
+            order: current.map((p) => p.id),
+            logoUrl: logoBefore,
+            lineId: lineBefore,
+          },
+          after: { setName, order: finalIds, logoUrl, lineId },
         });
       }
       if (audits.length > 0) await tx.adminAudit.createMany({ data: audits });
@@ -335,7 +381,7 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
     revalidatePath("/dashboard/products");
     return { ok: true, added: saved };
   } catch (error) {
-    if (error instanceof SetRefused) return { ok: false, error: error.message };
+    if (error instanceof Refused) return { ok: false, error: error.message };
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       return {
         ok: false,
@@ -413,8 +459,8 @@ const orderRequest = z
 
 /**
  * Arranges the sets: each named set gets its place, in the order given. A name that's no
- * longer a set is skipped, and a place kept for a set that's gone is cleared, so the table
- * holds the sets there are.
+ * longer a set is skipped, and a row kept for a set that's gone is cleared, so the table
+ * holds the sets there are. A set's logo is untouched.
  *
  * A set the list doesn't name loses nothing. One that had a place keeps it, after the named
  * ones and in its old order -- a page loaded before it was placed can't undo that -- and one
@@ -443,7 +489,7 @@ export async function saveSetOrder(raw: unknown): Promise<OrderResult> {
       );
       const before = (
         await tx.dropSet.findMany({
-          where: { siteKey: SITE },
+          where: { siteKey: SITE, sortOrder: { not: null } },
           orderBy: { sortOrder: "asc" },
           select: { name: true },
         })
@@ -454,7 +500,8 @@ export async function saveSetOrder(raw: unknown): Promise<OrderResult> {
         ...before.filter((name) => sets.has(name) && !named.includes(name)),
       ];
 
-      await tx.dropSet.deleteMany({ where: { siteKey: SITE, name: { notIn: placed } } });
+      // Only sets that are gone: a set with a logo and no place keeps its row, and stays new.
+      await tx.dropSet.deleteMany({ where: { siteKey: SITE, name: { notIn: [...sets] } } });
       for (const [index, name] of placed.entries()) {
         await tx.dropSet.upsert({
           where: { siteKey_name: { siteKey: SITE, name } },
@@ -475,6 +522,133 @@ export async function saveSetOrder(raw: unknown): Promise<OrderResult> {
   } catch (error) {
     console.error("products: set order failed", error instanceof Error ? error.message : "unknown");
     return { ok: false, error: "Couldn't save that order. Nothing changed — try again." };
+  }
+
+  revalidatePath("/dashboard/products");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Product lines
+// ---------------------------------------------------------------------------
+
+/** Far more lines than there are, and a bound on what one request can ask for. */
+const MAX_LINES = 50;
+
+const linesRequest = z
+  .object({
+    /** The lines in their new order: ones already made by id, new ones with none. */
+    lines: z
+      .array(
+        z
+          .object({
+            id: z.uuid().nullable(),
+            name: z.string().max(400),
+            logoUrl: z.string().max(2000),
+          })
+          .strict(),
+      )
+      .max(MAX_LINES),
+    /** Lines the dialog was opened with and had removed. */
+    removed: z.array(z.uuid()).max(MAX_LINES),
+  })
+  .strict();
+
+/**
+ * Saves "Product lines" as the dialog left it, in ONE transaction: lines made, renamed, given
+ * or cleared a logo, arranged and removed.
+ *
+ *   - Removing a line removes no set: its sets go back under "Other".
+ *   - A line someone else made while the dialog was open isn't lost: it keeps its place, after
+ *     the ones listed.
+ *   - Two lines can't share a name, whatever its case.
+ */
+export async function saveProductLines(raw: unknown): Promise<LinesResult> {
+  const viewer = await requireAdmin();
+  const request = linesRequest.safeParse(raw);
+  if (!request.success)
+    return { ok: false, error: "Those product lines didn't arrive whole. Reload the page." };
+  const { removed } = request.data;
+
+  const lines: { id: string | null; name: string; logoUrl: string | null }[] = [];
+  const names = new Set<string>();
+  for (const line of request.data.lines) {
+    const name = parseLineName(line.name);
+    if (!name.ok) return name;
+    const logo = parseLogo(line.logoUrl, "product line");
+    if (!logo.ok) return { ok: false, error: `${name.value}: ${logo.error}` };
+    if (names.has(name.value.toLowerCase())) {
+      return { ok: false, error: `There are two product lines called “${name.value}”.` };
+    }
+    names.add(name.value.toLowerCase());
+    lines.push({ id: line.id, name: name.value, logoUrl: logo.value });
+  }
+  const listedIds = lines.flatMap((line) => (line.id ? [line.id] : []));
+  if (new Set([...listedIds, ...removed]).size !== listedIds.length + removed.length) {
+    return { ok: false, error: "A product line is listed twice. Reload the page." };
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const before = await tx.dropLine.findMany({
+        where: { siteKey: SITE },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        select: { id: true, name: true, logoUrl: true },
+      });
+      const byId = new Map(before.map((line) => [line.id, line]));
+      if (listedIds.some((id) => !byId.has(id))) {
+        throw new Refused("A product line was removed since you opened this. Reload the page.");
+      }
+      // Made by someone else meanwhile: kept, after the ones listed.
+      const others = before.filter(
+        (line) => !listedIds.includes(line.id) && !removed.includes(line.id),
+      );
+      const clash = others.find((line) => names.has(line.name.toLowerCase()));
+      if (clash) throw new Refused(`There's already a product line called “${clash.name}”.`);
+
+      // Its sets' rows keep their place and logo, and lose the line (ON DELETE SET NULL).
+      await tx.dropLine.deleteMany({ where: { siteKey: SITE, id: { in: removed } } });
+      // Renamed lines step out of the way first, so two can swap names without colliding.
+      for (const line of lines) {
+        if (line.id && byId.get(line.id)?.name !== line.name) {
+          await tx.dropLine.update({ where: { id: line.id }, data: { name: line.id } });
+        }
+      }
+      for (const [index, line] of [...lines, ...others].entries()) {
+        const data = { name: line.name, logoUrl: line.logoUrl, sortOrder: index };
+        if (line.id) await tx.dropLine.update({ where: { id: line.id }, data });
+        else await tx.dropLine.create({ data: { ...data, siteKey: SITE } });
+      }
+
+      await tx.adminAudit.create({
+        data: {
+          actorDiscordId: viewer.discordUserId,
+          action: "drop_line.save",
+          entity: "drop_line",
+          before: { lines: before },
+          after: {
+            lines: await tx.dropLine.findMany({
+              where: { siteKey: SITE },
+              orderBy: { sortOrder: "asc" },
+              select: { id: true, name: true, logoUrl: true },
+            }),
+          },
+        },
+      });
+    });
+  } catch (error) {
+    if (error instanceof Refused) return { ok: false, error: error.message };
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return {
+        ok: false,
+        error: "Someone else saved a product line by one of those names just now. Reload the page.",
+      };
+    }
+    console.error(
+      "products: lines save failed",
+      error instanceof Error ? error.message : "unknown",
+    );
+    return { ok: false, error: "Couldn't save those product lines. Nothing changed — try again." };
   }
 
   revalidatePath("/dashboard/products");

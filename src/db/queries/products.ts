@@ -67,11 +67,36 @@ export async function getCatalog(
 /** The sets' names in the order an admin arranged them. A set not named here is new. */
 export async function getSetOrder(siteKey: string): Promise<string[]> {
   const rows = await prisma.dropSet.findMany({
-    where: { siteKey },
+    where: { siteKey, sortOrder: { not: null } },
     orderBy: { sortOrder: "asc" },
     select: { name: true },
   });
   return rows.map((row) => row.name);
+}
+
+/** What's kept about a set besides its place. */
+export type SetDetails = { logoUrl: string | null; lineId: string | null };
+
+/** Each set's logo and product line, by set name. A set with neither is absent. */
+export async function getSetDetails(siteKey: string): Promise<Record<string, SetDetails>> {
+  const rows = await prisma.dropSet.findMany({
+    where: { siteKey, OR: [{ logoUrl: { not: null } }, { lineId: { not: null } }] },
+    select: { name: true, logoUrl: true, lineId: true },
+  });
+  return Object.fromEntries(
+    rows.map((row) => [row.name, { logoUrl: row.logoUrl, lineId: row.lineId }]),
+  );
+}
+
+export type ProductLine = { id: string; name: string; logoUrl: string | null };
+
+/** The product lines, in the order an admin arranged them. */
+export async function getProductLines(siteKey: string): Promise<ProductLine[]> {
+  return prisma.dropLine.findMany({
+    where: { siteKey },
+    orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    select: { id: true, name: true, logoUrl: true },
+  });
 }
 
 /** One member's picks on a retailer, by product id. A product they haven't picked is absent. */

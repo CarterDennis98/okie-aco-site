@@ -3,6 +3,8 @@ import {
   nameFromTargetUrl,
   parsePastedLinks,
   parseProductInput,
+  parseLineName,
+  parseLogo,
   parseSetName,
   targetSku,
 } from "@/lib/products/product-input";
@@ -121,6 +123,35 @@ describe("parseSetName", () => {
     expect(parseSetName("x".repeat(81))).toEqual({
       ok: false,
       error: "That set name is too long.",
+    });
+  });
+});
+
+describe("parseLogo", () => {
+  it("takes any https:// link, and blank as none", () => {
+    expect(parseLogo(" https://img.example/logos/pfl.png ", "set")).toEqual({
+      ok: true,
+      value: "https://img.example/logos/pfl.png",
+    });
+    expect(parseLogo("  ", "set")).toEqual({ ok: true, value: null });
+    expect(parseLogo("http://img.example/pfl.png", "set")).toEqual({
+      ok: false,
+      error: "The set logo needs an https:// link.",
+    });
+    expect(parseLogo("pfl.png", "product line")).toEqual({
+      ok: false,
+      error: "The product line logo needs an https:// link.",
+    });
+  });
+});
+
+describe("parseLineName", () => {
+  it("collapses the spacing, and refuses a blank or long name", () => {
+    expect(parseLineName("  One   Piece ")).toEqual({ ok: true, value: "One Piece" });
+    expect(parseLineName("   ")).toEqual({ ok: false, error: "Give each product line a name." });
+    expect(parseLineName("x".repeat(41))).toEqual({
+      ok: false,
+      error: `“${"x".repeat(20)}…” is too long for a product line.`,
     });
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import type { CatalogProduct } from "@/db/queries/products";
+import type { CatalogProduct, ProductLine, SetDetails } from "@/db/queries/products";
 import { money } from "@/lib/money";
 import { deleteDropSet, saveDropSet } from "@/lib/products/admin-actions";
 import {
@@ -9,6 +9,7 @@ import {
   SET_NAME_LIMIT,
   parsePastedLinks,
   parseProductInput,
+  parseLogo,
   parseSetName,
   targetSku,
 } from "@/lib/products/product-input";
@@ -26,9 +27,11 @@ import { useReorder } from "@/components/products/use-reorder";
  *     Drag a row by its handle, or use its arrows.
  *   - RENAME and DELETE, when editing a set that exists: the name field renames it, and
  *     "Delete set" takes every product in it, retired ones too, and the picks members made.
+ *   - LOGO and PRODUCT LINE: both optional. The logo shows left of the set's name; the line
+ *     is the one the set is listed under, picked from those made in "Product lines".
  *
  * Opened to add, the set field picks the set: an existing set's products are listed, so new
- * ones can go in among them; a new name starts a new set.
+ * ones can go in among them, and its logo and line are filled in; a new name starts a new set.
  *
  * Nothing is saved until Save, and then all of it in one go -- or none of it, with what was
  * wrong. Each row is checked here as it's typed, and again by the action, which is the
@@ -95,6 +98,8 @@ export function SetEditor({
   products,
   retired,
   sets,
+  details,
+  lines,
 }: {
   /** The set to edit. Absent for "Add products". */
   setName?: string;
@@ -104,11 +109,19 @@ export function SetEditor({
   retired: CatalogProduct[];
   /** Set names already in use, offered as suggestions. */
   sets: string[];
+  /** Each set's logo and line, by set name. */
+  details: Record<string, SetDetails>;
+  /** The product lines, in their order. */
+  lines: ProductLine[];
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const editing = setName !== undefined;
   const id = editing ? `set-${encodeURIComponent(setName)}` : "set-new";
   const [name, setNameField] = useState(setName ?? "");
+  // Null until typed in, undefined until picked: until then they're the set's own, which
+  // follow the set field when adding.
+  const [logoTyped, setLogoTyped] = useState<string | null>(null);
+  const [linePicked, setLinePicked] = useState<string | null | undefined>(undefined);
   const [rows, setRows] = useState<Row[]>([]);
   const [paste, setPaste] = useState("");
   const [note, setNote] = useState<string | null>(null);
@@ -135,8 +148,23 @@ export function SetEditor({
       .map((product) => ({ key: product.id, kind: "listed" as const, product }));
   };
 
+  /** What's kept about a set as stored, by its name as typed. */
+  const detailsOf = (set: string): SetDetails | undefined => {
+    const wanted = parseSetName(set);
+    return wanted.ok ? details[wanted.value] : undefined;
+  };
+  const own = detailsOf(editing ? setName : name);
+  const ownLogo = own?.logoUrl ?? "";
+  // A line that's since been removed is no line.
+  const ownLine = lines.some((l) => l.id === own?.lineId) ? (own?.lineId ?? null) : null;
+  const logo = logoTyped ?? ownLogo;
+  const line = linePicked === undefined ? ownLine : linePicked;
+  const logoPreview = logo.trim().startsWith("https://") ? logo.trim() : null;
+
   function open() {
     setNameField(setName ?? "");
+    setLogoTyped(null);
+    setLinePicked(undefined);
     setRows(editing ? listedIn(setName) : []);
     setPaste("");
     setNote(null);
@@ -227,12 +255,16 @@ export function SetEditor({
   const changed =
     fresh > 0 ||
     (editing && name.trim().replace(/\s+/g, " ") !== setName) ||
+    logo.trim() !== ownLogo ||
+    line !== ownLine ||
     rows.map((r) => r.key).join() !== original.join();
 
   function save() {
     setError(null);
     const set = parseSetName(name);
     if (!set.ok) return setError(set.error);
+    const checkedLogo = parseLogo(logo, "set");
+    if (!checkedLogo.ok) return setError(checkedLogo.error);
     if (problems.size > 0) return setError("Fix the marked products first.");
     if (!editing && fresh === 0) return setError("Paste at least one product link.");
     if (!changed) return dialog.current?.close();
@@ -240,6 +272,8 @@ export function SetEditor({
       const result = await saveDropSet({
         setName: name,
         previousName: setName ?? null,
+        logoUrl: logo,
+        lineId: line,
         items: rows.map((row) =>
           row.kind === "listed"
             ? { id: row.product.id }
@@ -346,6 +380,56 @@ export function SetEditor({
                   : rows.some((r) => r.kind === "listed")
                     ? "An existing set: new products go in among its own."
                     : "A new set, unless you pick one that's listed."}
+              </p>
+            </div>
+
+            {lines.length > 0 && (
+              <div>
+                <label htmlFor={`${id}-line`} className={label}>
+                  Product line
+                </label>
+                <select
+                  id={`${id}-line`}
+                  value={line ?? ""}
+                  onChange={(event) => setLinePicked(event.currentTarget.value || null)}
+                  className={field}
+                >
+                  <option value="">None — listed under “Other”</option>
+                  {lines.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label htmlFor={`${id}-logo`} className={label}>
+                Set logo link — optional
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  id={`${id}-logo`}
+                  value={logo}
+                  onChange={(event) => setLogoTyped(event.currentTarget.value)}
+                  inputMode="url"
+                  placeholder="https://…"
+                  className={field}
+                />
+                {logoPreview && (
+                  // A plain <img>, as on the page: see ProductEditor for why not next/image.
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={logoPreview}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="h-8 w-auto max-w-24 shrink-0 object-contain"
+                  />
+                )}
+              </div>
+              <p className="mt-1 text-xs text-[var(--color-muted)]">
+                Shown left of the set&rsquo;s name. Leave it blank for none.
               </p>
             </div>
 

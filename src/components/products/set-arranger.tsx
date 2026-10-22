@@ -8,6 +8,9 @@ import { useReorder } from "@/components/products/use-reorder";
  * "Arrange sets": the sets in the order members see them, to drag by the handle or move with
  * the arrows, and saved together. A native <dialog>, built like the set editor: the list
  * scrolls, the heading and the buttons stay put.
+ *
+ * With product lines, each line's sets are a list of their own, under the line's name: a set
+ * moves among its line's sets, and changes line in the set editor.
  */
 
 const primary =
@@ -17,14 +20,16 @@ const secondary =
 const iconButton =
   "inline-flex size-11 items-center justify-center rounded-lg text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] disabled:opacity-30 sm:size-7";
 
-export function SetArranger({ sets }: { sets: { name: string; products: number }[] }) {
+/** One line's sets, in page order. `title` is null without lines: one list, no heading. */
+type Section = { title: string | null; sets: { name: string; products: number }[] };
+
+export function SetArranger({ sections }: { sections: Section[] }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [order, setOrder] = useState<string[]>([]);
+  const [order, setOrder] = useState<string[][]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, startSaving] = useTransition();
-  const { move, handle, row, dragging, over } = useReorder(setOrder, order);
-  const counts = new Map(sets.map((set) => [set.name, set.products]));
-  const shown = sets.map((set) => set.name);
+  const counts = new Map(sections.flatMap((s) => s.sets.map((set) => [set.name, set.products])));
+  const shown = sections.map((s) => s.sets.map((set) => set.name));
 
   function open() {
     setOrder(shown);
@@ -34,9 +39,11 @@ export function SetArranger({ sets }: { sets: { name: string; products: number }
 
   function save() {
     setError(null);
-    if (order.join("\n") === shown.join("\n")) return dialog.current?.close();
+    // The lines' lists one after another: what counts is each set's place in its own line.
+    const names = order.flat();
+    if (names.join("\n") === shown.flat().join("\n")) return dialog.current?.close();
     startSaving(async () => {
-      const result = await saveSetOrder({ names: order }).catch(() => ({
+      const result = await saveSetOrder({ names }).catch(() => ({
         ok: false as const,
         error: "That didn't save. Check your connection.",
       }));
@@ -70,8 +77,8 @@ export function SetArranger({ sets }: { sets: { name: string; products: number }
                 Arrange sets
               </h2>
               <p className="mt-1 text-xs text-[var(--color-muted)]">
-                Members see the sets in this order. A set added later shows at the top until
-                it&rsquo;s placed.
+                Members see the sets in this order. A set added later shows at the top
+                {sections.length > 1 ? " of its line" : ""} until it&rsquo;s placed.
               </p>
             </div>
             <button
@@ -84,62 +91,21 @@ export function SetArranger({ sets }: { sets: { name: string; products: number }
             </button>
           </div>
 
-          <ol className="relative min-h-0 flex-1 space-y-1.5 overflow-y-auto px-5 py-4 sm:px-6">
-            {order.map((name, index) => {
-              const products = counts.get(name) ?? 0;
-              return (
-                <li
-                  key={name}
-                  {...row(name, index)}
-                  className={
-                    "flex items-center gap-2 rounded-lg border px-2 py-2 transition-colors " +
-                    (over === name && dragging !== name
-                      ? "border-[var(--color-brand)] bg-[var(--color-brand)]/5"
-                      : "border-[var(--color-edge)]") +
-                    (dragging === name ? " opacity-50" : "")
-                  }
-                >
-                  <span
-                    {...handle(name)}
-                    title="Drag to reorder"
-                    aria-hidden
-                    className="hidden cursor-grab touch-none px-1 text-[var(--color-muted)] select-none hover:text-[var(--color-fg)] sm:block"
-                  >
-                    ⠿
-                  </span>
-                  <span className="w-5 shrink-0 text-right text-xs text-[var(--color-muted)] tabular-nums">
-                    {index + 1}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-white">{name}</span>
-                    <span className="text-xs text-[var(--color-muted)]">
-                      {products} product{products === 1 ? "" : "s"}
-                    </span>
-                  </span>
-                  <span className="flex shrink-0 items-center">
-                    <button
-                      type="button"
-                      onClick={() => move(index, index - 1)}
-                      disabled={index === 0}
-                      aria-label={`Move ${name} up`}
-                      className={iconButton}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => move(index, index + 1)}
-                      disabled={index === order.length - 1}
-                      aria-label={`Move ${name} down`}
-                      className={iconButton}
-                    >
-                      ↓
-                    </button>
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
+          <div className="relative min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 sm:px-6">
+            {order.map((names, index) => (
+              <ArrangeList
+                key={sections[index]?.title ?? ""}
+                title={sections[index]?.title ?? null}
+                names={names}
+                counts={counts}
+                setNames={(update) =>
+                  setOrder((current) =>
+                    current.map((list, i) => (i === index ? update(list) : list)),
+                  )
+                }
+              />
+            ))}
+          </div>
 
           <div className="shrink-0 space-y-2 border-t border-[var(--color-edge)] px-5 py-4 sm:px-6">
             {error && (
@@ -159,5 +125,88 @@ export function SetArranger({ sets }: { sets: { name: string; products: number }
         </form>
       </dialog>
     </>
+  );
+}
+
+/**
+ * One line's sets. Its own drag and drop, so a set dragged over another line's list isn't
+ * taken there.
+ */
+function ArrangeList({
+  title,
+  names,
+  counts,
+  setNames,
+}: {
+  title: string | null;
+  names: string[];
+  counts: Map<string, number>;
+  setNames: (update: (names: string[]) => string[]) => void;
+}) {
+  const { move, handle, row, dragging, over } = useReorder(setNames, names);
+  return (
+    <div>
+      {title !== null && (
+        <p className="mb-1.5 text-xs font-semibold tracking-wide text-[var(--color-muted)] uppercase">
+          {title}
+        </p>
+      )}
+      <ol className="space-y-1.5">
+        {names.map((name, index) => {
+          const products = counts.get(name) ?? 0;
+          return (
+            <li
+              key={name}
+              {...row(name, index)}
+              className={
+                "flex items-center gap-2 rounded-lg border px-2 py-2 transition-colors " +
+                (over === name && dragging !== name
+                  ? "border-[var(--color-brand)] bg-[var(--color-brand)]/5"
+                  : "border-[var(--color-edge)]") +
+                (dragging === name ? " opacity-50" : "")
+              }
+            >
+              <span
+                {...handle(name)}
+                title="Drag to reorder"
+                aria-hidden
+                className="hidden cursor-grab touch-none px-1 text-[var(--color-muted)] select-none hover:text-[var(--color-fg)] sm:block"
+              >
+                ⠿
+              </span>
+              <span className="w-5 shrink-0 text-right text-xs text-[var(--color-muted)] tabular-nums">
+                {index + 1}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-white">{name}</span>
+                <span className="text-xs text-[var(--color-muted)]">
+                  {products} product{products === 1 ? "" : "s"}
+                </span>
+              </span>
+              <span className="flex shrink-0 items-center">
+                <button
+                  type="button"
+                  onClick={() => move(index, index - 1)}
+                  disabled={index === 0}
+                  aria-label={`Move ${name} up`}
+                  className={iconButton}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => move(index, index + 1)}
+                  disabled={index === names.length - 1}
+                  aria-label={`Move ${name} down`}
+                  className={iconButton}
+                >
+                  ↓
+                </button>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }

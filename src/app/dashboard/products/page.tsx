@@ -7,7 +7,9 @@ import {
   getDropStats,
   getMemberChoices,
   getPickableProfiles,
+  getProductLines,
   getSelectionCounts,
+  getSetDetails,
   getSetOrder,
 } from "@/db/queries/products";
 import { requireMember } from "@/lib/auth/guard";
@@ -33,14 +35,17 @@ const SITE = "target";
 export default async function ProductsPage() {
   const viewer = await requireMember();
 
-  const [catalog, choices, profiles, setOrder, counts, stats] = await Promise.all([
-    getCatalog(SITE, { includeRetired: viewer.isAdmin }),
-    getMemberChoices(viewer.discordUserId, SITE),
-    getPickableProfiles(viewer.discordUserId, SITE),
-    getSetOrder(SITE),
-    viewer.isAdmin ? getSelectionCounts(SITE) : Promise.resolve(null),
-    viewer.isAdmin ? getDropStats(SITE) : Promise.resolve(null),
-  ]);
+  const [catalog, choices, profiles, setOrder, setDetails, lines, counts, stats] =
+    await Promise.all([
+      getCatalog(SITE, { includeRetired: viewer.isAdmin }),
+      getMemberChoices(viewer.discordUserId, SITE),
+      getPickableProfiles(viewer.discordUserId, SITE),
+      getSetOrder(SITE),
+      getSetDetails(SITE),
+      getProductLines(SITE),
+      viewer.isAdmin ? getSelectionCounts(SITE) : Promise.resolve(null),
+      viewer.isAdmin ? getDropStats(SITE) : Promise.resolve(null),
+    ]);
   const products = catalog.filter((p) => p.active);
   const retired = catalog.filter((p) => !p.active);
   const sets = [...new Set(catalog.map((p) => p.setName))].sort();
@@ -98,6 +103,8 @@ export default async function ProductsPage() {
           counts={counts}
           sets={sets}
           setOrder={setOrder}
+          setDetails={setDetails}
+          lines={lines}
         />
       </main>
 

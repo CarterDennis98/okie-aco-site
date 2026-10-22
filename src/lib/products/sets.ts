@@ -2,9 +2,11 @@
  * How Target Products orders what it lists. Pure, so the page, the editors and the tests all
  * sort by the one rule.
  *
- *   - Sets: as an admin arranged them (DropSet). A set not placed yet is new, and goes above
- *     the placed ones, newest first among themselves -- the drop coming up sits at the top
- *     until someone puts it somewhere else.
+ *   - Product lines: as an admin arranged them (DropLine), and "Other" -- the sets in no
+ *     line -- after them.
+ *   - Sets: as an admin arranged them (DropSet), within their line. A set not placed yet is
+ *     new, and goes above the placed ones, newest first among themselves -- the drop coming
+ *     up sits at the top until someone puts it somewhere else.
  *   - Within a set: as an admin arranged it in the set editor (`sortOrder`), and among
  *     equals -- a product restored from retirement, say -- the older first.
  *
@@ -29,23 +31,34 @@ export function searchTerms(query: string): string[] {
   return fold(query).split(/\s+/).filter(Boolean);
 }
 
-/** Whether a product has every word somewhere in its name, SKU or set. */
+/**
+ * Whether a product has every word somewhere in its name, SKU or set -- or in `also`, its
+ * product line's name.
+ */
 export function matchesSearch(
   product: { name: string; sku: string; setName: string },
   terms: string[],
+  also = "",
 ): boolean {
-  const haystack = fold(`${product.name} ${product.sku} ${product.setName}`);
+  const haystack = fold(`${product.name} ${product.sku} ${product.setName} ${also}`);
   return terms.every((term) => haystack.includes(term));
 }
 
-/** Groups narrowed to what a search finds, dropping a set with nothing left. No words, no narrowing. */
+/**
+ * Groups narrowed to what a search finds, dropping a set with nothing left. No words, no
+ * narrowing. `lineNameOf` gives a set's product line's name, which a search finds too.
+ */
 export function searchGroups<T extends { name: string; sku: string; setName: string }>(
   groups: { setName: string; products: T[] }[],
   terms: string[],
+  lineNameOf: (setName: string) => string = () => "",
 ): { setName: string; products: T[] }[] {
   if (terms.length === 0) return groups;
   return groups
-    .map((group) => ({ ...group, products: group.products.filter((p) => matchesSearch(p, terms)) }))
+    .map((group) => {
+      const line = lineNameOf(group.setName);
+      return { ...group, products: group.products.filter((p) => matchesSearch(p, terms, line)) };
+    })
     .filter((group) => group.products.length > 0);
 }
 
@@ -75,4 +88,33 @@ export function groupBySet<T extends Listed>(
       if (pb !== undefined) return -1;
       return newest(b.products) - newest(a.products);
     });
+}
+
+/**
+ * Sets under their product lines: the lines in their order, then "Other" -- the sets in no
+ * line, under `line: null`. Sets keep the order they came in. A line with no set to show
+ * isn't listed, and a set whose line is gone is in "Other".
+ */
+export function groupByLine<G extends { setName: string }, L extends { id: string }>(
+  groups: G[],
+  lines: L[],
+  lineOf: (setName: string) => string | null,
+): { line: L | null; sets: G[] }[] {
+  const known = new Set(lines.map((line) => line.id));
+  const under = new Map<string | null, G[]>();
+  for (const group of groups) {
+    const id = lineOf(group.setName);
+    const key = id !== null && known.has(id) ? id : null;
+    const list = under.get(key);
+    if (list) list.push(group);
+    else under.set(key, [group]);
+  }
+  const other = under.get(null);
+  return [
+    ...lines.flatMap((line) => {
+      const sets = under.get(line.id);
+      return sets ? [{ line, sets }] : [];
+    }),
+    ...(other ? [{ line: null, sets: other }] : []),
+  ];
 }

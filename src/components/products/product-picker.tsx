@@ -1,12 +1,19 @@
 "use client";
 
-import { useId, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { CatalogProduct } from "@/db/queries/products";
+import { useCallback, useId, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import type { CatalogProduct, ProductLine, SetDetails } from "@/db/queries/products";
 import { money } from "@/lib/money";
 import { saveProductChoice } from "@/lib/products/actions";
 import { setDropProductActive } from "@/lib/products/admin-actions";
 import type { Choice } from "@/lib/products/selection";
-import { groupBySet, matchesSearch, searchGroups, searchTerms } from "@/lib/products/sets";
+import {
+  groupByLine,
+  groupBySet,
+  matchesSearch,
+  searchGroups,
+  searchTerms,
+} from "@/lib/products/sets";
+import { LineEditor } from "@/components/products/line-editor";
 import { ProductEditor } from "@/components/products/product-editor";
 import { SetArranger } from "@/components/products/set-arranger";
 import { SetEditor } from "@/components/products/set-editor";
@@ -90,62 +97,71 @@ function ProductImage({ src }: { src: string | null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Which sets are folded away: this browser's own, kept in localStorage.
+// Which lines and sets are folded away: this browser's own, kept in localStorage.
 // ---------------------------------------------------------------------------
 
-const FOLDED_KEY = "okie:products:folded-sets";
-const folding = new Set<() => void>();
-/** This page's copy: what storage held when first read, then every change made here. */
-let folded: string | null = null;
+/** A list of folded keys -- set names, or line ids -- kept in localStorage under `key`. */
+function foldedStore(key: string) {
+  const listeners = new Set<() => void>();
+  /** This page's copy: what storage held when first read, then every change made here. */
+  let folded: string | null = null;
 
-function foldedSnapshot(): string {
-  if (folded === null) {
-    try {
-      folded = window.localStorage.getItem(FOLDED_KEY) ?? "[]";
-    } catch {
-      // Storage blocked (a private window, say): folding still works, for this visit.
-      folded = "[]";
+  const snapshot = (): string => {
+    if (folded === null) {
+      try {
+        folded = window.localStorage.getItem(key) ?? "[]";
+      } catch {
+        // Storage blocked (a private window, say): folding still works, for this visit.
+        folded = "[]";
+      }
     }
-  }
-  return folded;
+    return folded;
+  };
+
+  const save = (keys: string[]) => {
+    folded = JSON.stringify(keys);
+    try {
+      window.localStorage.setItem(key, folded);
+    } catch {
+      // Kept for this visit only.
+    }
+    for (const listener of listeners) listener();
+  };
+
+  const subscribe = (listener: () => void) => {
+    // Another tab folding one is picked up too.
+    const fromStorage = (event: StorageEvent) => {
+      if (event.key !== key) return;
+      folded = null;
+      listener();
+    };
+    listeners.add(listener);
+    window.addEventListener("storage", fromStorage);
+    return () => {
+      listeners.delete(listener);
+      window.removeEventListener("storage", fromStorage);
+    };
+  };
+
+  return { snapshot, save, subscribe };
 }
 
-function saveFolded(names: string[]) {
-  folded = JSON.stringify(names);
-  try {
-    window.localStorage.setItem(FOLDED_KEY, folded);
-  } catch {
-    // Kept for this visit only.
-  }
-  for (const listener of folding) listener();
-}
-
-function onFoldingChange(listener: () => void) {
-  // Another tab folding a set is picked up too.
-  const fromStorage = (event: StorageEvent) => {
-    if (event.key !== FOLDED_KEY) return;
-    folded = null;
-    listener();
-  };
-  folding.add(listener);
-  window.addEventListener("storage", fromStorage);
-  return () => {
-    folding.delete(listener);
-    window.removeEventListener("storage", fromStorage);
-  };
-}
+const setFolds = foldedStore("okie:products:folded-sets");
+const lineFolds = foldedStore("okie:products:folded-lines");
+/** The key "Other" is folded under. Line ids are UUIDs, so never this. */
+const OTHER = "other";
 
 /**
- * The folded sets, by name. Read through useSyncExternalStore so the server -- which can't
- * see this browser's storage -- and the first render agree on "nothing folded", and the
- * browser's own choice follows straight after.
+ * What's folded. Read through useSyncExternalStore so the server -- which can't see this
+ * browser's storage -- and the first render agree on "nothing folded", and the browser's own
+ * choice follows straight after.
  */
-function useFoldedSets(): Set<string> {
-  const raw = useSyncExternalStore(onFoldingChange, foldedSnapshot, () => "[]");
+function useFolded(store: ReturnType<typeof foldedStore>): Set<string> {
+  const raw = useSyncExternalStore(store.subscribe, store.snapshot, () => "[]");
   return useMemo(() => {
     try {
-      const names: unknown = JSON.parse(raw);
-      return new Set(Array.isArray(names) ? names.filter((n) => typeof n === "string") : []);
+      const keys: unknown = JSON.parse(raw);
+      return new Set(Array.isArray(keys) ? keys.filter((k) => typeof k === "string") : []);
     } catch {
       return new Set<string>();
     }
@@ -164,6 +180,8 @@ export function ProductPicker({
   counts,
   sets,
   setOrder,
+  setDetails,
+  lines,
 }: {
   products: CatalogProduct[];
   retired: CatalogProduct[];
@@ -174,16 +192,33 @@ export function ProductPicker({
   sets: string[];
   /** The sets as an admin arranged them, by name; see groupBySet. */
   setOrder: string[];
+  /** Each set's logo and product line, by set name. A set with neither is absent. */
+  setDetails: Record<string, SetDetails>;
+  /** The product lines, in their order. */
+  lines: ProductLine[];
 }) {
   const [choices, setChoices] = useState<Record<string, Choice>>(initialChoices);
   const [saving, setSaving] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
+  const lineOf = useCallback(
+    (setName: string) => setDetails[setName]?.lineId ?? null,
+    [setDetails],
+  );
+  const lineNameOf = useCallback(
+    (setName: string) => lines.find((l) => l.id === lineOf(setName))?.name ?? "",
+    [lines, lineOf],
+  );
   const groups = useMemo(() => groupBySet(products, setOrder), [products, setOrder]);
   const terms = useMemo(() => searchTerms(query), [query]);
-  const shown = useMemo(() => searchGroups(groups, terms), [groups, terms]);
+  const shown = useMemo(() => searchGroups(groups, terms, lineNameOf), [groups, terms, lineNameOf]);
+  const allByLine = useMemo(() => groupByLine(groups, lines, lineOf), [groups, lines, lineOf]);
+  const shownByLine = useMemo(() => groupByLine(shown, lines, lineOf), [shown, lines, lineOf]);
+  // Headings for lines only once a set is in one; until then the page is the sets alone.
+  const lined = allByLine.some((g) => g.line !== null);
   const searching = terms.length > 0;
-  const foldedSets = useFoldedSets();
+  const foldedSets = useFolded(setFolds);
+  const foldedLines = useFolded(lineFolds);
   const active = profiles.filter((p) => p.active);
   const choosable = active.length > 1;
 
@@ -228,13 +263,67 @@ export function ProductPicker({
     }
   }
 
-  // Only names still listed are remembered: a deleted set's fold needn't outlive it.
-  const fold = (names: Set<string>) =>
-    saveFolded(groups.map((g) => g.setName).filter((name) => names.has(name)));
-  const allFolded = groups.length > 0 && groups.every((g) => foldedSets.has(g.setName));
+  // Only what's still listed is remembered: a deleted set's or line's fold needn't outlive it.
+  const setNames = groups.map((g) => g.setName);
+  const lineKeys = lined ? allByLine.map((g) => g.line?.id ?? OTHER) : [];
+  const foldSets = (names: Set<string>) =>
+    setFolds.save(setNames.filter((name) => names.has(name)));
+  const foldLines = (keys: Set<string>) => lineFolds.save(lineKeys.filter((key) => keys.has(key)));
+  const toggle = (folded: Set<string>, key: string, on: boolean) => {
+    const next = new Set(folded);
+    if (on) next.add(key);
+    else next.delete(key);
+    return next;
+  };
+  // "Collapse all" folds the lines and the sets in them: a line opened again lists its sets'
+  // headings, to pick from.
+  const allFolded =
+    groups.length > 0 &&
+    setNames.every((name) => foldedSets.has(name)) &&
+    lineKeys.every((key) => foldedLines.has(key));
   const runningCount = products.filter((p) => choices[p.id]).length;
   const found = shown.reduce((sum, g) => sum + g.products.length, 0);
-  const retiredShown = searching ? retired.filter((p) => matchesSearch(p, terms)) : retired;
+  const retiredShown = searching
+    ? retired.filter((p) => matchesSearch(p, terms, lineNameOf(p.setName)))
+    : retired;
+  const setCounts = Object.fromEntries(
+    allByLine.flatMap((g) => (g.line ? [[g.line.id, g.sets.length]] : [])),
+  );
+
+  const setSection = (group: (typeof shown)[number]) => (
+    <SetSection
+      key={group.setName}
+      setName={group.setName}
+      logo={setDetails[group.setName]?.logoUrl ?? null}
+      nested={lined}
+      products={group.products}
+      // A search opens every set it finds something in: a match folded away is no match.
+      folded={!searching && foldedSets.has(group.setName)}
+      canFold={!searching}
+      onFold={(on) => foldSets(toggle(foldedSets, group.setName, on))}
+      choices={choices}
+      saving={saving}
+      errors={errors}
+      counts={counts}
+      admin={admin}
+      editor={
+        admin && (
+          <SetEditor
+            setName={group.setName}
+            products={products}
+            retired={retired}
+            sets={sets}
+            details={setDetails}
+            lines={lines}
+          />
+        )
+      }
+      sets={sets}
+      active={active}
+      choosable={choosable}
+      save={save}
+    />
+  );
 
   return (
     // Folded sets sit close together; an open one takes its own room below (SetSection).
@@ -248,12 +337,37 @@ export function ProductPicker({
           </p>
           {admin && (
             <div className="flex flex-wrap gap-2">
+              <LineEditor lines={lines} setCounts={setCounts} />
               {groups.length > 1 && (
                 <SetArranger
-                  sets={groups.map((g) => ({ name: g.setName, products: g.products.length }))}
+                  sections={
+                    lined
+                      ? allByLine.map((g) => ({
+                          title: g.line?.name ?? "Other",
+                          sets: g.sets.map((s) => ({
+                            name: s.setName,
+                            products: s.products.length,
+                          })),
+                        }))
+                      : [
+                          {
+                            title: null,
+                            sets: groups.map((g) => ({
+                              name: g.setName,
+                              products: g.products.length,
+                            })),
+                          },
+                        ]
+                  }
                 />
               )}
-              <SetEditor products={products} retired={retired} sets={sets} />
+              <SetEditor
+                products={products}
+                retired={retired}
+                sets={sets}
+                details={setDetails}
+                lines={lines}
+              />
             </div>
           )}
         </div>
@@ -275,12 +389,13 @@ export function ProductPicker({
                   : `${found} of ${products.length} product${products.length === 1 ? "" : "s"}`}
               </span>
             ) : (
-              groups.length > 1 && (
+              (groups.length > 1 || lined) && (
                 <button
                   type="button"
-                  onClick={() =>
-                    fold(allFolded ? new Set() : new Set(groups.map((g) => g.setName)))
-                  }
+                  onClick={() => {
+                    foldSets(allFolded ? new Set() : new Set(setNames));
+                    foldLines(allFolded ? new Set() : new Set(lineKeys));
+                  }}
                   className={quiet}
                 >
                   {allFolded ? "Expand all" : "Collapse all"}
@@ -291,41 +406,27 @@ export function ProductPicker({
         )}
       </div>
 
-      {shown.map((group) => (
-        <SetSection
-          key={group.setName}
-          setName={group.setName}
-          products={group.products}
-          // A search opens every set it finds something in: a match folded away is no match.
-          folded={!searching && foldedSets.has(group.setName)}
-          canFold={!searching}
-          onFold={(on) => {
-            const next = new Set(foldedSets);
-            if (on) next.add(group.setName);
-            else next.delete(group.setName);
-            fold(next);
-          }}
-          choices={choices}
-          saving={saving}
-          errors={errors}
-          counts={counts}
-          admin={admin}
-          editor={
-            admin && (
-              <SetEditor
-                setName={group.setName}
-                products={products}
-                retired={retired}
-                sets={sets}
-              />
-            )
-          }
-          sets={sets}
-          active={active}
-          choosable={choosable}
-          save={save}
-        />
-      ))}
+      {lined
+        ? shownByLine.map(({ line, sets: lineSets }) => {
+            const key = line?.id ?? OTHER;
+            const inLine = lineSets.flatMap((g) => g.products);
+            return (
+              <LineSection
+                key={key}
+                name={line?.name ?? "Other"}
+                logo={line?.logoUrl ?? null}
+                sets={lineSets.length}
+                products={inLine.length}
+                on={inLine.filter((p) => choices[p.id]).length}
+                folded={!searching && foldedLines.has(key)}
+                canFold={!searching}
+                onFold={(on) => foldLines(toggle(foldedLines, key, on))}
+              >
+                {lineSets.map(setSection)}
+              </LineSection>
+            );
+          })
+        : shown.map(setSection)}
 
       {admin && retiredShown.length > 0 && (
         <details className="rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-3">
@@ -352,12 +453,99 @@ export function ProductPicker({
 }
 
 /**
+ * One product line -- or "Other", the sets in none -- and its sets. Its heading folds the
+ * whole line away, and says what's in it while folded.
+ */
+function LineSection({
+  name,
+  logo,
+  sets,
+  products,
+  on,
+  folded,
+  canFold,
+  onFold,
+  children,
+}: {
+  name: string;
+  logo: string | null;
+  sets: number;
+  products: number;
+  /** How many of its products the member is in for. */
+  on: number;
+  folded: boolean;
+  canFold: boolean;
+  onFold: (folded: boolean) => void;
+  children: ReactNode;
+}) {
+  const listId = useId();
+  return (
+    <section>
+      <h2 className="border-b border-[var(--color-edge)] pb-2 text-xl font-black tracking-tight text-white">
+        <button
+          type="button"
+          onClick={() => onFold(!folded)}
+          disabled={!canFold}
+          aria-expanded={!folded}
+          aria-controls={listId}
+          className="flex min-h-11 w-full flex-wrap items-center gap-x-3 gap-y-1 text-left disabled:cursor-default"
+        >
+          <svg
+            aria-hidden
+            viewBox="0 0 20 20"
+            className={
+              "size-5 shrink-0 text-[var(--color-muted)] transition-transform " +
+              (folded ? "" : "rotate-90")
+            }
+          >
+            <path
+              d="M7.5 4.5 13 10l-5.5 5.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          {logo && (
+            // A plain <img>, as for products: see ProductImage. Its name is beside it.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={logo}
+              alt=""
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              className="h-10 w-auto max-w-32 shrink-0 object-contain"
+            />
+          )}
+          <span className="min-w-0 break-words">{name}</span>
+          {folded && (
+            <span className="shrink-0 text-xs font-normal tracking-normal text-[var(--color-muted)]">
+              {sets} set{sets === 1 ? "" : "s"} · {products} product{products === 1 ? "" : "s"}
+              {on > 0 && ` · ${on} active`}
+            </span>
+          )}
+        </button>
+      </h2>
+      {!folded && (
+        // Stepped in, so its sets' chevrons sit under the line's name.
+        <div id={listId} className="mt-5 space-y-6 pl-3 sm:pl-8">
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
  * One set: its heading -- which folds it away, and says what's in it while folded -- and
  * its products. "All on" and "All off" take what the set shows: while searching, only the
  * products found.
  */
 function SetSection({
   setName,
+  logo,
+  nested,
   products,
   folded,
   canFold,
@@ -374,6 +562,9 @@ function SetSection({
   save,
 }: {
   setName: string;
+  logo: string | null;
+  /** Under a product line's heading: a step down from it. */
+  nested: boolean;
   products: CatalogProduct[];
   folded: boolean;
   canFold: boolean;
@@ -394,11 +585,12 @@ function SetSection({
   const off = ids.filter((id) => !choices[id]);
   const on = ids.filter((id) => choices[id]);
   const busy = ids.some((id) => saving.has(id));
+  const Heading = nested ? "h3" : "h2";
 
   return (
     <section className={folded ? undefined : "pb-4"}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="min-w-0 text-lg font-bold tracking-tight text-white">
+        <Heading className="min-w-0 text-lg font-bold tracking-tight text-white">
           <button
             type="button"
             onClick={() => onFold(!folded)}
@@ -425,6 +617,18 @@ function SetSection({
               />
             </svg>
             <span aria-hidden className="h-5 w-1 shrink-0 rounded-full bg-[var(--color-brand)]" />
+            {logo && (
+              // A plain <img>, as for products: see ProductImage. No backdrop: set logos are
+              // cut out to sit on anything. Its name is beside it, so it says nothing itself.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={logo}
+                alt=""
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                className="h-8 w-auto max-w-24 shrink-0 object-contain"
+              />
+            )}
             {/* Centred by what the eye reads: the name's capitals, and the count's lowercase.
                 `text-box` trims each box to just that band, so `items-center` lines the two up
                 exactly. Without it (older browsers), the count sits a pixel low. */}
@@ -438,7 +642,7 @@ function SetSection({
               </span>
             )}
           </button>
-        </h2>
+        </Heading>
         <div className="flex gap-1">
           {editor}
           <button
