@@ -99,6 +99,18 @@ export async function getProductLines(siteKey: string): Promise<ProductLine[]> {
   });
 }
 
+/**
+ * The names of the sets listed under a product line, found by the line's name -- case aside,
+ * the way two lines can't share one. Empty when there is no such line.
+ */
+export async function getSetsInLine(siteKey: string, lineName: string): Promise<Set<string>> {
+  const rows = await prisma.dropSet.findMany({
+    where: { siteKey, line: { name: { equals: lineName, mode: "insensitive" } } },
+    select: { name: true },
+  });
+  return new Set(rows.map((row) => row.name));
+}
+
 /** One member's picks on a retailer, by product id. A product they haven't picked is absent. */
 export async function getMemberChoices(
   discordUserId: string,

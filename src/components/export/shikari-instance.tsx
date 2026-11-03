@@ -5,6 +5,8 @@ import type { ShikariMember } from "@/db/queries/shikari";
 import { scopesOverlap, type GroupChoice, type ShikariInstanceConfig } from "@/lib/shikari/config";
 import type { ParsedProxyList } from "@/lib/shikari/proxies";
 import {
+  MISC_GROUP,
+  MISC_LINE,
   TARGET_GROUP,
   defaultGroupChoice,
   groupChoice,
@@ -63,7 +65,7 @@ const SECTIONS: { key: keyof Sections; label: string; hint: string }[] = [
   {
     key: "tasks",
     label: "Target tasks",
-    hint: "Watchdogs and checkout tasks, from Target Products.",
+    hint: `Watchdogs and checkout tasks, from Target Products. ${MISC_LINE} picks get a group of their own, “${MISC_GROUP}”.`,
   },
   {
     key: "wipes",

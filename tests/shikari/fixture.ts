@@ -50,6 +50,8 @@ const SCHEMA = readFileSync(fileURLToPath(new URL("./schema.sql", import.meta.ur
 
 export const SKU_A = "90000001";
 export const SKU_B = "90000002";
+/** In the Miscellaneous line, so run from "Target - Miscellaneous". Nobody picks it by default. */
+export const SKU_M = "90000003";
 export const T0 = "2026-09-25 03:03:10.934300";
 
 /** The fixture's profiles as the vault has them: identical to the backup, to the digit. */
@@ -146,8 +148,9 @@ export function desiredInstance(
     profiles,
     known,
     products: [
-      { sku: SKU_A, name: "Product A", setName: "Set One" },
-      { sku: SKU_B, name: "Product B", setName: "Set One" },
+      { sku: SKU_A, name: "Product A", setName: "Set One", misc: false },
+      { sku: SKU_B, name: "Product B", setName: "Set One", misc: false },
+      { sku: SKU_M, name: "Product M", setName: "Odds and Ends", misc: true },
     ],
   };
 }

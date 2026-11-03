@@ -4,8 +4,15 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { ChangeSummary, CopyButton } from "@/components/export/shikari-summary";
 import type { TableDiff } from "@/lib/shikari/diff";
+import { MISC_LINE } from "@/lib/shikari/snapshot";
 import { summaryText } from "@/lib/shikari/summary";
-import type { BuildReport, ProfileLine, WatchList } from "@/lib/shikari/types";
+import type {
+  BuildReport,
+  CheckoutReport,
+  ProfileLine,
+  WatchdogReport,
+  WatchList,
+} from "@/lib/shikari/types";
 
 /**
  * What each rebuilt backup holds that the uploaded one didn't -- read before anything is
@@ -130,6 +137,105 @@ function watchSummary(lists: WatchList[], names: Record<string, string>) {
   );
 }
 
+function CheckoutBlock({
+  title,
+  checkout,
+  name,
+  children,
+}: {
+  title: string;
+  checkout: CheckoutReport;
+  name: (sku: string) => string;
+  /** Said after what was removed: who got no task, and why. */
+  children?: ReactNode;
+}) {
+  return (
+    <Block
+      title={title}
+      changed={checkout.added.length + checkout.changed.length + checkout.removed.length > 0}
+      summary={tally([
+        [checkout.added.length, "added"],
+        [checkout.changed.length, "changed"],
+        [checkout.removed.length, "removed"],
+        [checkout.unchanged, "unchanged"],
+      ])}
+    >
+      {checkout.added.length > 0 && (
+        <Names
+          label="Added"
+          items={checkout.added.map((t) => `${t.profile} (${n(t.skus, "product")})`)}
+        />
+      )}
+      {checkout.changed.length > 0 && (
+        <div>
+          <p className="font-medium text-[var(--color-fg)]">Changed</p>
+          <ul className="mt-0.5 space-y-0.5">
+            {checkout.changed.map((t) => (
+              <li key={t.profile}>
+                <span className="text-white">{t.profile}</span>
+                {t.added.length > 0 && (
+                  <span className="text-[var(--color-good)]">
+                    {" "}
+                    + {t.added.map(name).join(", ")}
+                  </span>
+                )}
+                {t.removed.length > 0 && (
+                  <span className="text-[var(--color-warn)]">
+                    {" "}
+                    − {t.removed.map(name).join(", ")}
+                  </span>
+                )}
+                {t.other.length > 0 && (
+                  <span className="text-[var(--color-muted)]"> · {t.other.join(", ")}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <Names label="Removed" items={checkout.removed.map((t) => t.profile)} tone="warn" />
+      {children}
+      <Names
+        label="Tasks for profiles in other groups, left alone"
+        items={checkout.untouched}
+        tone="muted"
+      />
+    </Block>
+  );
+}
+
+function WatchdogBlock({
+  title,
+  watchdogs,
+  names,
+}: {
+  title: string;
+  watchdogs: WatchdogReport;
+  names: Record<string, string>;
+}) {
+  return (
+    <Block
+      title={title}
+      changed={
+        JSON.stringify(watchdogs.before) !== JSON.stringify(watchdogs.after) ||
+        watchdogs.remote.before !== watchdogs.remote.after
+      }
+      summary={`${watchdogs.before.length} → ${watchdogs.after.length} on products, remote ${watchdogs.remote.before} → ${watchdogs.remote.after}`}
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <p className="font-medium text-[var(--color-muted)]">Before</p>
+          {watchSummary(watchdogs.before, names)}
+        </div>
+        <div>
+          <p className="font-medium text-[var(--color-fg)]">After</p>
+          {watchSummary(watchdogs.after, names)}
+        </div>
+      </div>
+    </Block>
+  );
+}
+
 function InstanceReview({
   built,
   done,
@@ -159,6 +265,12 @@ function InstanceReview({
           {r?.taskGroup?.created && (
             <p className="mt-0.5 text-xs text-[var(--color-fg)]">
               Task group &ldquo;{r.taskGroup.name}&rdquo; is new in this backup.
+            </p>
+          )}
+          {r?.misc?.created && (
+            <p className="mt-0.5 text-xs text-[var(--color-fg)]">
+              Task group &ldquo;{r.misc.name}&rdquo; is new in this backup, for the {MISC_LINE}{" "}
+              line&rsquo;s picks.
             </p>
           )}
         </div>
@@ -301,84 +413,30 @@ function ReviewDetails({ built, report: r }: { built: BuiltInstance; report: Bui
         </Block>
       )}
 
-      <Block
-        title="Checkout tasks"
-        changed={
-          r.checkout.added.length + r.checkout.changed.length + r.checkout.removed.length > 0
-        }
-        summary={tally([
-          [r.checkout.added.length, "added"],
-          [r.checkout.changed.length, "changed"],
-          [r.checkout.removed.length, "removed"],
-          [r.checkout.unchanged, "unchanged"],
-        ])}
-      >
-        {r.checkout.added.length > 0 && (
-          <Names
-            label="Added"
-            items={r.checkout.added.map((t) => `${t.profile} (${n(t.skus, "product")})`)}
-          />
-        )}
-        {r.checkout.changed.length > 0 && (
-          <div>
-            <p className="font-medium text-[var(--color-fg)]">Changed</p>
-            <ul className="mt-0.5 space-y-0.5">
-              {r.checkout.changed.map((t) => (
-                <li key={t.profile}>
-                  <span className="text-white">{t.profile}</span>
-                  {t.added.length > 0 && (
-                    <span className="text-[var(--color-good)]">
-                      {" "}
-                      + {t.added.map(name).join(", ")}
-                    </span>
-                  )}
-                  {t.removed.length > 0 && (
-                    <span className="text-[var(--color-warn)]">
-                      {" "}
-                      − {t.removed.map(name).join(", ")}
-                    </span>
-                  )}
-                  {t.other.length > 0 && (
-                    <span className="text-[var(--color-muted)]"> · {t.other.join(", ")}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <Names label="Removed" items={r.checkout.removed.map((t) => t.profile)} tone="warn" />
+      <CheckoutBlock title="Checkout tasks" checkout={r.checkout} name={name}>
         <Names label="Picked no products, so no task" items={r.checkout.noProducts} tone="muted" />
         <Names
           label="Not a profile in this backup, so no task"
           items={r.checkout.missingProfile}
           tone="warn"
         />
-        <Names
-          label="Tasks for profiles in other groups, left alone"
-          items={r.checkout.untouched}
-          tone="muted"
-        />
-      </Block>
+      </CheckoutBlock>
+      <WatchdogBlock title="Watchdogs" watchdogs={r.watchdogs} names={built.productNames} />
 
-      <Block
-        title="Watchdogs"
-        changed={
-          JSON.stringify(r.watchdogs.before) !== JSON.stringify(r.watchdogs.after) ||
-          r.watchdogs.remote.before !== r.watchdogs.remote.after
-        }
-        summary={`${r.watchdogs.before.length} → ${r.watchdogs.after.length} on products, remote ${r.watchdogs.remote.before} → ${r.watchdogs.remote.after}`}
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div>
-            <p className="font-medium text-[var(--color-muted)]">Before</p>
-            {watchSummary(r.watchdogs.before, built.productNames)}
-          </div>
-          <div>
-            <p className="font-medium text-[var(--color-fg)]">After</p>
-            {watchSummary(r.watchdogs.after, built.productNames)}
-          </div>
-        </div>
-      </Block>
+      {r.misc && (
+        <>
+          <CheckoutBlock
+            title={`${MISC_LINE} checkout tasks`}
+            checkout={r.misc.checkout}
+            name={name}
+          />
+          <WatchdogBlock
+            title={`${MISC_LINE} watchdogs`}
+            watchdogs={r.misc.watchdogs}
+            names={built.productNames}
+          />
+        </>
+      )}
 
       <Block
         title="Profile updates"

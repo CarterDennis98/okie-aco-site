@@ -2,10 +2,11 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
-import { getSkusForProfiles } from "@/db/queries/products";
+import { getSetsInLine, getSkusForProfiles } from "@/db/queries/products";
 import { SHIKARI_SITE } from "@/db/queries/shikari";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import type { ExportRequest } from "@/lib/shikari/config";
+import { MISC_LINE } from "@/lib/shikari/snapshot";
 import type {
   AbsentReason,
   DesiredInstance,
@@ -126,7 +127,7 @@ export async function buildShikariPayload(
 
   const all = chosen.flatMap((c) => c.rows);
   const accountToProfile = new Map(all.map((r) => [r.account.id, r.id]));
-  const [coverage, { skus, catalog }, pending, known] = await Promise.all([
+  const [coverage, { skus, catalog }, pending, known, miscSets] = await Promise.all([
     // Unscoped, like every other coverage read: an alias row is unique globally.
     loadMailboxCoverage(),
     getSkusForProfiles(
@@ -158,6 +159,8 @@ export async function buildShikariPayload(
         account: { select: { email: true, assigneeId: true } },
       },
     }),
+    // The Miscellaneous line's sets: their products run from a task group of their own.
+    getSetsInLine(SHIKARI_SITE, MISC_LINE),
   ]);
 
   const pendingFields = new Map<string, Set<string>>();
@@ -258,7 +261,12 @@ export async function buildShikariPayload(
     };
   };
 
-  const products = catalog.map((p) => ({ sku: p.sku, name: p.name, setName: p.setName }));
+  const products = catalog.map((p) => ({
+    sku: p.sku,
+    name: p.name,
+    setName: p.setName,
+    misc: miscSets.has(p.setName),
+  }));
 
   // Why each profile the site holds is or isn't on an instance, in the order the reasons are
   // checked: switched off, another runner's, its member not picked, or -- its member picked,

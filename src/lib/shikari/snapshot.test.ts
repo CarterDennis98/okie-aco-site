@@ -88,6 +88,16 @@ describe("reading a backup", () => {
     ]);
   });
 
+  it("never takes the Miscellaneous line's group for the one rebuilt as Target", async () => {
+    const { db } = await mainInstanceBackup();
+    // More of the Target profiles' checkout tasks than any other group holds.
+    db.run(
+      "INSERT INTO task_group (id, created_at, name, color, order_index) VALUES (6, NULL, 'Target - Miscellaneous', '#039BE5', 5)",
+    );
+    db.run("UPDATE task SET task_group_id = 6 WHERE id IN (5, 7)");
+    expect(summarize(readSnapshot(db)).target.taskGroup).toBe("Target - All Products");
+  });
+
   it("reads the task settings the backup runs on now, with the standard watchdog layout", async () => {
     const { db } = await fixtureBackup();
     expect(currentTaskSettings(readSnapshot(db))).toEqual({

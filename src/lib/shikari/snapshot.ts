@@ -164,6 +164,14 @@ export const TARGET_GROUP = "Target";
 export const UPDATES_GROUP = "Target - Profile Updates";
 export const PAUSED_PROFILE_GROUP = "Target - Paused";
 
+/**
+ * The product line on Target Products whose picks run from a task group of their own,
+ * MISC_GROUP, apart from everything else in "Target": its drops come at their own times, so
+ * its tasks are started and stopped on their own. Found by name, case aside.
+ */
+export const MISC_LINE = "Miscellaneous";
+export const MISC_GROUP = "Target - Miscellaneous";
+
 /** A group name with case, spaces and punctuation ignored: "Target - Paused" -> "targetpaused". */
 export function groupKey(name: string | null | undefined): string {
   return lower(name).replace(/[^a-z0-9]/g, "");
@@ -196,7 +204,8 @@ export type TargetGroups = {
   /**
    * The task group the export rebuilds as "Target": the one already called that, or failing
    * that the one holding most of the Target profiles' checkout tasks -- "Target - All
-   * Products" on the main instance. Null when there are no such tasks to go by.
+   * Products" on the main instance -- never MISC_GROUP, which is a group of its own. Null
+   * when there are no such tasks to go by.
    */
   tasks: STaskGroup | null;
 };
@@ -224,11 +233,13 @@ export function targetGroups(snapshot: ShikariSnapshot): TargetGroups {
   const named = findGroup(snapshot.taskGroups, TARGET_GROUP);
   if (named) return { profiles, paused, candidates, tasks: named };
 
+  const misc = findGroup(snapshot.taskGroups, MISC_GROUP);
   const counts = new Map<number, number>();
   for (const task of snapshot.tasks) {
     if (!isCheckout(task) || task.websiteId !== snapshot.targetWebsiteId) continue;
     if (task.groupId === null || task.profileId === null || !candidates.has(task.profileId))
       continue;
+    if (task.groupId === misc?.id) continue;
     counts.set(task.groupId, (counts.get(task.groupId) ?? 0) + 1);
   }
   const groups = new Map(snapshot.taskGroups.map((g) => [g.id, g]));

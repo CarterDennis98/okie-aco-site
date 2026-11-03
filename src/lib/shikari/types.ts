@@ -90,7 +90,13 @@ export type KnownProfile = {
   instance?: number;
 };
 
-export type CatalogProduct = { sku: string; name: string; setName: string };
+export type CatalogProduct = {
+  sku: string;
+  name: string;
+  setName: string;
+  /** In the Miscellaneous product line, so run from a task group of its own: MISC_GROUP. */
+  misc: boolean;
+};
 
 export type DesiredInstance = {
   position: number;
@@ -110,7 +116,7 @@ export type Sections = {
   accounts: boolean;
   imap: boolean;
   proxies: boolean;
-  /** The "Target" task group: watchdogs and checkout tasks. */
+  /** The "Target" and "Target - Miscellaneous" task groups: watchdogs and checkout tasks. */
   tasks: boolean;
   /** The "Target - Profile Updates" task group: a Wipe Account task per pending change. */
   wipes: boolean;
@@ -169,6 +175,23 @@ export type TaskChange = {
 };
 export type WatchList = { interval: number | null; skus: string[] };
 
+/** The checkout tasks of one task group the export builds. */
+export type CheckoutReport = {
+  added: TaskLine[];
+  removed: TaskLine[];
+  changed: TaskChange[];
+  unchanged: number;
+  /** Checkout tasks in the group for profiles the export keeps its hands off. */
+  untouched: string[];
+};
+
+/** The watchdogs of one task group the export builds. */
+export type WatchdogReport = {
+  before: WatchList[];
+  after: WatchList[];
+  remote: { before: number; after: number };
+};
+
 export type BuildReport = {
   version: string | null;
   /**
@@ -221,23 +244,25 @@ export type BuildReport = {
     /** Browsers that were pinned to a removed row, re-pinned to one that's left. */
     browsersMoved: number;
   }[];
-  checkout: {
-    added: TaskLine[];
-    removed: TaskLine[];
-    changed: TaskChange[];
-    unchanged: number;
-    /** Checkout tasks in the Target group for profiles the export keeps its hands off. */
-    untouched: string[];
+  /** The "Target" group's checkout tasks, and who got none in either group. */
+  checkout: CheckoutReport & {
     /** Selected profiles that picked no products, so got no task. */
     noProducts: string[];
     /** Selected profiles with no Shikari profile to attach a task to. */
     missingProfile: string[];
   };
-  watchdogs: {
-    before: WatchList[];
-    after: WatchList[];
-    remote: { before: number; after: number };
-  };
+  watchdogs: WatchdogReport;
+  /**
+   * The "Target - Miscellaneous" group: the Miscellaneous line's products, run apart from the
+   * rest by the same rules. Null when the tasks section was off, or when nothing in the line
+   * is picked and the backup has no such group.
+   */
+  misc: {
+    name: string;
+    created: boolean;
+    checkout: CheckoutReport;
+    watchdogs: WatchdogReport;
+  } | null;
   wipes: {
     added: ProfileLine[];
     /** Wipes taken out: last export's, and older ones made by hand that these replace. */

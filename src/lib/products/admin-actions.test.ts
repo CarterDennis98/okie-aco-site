@@ -12,7 +12,7 @@
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/db/client";
-import { getProductLines, getSetDetails, getSetOrder } from "@/db/queries/products";
+import { getProductLines, getSetDetails, getSetOrder, getSetsInLine } from "@/db/queries/products";
 import {
   deleteDropSet,
   saveDropSet,
@@ -602,6 +602,27 @@ describe.skipIf(!canRun)("the set editor", () => {
         items: [{ id: p1.id }],
       }),
     ).toEqual({ ok: false, error: "That product line is gone. Reload the page." });
+  });
+
+  it("finds the sets in a line by the line's name, case aside, for the Shikari export", async () => {
+    await saveProductLines({ lines: [line(POKEMON), line(TOPPS)], removed: [] });
+    const [pokemon, topps] = await lines();
+    for (const [setName, lineId, sku] of [
+      [SET, topps.id, "98000021"],
+      [OTHER, pokemon.id, "98000022"],
+    ] as const) {
+      expect(
+        await saveDropSet({
+          setName,
+          previousName: null,
+          logoUrl: "",
+          lineId,
+          items: [added(sku)],
+        }),
+      ).toEqual({ ok: true, added: 1 });
+    }
+    expect(await getSetsInLine(SITE, TOPPS.toUpperCase())).toEqual(new Set([SET]));
+    expect(await getSetsInLine(SITE, `${PREFIX}No Such Line`)).toEqual(new Set());
   });
 });
 

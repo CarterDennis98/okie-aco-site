@@ -17,9 +17,10 @@
  *      uses, old wipes, emptied groups. Nothing outside the Target side may change at all.
  *
  *   2. A DROP. The same state with the edits a real export makes -- a changed card, a new
- *      member, a profile moved to another instance, one with no products, 35 products, a
- *      swapped proxy list -- checked for what the summary must say, the references SQLite
- *      enforces, its own integrity check, and the tables no export may touch.
+ *      member, a profile moved to another instance, one with no products, 35 products, picks
+ *      from the Miscellaneous line, a swapped proxy list -- checked for what the summary must
+ *      say, the references SQLite enforces, its own integrity check, and the tables no export
+ *      may touch.
  *
  *   3. AGAIN. The drop's output exported once more with the same state: a clean backup must
  *      stay as it is -- nothing more to remove, nothing activated or deactivated.
@@ -32,6 +33,8 @@ import initSqlJs from "sql.js";
 import { buildInstance } from "../src/lib/shikari/build";
 import { diffTables, forbiddenChanges, tableHashes, type TableDiff } from "../src/lib/shikari/diff";
 import {
+  MISC_GROUP,
+  MISC_LINE,
   PAUSED_PROFILE_GROUP,
   TARGET_GROUP,
   UPDATES_GROUP,
@@ -44,6 +47,7 @@ import {
   readSnapshot,
   summarize,
   targetGroups,
+  type STask,
   type ShikariSnapshot,
 } from "../src/lib/shikari/snapshot";
 import { backupBytes, openBackup, ShikariDb } from "../src/lib/shikari/sqlite";
@@ -81,10 +85,19 @@ function loginFor(s: ShikariSnapshot, email: string) {
 /** The desired state the backup already describes, for the profiles the export may touch. */
 function desiredFromBackup(s: ShikariSnapshot): DesiredInstance {
   const groups = targetGroups(s);
-  const tasks = new Map(
-    s.tasks
-      .filter((t) => isCheckout(t) && t.websiteId === s.targetWebsiteId && t.profileId !== null)
-      .map((t) => [t.profileId, t]),
+  const misc = findGroup(s.taskGroups, MISC_GROUP);
+  // Each profile's checkout tasks, oldest first: one in "Target", one in MISC_GROUP.
+  const tasks = new Map<number, STask[]>();
+  for (const t of s.tasks) {
+    if (!isCheckout(t) || t.websiteId !== s.targetWebsiteId || t.profileId === null) continue;
+    tasks.set(t.profileId, [...(tasks.get(t.profileId) ?? []), t]);
+  }
+  // What the backup runs from MISC_GROUP is what the line holds.
+  const inMisc = new Set(
+    s.tasks.filter((t) => isCheckout(t) && t.groupId === misc?.id).map((t) => t.id),
+  );
+  const miscSkus = new Set(
+    s.products.filter((x) => x.taskId !== null && inMisc.has(x.taskId)).map((x) => x.data),
   );
   const imap = new Map(s.imap.map((m) => [m.id, m]));
   const toAddress = (id: number | null): ShikariAddress | null => {
@@ -116,7 +129,8 @@ function desiredFromBackup(s: ShikariSnapshot): DesiredInstance {
   const profiles: DesiredProfile[] = [];
   for (const p of [...byEmail.values()].sort((x, y) => x.id - y.id)) {
     const card = s.cards.get(p.cardId);
-    const task = tasks.get(p.id);
+    const own = tasks.get(p.id) ?? [];
+    const task = own.filter((t) => !inMisc.has(t.id)).at(-1) ?? own.at(-1);
     const box = task?.imapId != null ? imap.get(task.imapId) : undefined;
     // Members are told apart by the name their profiles start with ("shockereyes - 6").
     const member = p.name.replace(/\s*-\s*\d+$/, "");
@@ -143,7 +157,11 @@ function desiredFromBackup(s: ShikariSnapshot): DesiredInstance {
             password: box.password,
           }
         : null,
-      skus: task ? s.products.filter((x) => x.taskId === task.id).map((x) => x.data) : [],
+      skus: [
+        ...new Set(
+          own.flatMap((t) => s.products.filter((x) => x.taskId === t.id).map((x) => x.data)),
+        ),
+      ],
       pending: null,
     });
   }
@@ -160,7 +178,7 @@ function desiredFromBackup(s: ShikariSnapshot): DesiredInstance {
         email: p.email,
         why: wanted.has(`backup-${p.id}`) ? null : ("inactive" as const),
       })),
-    products: skus.map((sku) => ({ sku, name: sku, setName: "" })),
+    products: skus.map((sku) => ({ sku, name: sku, setName: "", misc: miscSkus.has(sku) })),
   };
 }
 
@@ -246,6 +264,14 @@ function describe(report: BuildReport) {
       `watchdogs ${report.watchdogs.before.length} -> ${report.watchdogs.after.length}, remote ${report.watchdogs.remote.after}; ` +
       `wipes +${report.wipes.added.length} -${report.wipes.removed} (template: ${report.wipes.template})`,
   );
+  if (report.misc) {
+    const { checkout, watchdogs } = report.misc;
+    console.log(
+      `  "${report.misc.name}"${report.misc.created ? " (created)" : ""}: ` +
+        `checkout +${checkout.added.length} ~${checkout.changed.length} -${checkout.removed.length} =${checkout.unchanged}; ` +
+        `watchdogs ${watchdogs.before.length} -> ${watchdogs.after.length}, remote ${watchdogs.remote.after}`,
+    );
+  }
   for (const warning of report.warnings) console.log(`  warning: ${warning}`);
 }
 
@@ -326,48 +352,75 @@ function checkFile(
   );
 
   check(
-    built.report.watchdogs.after.every((w) => w.skus.length <= 30),
+    [...built.report.watchdogs.after, ...(built.report.misc?.watchdogs.after ?? [])].every(
+      (w) => w.skus.length <= 30,
+    ),
     "no watchdog over 30 products",
   );
 
-  // In order, as Shikari lists the group -- by each task's place, or by id before tasks had
-  // one: the watchdogs at the top, then each member's checkout tasks together.
-  const taskGroup = findGroup(s.taskGroups, TARGET_GROUP);
-  const position = new Map(
-    db
-      .values(
-        `SELECT id FROM task WHERE task_group_id = ? ORDER BY ${s.taskOrder ? "order_index, " : ""}id`,
-        [taskGroup?.id ?? -1],
-      )
-      .map(([id], i) => [Number(id), i]),
+  // The Miscellaneous line's picks run from its own group, and nothing else runs there.
+  const miscSkus = new Set(desired.products.filter((p) => p.misc).map((p) => p.sku));
+  const miscGroup = findGroup(s.taskGroups, MISC_GROUP);
+  const skusOf = (taskId: number) =>
+    s.products.filter((x) => x.taskId === taskId).map((x) => x.data);
+  const checkouts = s.tasks.filter(
+    (t) =>
+      isCheckout(t) &&
+      t.websiteId === s.targetWebsiteId &&
+      t.profileId !== null &&
+      ids.has(t.profileId),
   );
-  const listed = s.tasks
-    .filter((t) => t.groupId === taskGroup?.id && t.websiteId === s.targetWebsiteId)
-    .sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
-  if (s.taskOrder) {
-    check(
-      db.get<{ apart: number }>(
-        "SELECT COUNT(DISTINCT order_index) = COUNT(*) AS apart FROM task WHERE task_group_id = ?",
-        [taskGroup?.id ?? -1],
-      )?.apart === 1,
-      `each task in "${TARGET_GROUP}" on a place of its own`,
-    );
-  }
-  const lastWatchdog = listed.map(isWatchdog).lastIndexOf(true);
   check(
-    lastWatchdog < listed.findIndex(isCheckout) || !listed.some(isCheckout),
-    `the ${listed.filter(isWatchdog).length} watchdogs at the top of "${TARGET_GROUP}"`,
+    checkouts.every((t) =>
+      skusOf(t.id).every((sku) => miscSkus.has(sku) === (t.groupId === miscGroup?.id)),
+    ),
+    `the ${MISC_LINE} line's picks in "${MISC_GROUP}", and only there ` +
+      `(${checkouts.filter((t) => t.groupId === miscGroup?.id).length} tasks)`,
   );
+
+  // In order, as Shikari lists each group -- by each task's place, or by id before tasks had
+  // one: the watchdogs at the top, then each member's checkout tasks together.
   const ownerOf = new Map(desired.profiles.map((d) => [lower(d.email), d.ownerId]));
   const emailOf = new Map(s.profiles.map((p) => [p.id, lower(p.email)]));
-  const owners = listed
-    .filter(isCheckout)
-    .map((t) => ownerOf.get(emailOf.get(t.profileId ?? -1) ?? "") ?? "?");
-  const runs = owners.filter((owner, i) => i === 0 || owners[i - 1] !== owner).length;
-  check(
-    runs === new Set(owners).size,
-    `each member's checkout tasks together (${new Set(owners).size} members)`,
-  );
+  for (const [name, taskGroup] of [
+    [TARGET_GROUP, findGroup(s.taskGroups, TARGET_GROUP)],
+    [MISC_GROUP, miscGroup],
+  ] as const) {
+    if (name === MISC_GROUP && !taskGroup) continue;
+    const position = new Map(
+      db
+        .values(
+          `SELECT id FROM task WHERE task_group_id = ? ORDER BY ${s.taskOrder ? "order_index, " : ""}id`,
+          [taskGroup?.id ?? -1],
+        )
+        .map(([id], i) => [Number(id), i]),
+    );
+    const listed = s.tasks
+      .filter((t) => t.groupId === taskGroup?.id && t.websiteId === s.targetWebsiteId)
+      .sort((a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0));
+    if (s.taskOrder) {
+      check(
+        db.get<{ apart: number }>(
+          "SELECT COUNT(DISTINCT order_index) = COUNT(*) AS apart FROM task WHERE task_group_id = ?",
+          [taskGroup?.id ?? -1],
+        )?.apart === 1,
+        `each task in "${name}" on a place of its own`,
+      );
+    }
+    const lastWatchdog = listed.map(isWatchdog).lastIndexOf(true);
+    check(
+      lastWatchdog < listed.findIndex(isCheckout) || !listed.some(isCheckout),
+      `the ${listed.filter(isWatchdog).length} watchdogs at the top of "${name}"`,
+    );
+    const owners = listed
+      .filter(isCheckout)
+      .map((t) => ownerOf.get(emailOf.get(t.profileId ?? -1) ?? "") ?? "?");
+    const runs = owners.filter((owner, i) => i === 0 || owners[i - 1] !== owner).length;
+    check(
+      runs === new Set(owners).size,
+      `each member's checkout tasks in "${name}" together (${new Set(owners).size} members)`,
+    );
+  }
 
   const out = backupBytes(built.open);
   check(out[18] === 2 && out[19] === 2 ? original.wal : !original.wal, "journal mode preserved");
@@ -514,8 +567,19 @@ async function main() {
   const idle = second && second.skus.length > 0 ? second.name : null;
   if (second) second.skus = []; // switched everything off
   const extra = Array.from({ length: 35 }, (_, i) => String(96000000 + i));
-  edited.products.push(...extra.map((sku) => ({ sku, name: sku, setName: "Synthetic" })));
+  edited.products.push(
+    ...extra.map((sku) => ({ sku, name: sku, setName: "Synthetic", misc: false })),
+  );
   for (const p of edited.profiles.slice(2, 12)) p.skus = [...p.skus, ...extra];
+  // Three from the Miscellaneous line: picked beside the rest by a few, and alone by one,
+  // whose task moves into the line's group.
+  const odd = Array.from({ length: 3 }, (_, i) => String(97000000 + i));
+  edited.products.push(
+    ...odd.map((sku) => ({ sku, name: sku, setName: "Synthetic odds", misc: true })),
+  );
+  for (const p of edited.profiles.slice(4, 8)) p.skus = [...p.skus, ...odd];
+  const loner = edited.profiles[8];
+  if (loner) loner.skus = [...odd];
   // One profile taken off this instance -- Instance 2 runs it now.
   const [moved] = edited.profiles.splice(3, 1);
   if (moved) {
@@ -594,6 +658,31 @@ async function main() {
     untouchable(drop.open.db, snapshot, kept) === before,
     "nothing outside the Target side touched",
   );
+  const pickers = edited.profiles.filter((d) => d.skus.some((sku) => odd.includes(sku)));
+  const misc = drop.report.misc;
+  check(
+    pickers.length === 0 ||
+      (misc !== null &&
+        misc.checkout.added.length + misc.checkout.changed.length + misc.checkout.unchanged ===
+          pickers.length),
+    `a task in "${MISC_GROUP}" for each of the ${pickers.length} profiles that picked from the line`,
+  );
+  check(
+    pickers.length === 0 ||
+      (JSON.stringify([...new Set(misc?.watchdogs.after.flatMap((w) => w.skus))]) ===
+        JSON.stringify(odd) &&
+        misc?.watchdogs.remote.after === settings.remoteWatchdogs),
+    `its watchdogs watch the line's ${odd.length} products, with ${settings.remoteWatchdogs} remote`,
+  );
+  check(
+    !loner ||
+      !drop.open.db.get(
+        `SELECT 1 FROM task t JOIN profile p ON p.id = t.profile_id JOIN task_group g ON g.id = t.task_group_id
+          WHERE lower(p.email) = ? AND g.name <> ? AND lower(t.flow_key) = 'checkout'`,
+        [lower(loner.email), MISC_GROUP],
+      ),
+    "a profile that picked from the line alone has no task outside its group",
+  );
   if (drop.report.wipes.added.length > 0) {
     const wipe = drop.open.db.get<{
       type: string | null;
@@ -647,6 +736,12 @@ async function main() {
       a.wipes.removed === drop.report.wipes.added.length &&
       (a.wipes.added.length === 0 || a.wipes.template === "copied"),
     "the pending wipe is rebuilt from the last one",
+  );
+  check(
+    [a.checkout, ...(a.misc ? [a.misc.checkout] : [])].every(
+      (c) => c.added.length + c.changed.length + c.removed.length === 0,
+    ),
+    "no checkout task changes the second time, in either group",
   );
   again.open.db.close();
 

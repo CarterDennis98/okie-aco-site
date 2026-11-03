@@ -11,6 +11,8 @@
  *   - watchdogs split at 30 products, two per list, plus the remote one;
  *   - the Target group reads in order -- watchdogs first, then each member's tasks together --
  *     however the edits in place left it, by drag-and-drop place or, in an older Shikari, by id;
+ *   - the Miscellaneous line's picks run from a group of their own, built and laid out by the
+ *     same rules, and only while something in the line is picked;
  *   - a swapped proxy list keeps its ids and re-pins what lost its proxy;
  *   - wipes are copied from the backup's own Wipe Account task, or built in Shikari's shape.
  */
@@ -23,6 +25,7 @@ import {
   ALL_SECTIONS,
   SKU_A,
   SKU_B,
+  SKU_M,
   TASKS,
   aliceSix,
   cleanBackup,
@@ -947,6 +950,213 @@ describe("buildInstance", () => {
 });
 
 /**
+ * The Miscellaneous line's picks, run from "Target - Miscellaneous" by the rules "Target" is
+ * built by: a checkout task for each profile that picked from the line, holding only those
+ * picks, under watchdogs of the group's own.
+ */
+describe.each([
+  { shikari: "with drag-and-drop order", fixture: cleanBackup, byId: false },
+  { shikari: "from before it, listed by id", fixture: legacy(cleanBackup), byId: true },
+])("the Miscellaneous line's own group, Shikari $shikari", ({ fixture, byId }) => {
+  /** How Shikari lists a group: by each task's place in it, or by id before tasks had one. */
+  const listed = byId ? "t.id" : "t.order_index, t.id";
+
+  /** A group's tasks in the order Shikari lists them, and what each one runs. */
+  const layout = (db: ShikariDb, group: string) =>
+    db
+      .all<{
+        id: number;
+        flow_key: string;
+        target_kind: string;
+        options: string;
+        name: string | null;
+      }>(
+        `SELECT t.id, t.flow_key, t.target_kind, t.options, p.name
+           FROM task t JOIN task_group g ON g.id = t.task_group_id
+           LEFT JOIN profile p ON p.id = t.profile_id
+          WHERE g.name = ? ORDER BY ${listed}`,
+        [group],
+      )
+      .map((t) => {
+        const skus = db
+          .all<{ target_data: string }>(
+            "SELECT target_data FROM target_product WHERE task_id = ? ORDER BY id",
+            [t.id],
+          )
+          .map((p) => p.target_data)
+          .join(" ");
+        if (t.flow_key !== "watchdog") return `${t.name}: ${skus}`;
+        if (t.target_kind === "remote") return "remote watchdog";
+        return `watchdog ${JSON.parse(t.options).check_interval}: ${skus}`;
+      });
+
+  /** alice - 1 and bob - 1 pick Product M as well as what they run already. */
+  const picked = () =>
+    profiles((all) => {
+      all[0].skus = [SKU_A, SKU_B, SKU_M];
+      all[2].skus = [SKU_B, SKU_M];
+    });
+
+  it("runs the line's picks from a group of their own, under watchdogs of its own", async () => {
+    const { db, report, open } = await build(picked(), {}, fixture);
+    expect(report.misc).toEqual({
+      name: "Target - Miscellaneous",
+      created: true,
+      checkout: {
+        added: [
+          { profile: "alice - 1", skus: 1 },
+          { profile: "bob - 1", skus: 1 },
+        ],
+        removed: [],
+        changed: [],
+        unchanged: 0,
+        untouched: [],
+      },
+      watchdogs: {
+        before: [],
+        after: [
+          { interval: 3333, skus: [SKU_M] },
+          { interval: 4444, skus: [SKU_M] },
+        ],
+        remote: { before: 0, after: 1 },
+      },
+    });
+    // Laid out like "Target": the watchdogs at the top, then each member's checkout tasks.
+    expect(layout(db, "Target - Miscellaneous")).toEqual([
+      "remote watchdog",
+      `watchdog 3333: ${SKU_M}`,
+      `watchdog 4444: ${SKU_M}`,
+      `alice - 1: ${SKU_M}`,
+      `bob - 1: ${SKU_M}`,
+    ]);
+    // "Target" runs the rest exactly as it did.
+    expect(layout(db, "Target")).toEqual([
+      "remote watchdog",
+      `watchdog 3333: ${SKU_A} ${SKU_B}`,
+      `watchdog 4444: ${SKU_A} ${SKU_B}`,
+      `alice - 1: ${SKU_A} ${SKU_B}`,
+      `alice - 2: ${SKU_A}`,
+      `bob - 1: ${SKU_B}`,
+    ]);
+    expect(report.checkout).toMatchObject({ added: [], changed: [], removed: [], unchanged: 3 });
+    expect(report.profiles).toMatchObject({ activated: [], updated: [], unchanged: 3 });
+
+    // Set up as "Target"'s are: checkout tasks on the checkout proxies with the profile's own
+    // mailbox and qty, the watchdogs on the watchdog proxies, each on a new device.
+    const checkouts = db.all<Record<string, unknown>>(
+      `SELECT p.name, t.imap_account_id, t.preloaded, b.proxy_group_id, b.proxy_id,
+              (SELECT qty FROM target_product WHERE task_id = t.id) AS qty
+         FROM task t JOIN task_group g ON g.id = t.task_group_id
+         JOIN profile p ON p.id = t.profile_id JOIN browser b ON b.id = t.browser_id
+        WHERE g.name = 'Target - Miscellaneous' ORDER BY p.name`,
+    );
+    expect(checkouts).toMatchObject([
+      { name: "alice - 1", imap_account_id: 1, preloaded: 0, proxy_group_id: 1, qty: 2 },
+      { name: "bob - 1", imap_account_id: null, preloaded: 0, proxy_group_id: 1, qty: 2 },
+    ]);
+    expect(checkouts.every((c) => c.proxy_id !== null)).toBe(true);
+    const watchdogs = db.all<{ target_kind: string; proxy_group_id: number | null; data: string }>(
+      `SELECT t.target_kind, b.proxy_group_id, t.generic_data AS data
+         FROM task t JOIN task_group g ON g.id = t.task_group_id JOIN browser b ON b.id = t.browser_id
+        WHERE g.name = 'Target - Miscellaneous' AND t.flow_key = 'watchdog' ORDER BY t.target_kind`,
+    );
+    expect(watchdogs.map((w) => [w.target_kind, w.proxy_group_id])).toEqual([
+      ["remote", null],
+      ["tcins", 0],
+      ["tcins", 0],
+    ]);
+    const devices = db
+      .all<{ data: string }>("SELECT generic_data AS data FROM task WHERE flow_key = 'watchdog'")
+      .map((w) => JSON.parse(w.data).ios_device_data.device_id);
+    expect(new Set(devices).size).toBe(devices.length);
+    expect(db.get("SELECT color FROM task_group WHERE name = 'Target - Miscellaneous'")).toEqual({
+      color: "#039BE5",
+    });
+
+    // The next export with the same picks finds both groups as they should be.
+    const again = openBackup(await sqljs(), backupBytes(open));
+    const baseline = tableHashes(again.db);
+    buildInstance(again.db, desiredInstance(picked()), options());
+    expect(touched(diffTables(baseline, tableHashes(again.db)))).toEqual({});
+  });
+
+  it("moves a profile's task in, browser and all, when the line is all it picks", async () => {
+    const { db, report } = await build(
+      profiles((all) => (all[2].skus = [SKU_M])),
+      {},
+      fixture,
+    );
+    expect(report.misc?.checkout).toMatchObject({
+      added: [],
+      changed: [
+        { profile: "bob - 1", added: [SKU_M], removed: [SKU_B], other: ['moved in from "Target"'] },
+      ],
+    });
+    // Out of "Target" without coming off: its browser and preload state came along.
+    expect(report.checkout).toMatchObject({ removed: [], noProducts: [], unchanged: 2 });
+    expect(
+      db.get(
+        `SELECT g.name, t.browser_id, t.preloaded FROM task t
+           JOIN task_group g ON g.id = t.task_group_id JOIN profile p ON p.id = t.profile_id
+          WHERE p.name = 'bob - 1'`,
+      ),
+    ).toEqual({ name: "Target - Miscellaneous", browser_id: 8, preloaded: 1 });
+    // Running before and after, so neither activated nor deactivated.
+    expect(report.profiles).toMatchObject({ activated: [], deactivated: [], unchanged: 3 });
+    expect(report.watchdogs.after).toEqual(
+      [3333, 4444].map((interval) => ({ interval, skus: [SKU_A, SKU_B] })),
+    );
+  });
+
+  it("empties the group once nothing in the line is picked, and keeps it for the next drop", async () => {
+    const { open } = await build(picked(), {}, fixture);
+    const next = openBackup(await sqljs(), backupBytes(open));
+    const report = buildInstance(next.db, desiredInstance(), options());
+    expect(report.misc).toEqual({
+      name: "Target - Miscellaneous",
+      created: false,
+      checkout: {
+        added: [],
+        // Only their tasks for the line: the ones in "Target" stay.
+        removed: [
+          { profile: "alice - 1", skus: 1 },
+          { profile: "bob - 1", skus: 1 },
+        ],
+        changed: [],
+        unchanged: 0,
+        untouched: [],
+      },
+      watchdogs: {
+        before: [
+          { interval: 3333, skus: [SKU_M] },
+          { interval: 4444, skus: [SKU_M] },
+        ],
+        after: [],
+        remote: { before: 1, after: 0 },
+      },
+    });
+    expect(report.checkout).toMatchObject({ removed: [], unchanged: 3 });
+    expect(layout(next.db, "Target - Miscellaneous")).toEqual([]);
+    expect(
+      next.db.get("SELECT 1 AS kept FROM task_group WHERE name = 'Target - Miscellaneous'"),
+    ).toEqual({ kept: 1 });
+    expect(report.groupsRemoved.task).toEqual([]);
+    // Their browsers went with them.
+    expect(
+      next.db.get(
+        "SELECT COUNT(*) AS n FROM browser WHERE id NOT IN (SELECT browser_id FROM task UNION SELECT browser_id FROM harvester)",
+      ),
+    ).toEqual({ n: 0 });
+  });
+
+  it("makes no group for a drop with nothing from the line", async () => {
+    const { db, report } = await build(undefined, {}, fixture);
+    expect(report.misc).toBeNull();
+    expect(db.get("SELECT 1 FROM task_group WHERE name = 'Target - Miscellaneous'")).toBeNull();
+  });
+});
+
+/**
  * The main instance's arrangement (see mainInstanceBackup): Walmart and another runner's
  * members in the same database, the Target tasks under another group name and split across
  * two groups, parked profiles in groups of their own, and a real Wipe Account template.
@@ -988,6 +1198,26 @@ describe("buildInstance on a main instance", () => {
     expect(report.checkout.added).toEqual([]);
     // Emptied by the move, and by clearing alice's old wipe: both gone.
     expect(report.groupsRemoved.task).toEqual(["Target Wipe Account", "NO IMAP"]);
+  });
+
+  it("takes a task from another group into the Miscellaneous line's when that's all it runs", async () => {
+    const { db, report } = await main(profiles((list) => (list[1].skus = [SKU_M])));
+    // alice - 2's, from "NO IMAP": into the line's group, not "Target".
+    expect(report.misc?.checkout.changed).toEqual([
+      {
+        profile: "alice - 2",
+        added: [SKU_M],
+        removed: [SKU_A],
+        other: ['moved in from "NO IMAP"', "proxy group"],
+      },
+    ]);
+    expect(
+      db.get(
+        "SELECT g.name FROM task t JOIN task_group g ON g.id = t.task_group_id WHERE t.id = 6",
+      ),
+    ).toEqual({ name: "Target - Miscellaneous" });
+    expect(report.checkout.changed).toEqual([]);
+    expect(report.groupsRemoved.task).toContain("NO IMAP");
   });
 
   it("leaves everything that isn't Target, and Target groups kept, exactly as they were", async () => {
