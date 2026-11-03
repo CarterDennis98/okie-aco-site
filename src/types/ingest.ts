@@ -33,6 +33,7 @@ export const checkoutInput = z
       "stellar",
       "alpine",
       "sniped",
+      "makebot",
     ]),
     discordMessageId: snowflake,
     discordChannelId: snowflake,

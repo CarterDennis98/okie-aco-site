@@ -114,6 +114,36 @@ describe("checkoutInput", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a Makebot checkout exactly as the mirror builds it", () => {
+    // The shape toPayload produces from a real Topps UK success, which Make spreads across
+    // three embeds: the store as the domain Make names it, the Shopify variant out of its
+    // cart link as the SKU, no product URL (that link is a cart permalink, not a page), and
+    // the order NUMBER out of the third embed's title. The raw embed is the first of the
+    // three, the one without the member's login and phone in it.
+    const result = checkoutBatch.safeParse({
+      checkouts: [
+        {
+          sourceBot: "makebot",
+          discordMessageId: "1566525613240614925",
+          discordChannelId: "1566492672007479456",
+          orderId: "TESTORDR1",
+          occurredAt: "2026-11-01T18:53:30.135Z",
+          site: "shop-uk.topps.com",
+          productRaw: "2026 Topps Chrome® Football - Mega Box",
+          sku: "71615158681853",
+          productUrl: null,
+          imageUrl: "https://images-ext-1.discordapp.net/external/abc/https/cdn.shopify.com/x.png",
+          profileRaw: "carter - 3",
+          quantity: 1,
+          quantityAssumed: false,
+          flags: [],
+          rawEmbed: { title: "Make Success" },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("accepts a quantity of zero rather than stalling the outbox", () => {
     // Alpine sent "Quantity: 0" on 9 of 32 real Topps successes on 2026-10-16. The rejection
     // held every checkout behind them, from every vendor, for four days. The route reads

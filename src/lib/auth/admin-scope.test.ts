@@ -83,6 +83,10 @@ describe("runner roles", () => {
     expect(runnerRoleFor("Mattel Creations")).toBe(RUNNER_ROLES.mattel);
   });
 
+  it("finds Topps's role under the domain Makebot reports its UK store by", () => {
+    expect(runnerRoleFor("shop-uk.topps.com")).toBe(RUNNER_ROLES.topps);
+  });
+
   it("names none where only full admins reach", () => {
     expect(runnerRoleFor("costco")).toBeNull();
     expect(runnerRoleFor("best-buy")).toBeNull();
@@ -196,7 +200,9 @@ describe("billCoversSite", () => {
     expect(billCoversSite(CHESS, "Mattel Creations")).toBe(true);
     expect(billCoversSite(CHESS, "Topps")).toBe(false);
     expect(billCoversSite(CRISP, "Topps")).toBe(true);
+    expect(billCoversSite(CRISP, "shop-uk.topps.com")).toBe(true);
     expect(billCoversSite(CRISP, "Mattel Creations")).toBe(false);
+    expect(billCoversSite(OPERATOR, "shop-uk.topps.com")).toBe(false);
     expect(billCoversSite(OPERATOR, "Mattel Creations")).toBe(false);
     expect(billCoversSite(OPERATOR, "topps")).toBe(false);
   });

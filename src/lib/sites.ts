@@ -390,6 +390,9 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // Profiled like Target: a login plus a full checkout profile, phone optional, and an
     // app password -- Alpine reads the code Topps emails at login, so usesEmailCodes stays
     // unset. No profileSoftCap, as on Crunchyroll.
+    //
+    // CrispHeinz's Makebot checks out on Topps UK and names it by its domain,
+    // "shop-uk.topps.com", which siteKey folds into this key -- see KEY_ALIASES.
     selfServe: true,
   },
   mattel: {
@@ -427,12 +430,16 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
  * Valor reports Mattel as "Mattel Creations", the store's full name, which normalizes to
  * "mattel-creations". Every lookup here keys it "mattel" -- and so does the bot's payee
  * table, so without this a Mattel checkout would chip as an unknown retailer and, worse,
- * bill as the operator's rather than chess's.
+ * bill as the operator's rather than chess's. Makebot reports Topps UK by its domain,
+ * "shop-uk.topps.com", which normalizes to "shop-uk-topps": the same, for CrispHeinz's "topps".
  *
  * A Map rather than an object literal, so a key like "toString" can never resolve to
  * something inherited. Kept in step with the bot's port (okie-aco-mirror/src/pas/sites.js).
  */
-const KEY_ALIASES: ReadonlyMap<string, string> = new Map([["mattel-creations", "mattel"]]);
+const KEY_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["mattel-creations", "mattel"],
+  ["shop-uk-topps", "topps"],
+]);
 
 /** Every retailer we can check out on, for the supported-sites section. */
 export function supportedSites(): SiteStyle[] {

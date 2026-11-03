@@ -51,6 +51,16 @@ describe("siteKey", () => {
     expect(isKnownSite("Mattel Creations")).toBe(true);
   });
 
+  /**
+   * Makebot names the Topps UK store by its domain. Normalized as-is that is "shop-uk-topps",
+   * which matches no retailer -- a grey chip, and CrispHeinz's fees billed as the operator's.
+   */
+  it("folds Makebot's domain for the Topps UK store onto Topps", () => {
+    expect(siteKey("shop-uk.topps.com")).toBe("topps");
+    expect(siteStyle("shop-uk.topps.com").label).toBe("Topps");
+    expect(isKnownSite("shop-uk.topps.com")).toBe(true);
+  });
+
   it("never resolves an alias lookup through the object prototype", () => {
     expect(siteKey("toString")).toBe("tostring");
     expect(siteKey("constructor")).toBe("constructor");
