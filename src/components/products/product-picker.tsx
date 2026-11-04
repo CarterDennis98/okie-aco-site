@@ -5,7 +5,7 @@ import type { CatalogProduct, ProductLine, SetDetails } from "@/db/queries/produ
 import { money } from "@/lib/money";
 import { saveProductChoice, saveProductQty } from "@/lib/products/actions";
 import { setDropProductActive } from "@/lib/products/admin-actions";
-import { QTY_OPTIONS, STANDARD_QTY, TARGET_LIMIT, qtyLabel, runnableQty } from "@/lib/products/qty";
+import { QTY_OPTIONS, STANDARD_QTY, TARGET_LIMIT, runnableQty } from "@/lib/products/qty";
 import type { Choice } from "@/lib/products/selection";
 import {
   groupByLine,
@@ -978,7 +978,7 @@ function QtyChoice({
             )}
             {QTY_OPTIONS.map((qty) => (
               <option key={qty} value={qty}>
-                {qtyLabel(qty)}
+                {qty}
               </option>
             ))}
           </select>
@@ -1027,7 +1027,7 @@ function QtyChoice({
                   >
                     {QTY_OPTIONS.map((option) => (
                       <option key={option} value={option}>
-                        {qtyLabel(option)}
+                        {option}
                       </option>
                     ))}
                   </select>

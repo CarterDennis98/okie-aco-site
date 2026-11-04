@@ -23,11 +23,6 @@ export const TARGET_LIMIT = 2;
 /** Every qty a member can pick, lowest first. */
 export const QTY_OPTIONS: number[] = Array.from({ length: MAX_QTY }, (_, i) => i + 1);
 
-/** "2 (standard)" for the standard qty, the bare number for any other. */
-export function qtyLabel(qty: number): string {
-  return qty === STANDARD_QTY ? `${qty} (standard)` : String(qty);
-}
-
 const isQty = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 1;
 
