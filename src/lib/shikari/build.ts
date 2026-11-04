@@ -33,6 +33,7 @@ import type {
   DesiredInstance,
   DesiredProfile,
   KnownProfile,
+  QtyChange,
   ShikariAddress,
   TaskChange,
   WatchdogReport,
@@ -74,7 +75,12 @@ import type {
  * Miscellaneous", built by the same rules: its own watchdogs on its own products, laid out
  * the same way. A profile that picked from both has a checkout task in each, its picks
  * split between them; one that picked from the line alone has its task there and none in
- * "Target".
+ * "Target". Its checkout tasks have a proxy group of their own: the instance's "ISP - All"
+ * unless the operator says otherwise (TaskSettings.miscCheckoutProxyGroupId).
+ *
+ * PER PRODUCT. Each product row on a checkout task carries the qty its member picked for that
+ * product on that profile, or the standard qty where they picked none, and Shikari's default
+ * price limits -- none. The site sets no price limit, so one set by hand comes off.
  *
  * WHAT IS NEVER TOUCHED: anything that isn't Target. One instance runs Walmart from the same
  * database, and 131 of its emails and 141 of its names are also a Target profile's -- so a
@@ -193,6 +199,16 @@ const MISC_COLOR = "#039BE5";
 /** Products are watched by TCIN, the only method any Target task in a backup has used. */
 const TARGET_METHOD = "tcins";
 
+/**
+ * A product's price limits as Shikari leaves them when none is set: NULL, no limit. Every
+ * product row in every backup seen holds these, the 6,200 Shikari wrote itself included --
+ * the last of them in the 2026-11-04 backup, taken after Shikari f2b6d8e4a1c9 put both in its
+ * task editor beside each product's qty. The site never sets one, so every row the export
+ * writes or keeps has them.
+ */
+const MIN_PRICE = null;
+const MAX_PRICE = null;
+
 /** SQLite's bound-parameter ceiling is far above this; batches keep each statement modest. */
 const BATCH = 500;
 
@@ -224,8 +240,12 @@ type Departure = { profile: SProfile; why: string; deleted: boolean };
  */
 type TaskGroupPlan = {
   id: number;
+  /** As the report names it. */
+  name: string;
   /** The TCINs a profile runs from this group, in catalog order. */
   skusOf: (d: DesiredProfile) => string[];
+  /** Where its checkout tasks' browsers go. Null: each stays where it is. */
+  checkoutProxyGroupId: number | null;
   checkout: CheckoutReport;
   watchdogs: WatchdogReport;
   /**
@@ -1218,7 +1238,9 @@ class InstanceBuilder {
     const targetId = this.claimTargetTaskGroup();
     const target: TaskGroupPlan = {
       id: targetId,
+      name: this.report.taskGroup?.name ?? TARGET_GROUP,
       skusOf: (d) => d.skus.filter((sku) => !misc.has(sku)),
+      checkoutProxyGroupId: this.options.tasks.checkoutProxyGroupId,
       checkout: this.report.checkout,
       watchdogs: this.report.watchdogs,
       borrow: { watchdog: null, remote: null },
@@ -1245,7 +1267,9 @@ class InstanceBuilder {
       target,
       {
         id: this.miscTaskGroupId,
+        name: report.name,
         skusOf,
+        checkoutProxyGroupId: this.options.tasks.miscCheckoutProxyGroupId,
         checkout: report.checkout,
         watchdogs: report.watchdogs,
         borrow: {
@@ -1332,7 +1356,7 @@ class InstanceBuilder {
         plan.running.push(...skus);
         const task = kept.get(plan);
         if (!task) {
-          const id = this.createCheckoutTask(plan.id, profileId, d, skus);
+          const id = this.createCheckoutTask(plan, profileId, d, skus);
           handled.add(id);
           plan.taskByKey.set(d.key, id);
           plan.checkout.added.push({ profile: d.name, skus: skus.length });
@@ -1341,7 +1365,7 @@ class InstanceBuilder {
         handled.add(task.id);
         plan.taskByKey.set(d.key, task.id);
         const from = groupNames.get(task.groupId ?? -1);
-        const change = this.syncCheckoutTask(task, d, skus, plan.id, from);
+        const change = this.syncCheckoutTask(task, d, skus, plan, from);
         if (change) plan.checkout.changed.push(change);
         else plan.checkout.unchanged += 1;
       }
@@ -1373,6 +1397,18 @@ class InstanceBuilder {
       );
     }
 
+    // A checkout task's browser in a proxy group with no proxies has nothing to run on --
+    // "ISP - All" emptied for a new list, say -- and Shikari would only say so mid-drop.
+    for (const plan of this.plans) {
+      const group = this.liveGroup(plan.checkoutProxyGroupId);
+      if (group === null || plan.taskByKey.size === 0) continue;
+      if (this.db.get("SELECT 1 FROM proxy WHERE proxy_group_id = ? LIMIT 1", [group])) continue;
+      const name = this.s.proxyGroups.find((g) => g.id === group)?.name ?? `group ${group}`;
+      this.report.warnings.push(
+        `Proxy group "${name}" has no proxies, so the checkout tasks in "${plan.name}" have none to run on.`,
+      );
+    }
+
     // --- watchdogs, and each group's layout ---
     for (const plan of this.plans) {
       plan.order = [
@@ -1380,6 +1416,19 @@ class InstanceBuilder {
         ...this.byMember.flatMap((d) => plan.taskByKey.get(d.key) ?? []),
       ];
     }
+  }
+
+  /**
+   * How many of each TCIN a profile's checkout buys: the qty its member picked for it, or the
+   * standard qty. Anything but a whole number from 1 up -- which the site never sends -- is
+   * the standard qty too: a checkout for none of a product is no checkout.
+   */
+  private qtyFor(d: DesiredProfile): (sku: string) => number {
+    const standard = this.options.tasks.checkoutQty;
+    return (sku) => {
+      const picked = d.qty[sku];
+      return Number.isInteger(picked) && picked >= 1 ? picked : standard;
+    };
   }
 
   /**
@@ -1445,55 +1494,65 @@ class InstanceBuilder {
     task: STask,
     d: DesiredProfile,
     skus: string[],
-    groupId: number,
+    plan: TaskGroupPlan,
     fromGroup: string | undefined,
   ): TaskChange | null {
-    const products = this.syncProducts(task.id, skus, this.options.tasks.checkoutQty);
+    const products = this.syncProducts(task.id, skus, this.qtyFor(d));
     const other: string[] = [];
-    if (task.groupId !== groupId) {
+    if (task.groupId !== plan.id) {
       // In at the bottom, like a task added to the group: its place in the one it came from
       // means nothing here. orderGroupTasks finds it its own.
       if (this.s.taskOrder) {
         this.db.run("UPDATE task SET task_group_id = ?, order_index = ? WHERE id = ?", [
-          groupId,
-          this.endOfGroup(groupId),
+          plan.id,
+          this.endOfGroup(plan.id),
           task.id,
         ]);
       } else {
-        this.db.run("UPDATE task SET task_group_id = ? WHERE id = ?", [groupId, task.id]);
+        this.db.run("UPDATE task SET task_group_id = ? WHERE id = ?", [plan.id, task.id]);
       }
       other.push(fromGroup ? `moved in from "${fromGroup}"` : "moved in");
     }
-    if (products.qtyChanged) other.push(`qty ${this.options.tasks.checkoutQty}`);
+    if (products.prices > 0) other.push("min/max price reset");
 
     const imapId = d.mailbox ? this.imapIdByMailbox.get(lower(d.mailbox.username)) : undefined;
     if (imapId !== undefined && imapId !== task.imapId) {
       this.db.run("UPDATE task SET imap_account_id = ? WHERE id = ?", [imapId, task.id]);
       other.push("mailbox");
     }
-    if (this.moveBrowser(task.browserId, this.options.tasks.checkoutProxyGroupId))
-      other.push("proxy group");
+    if (this.moveBrowser(task.browserId, plan.checkoutProxyGroupId)) other.push("proxy group");
 
-    if (products.added.length === 0 && products.removed.length === 0 && other.length === 0)
+    if (
+      products.added.length === 0 &&
+      products.removed.length === 0 &&
+      products.qty.length === 0 &&
+      other.length === 0
+    )
       return null;
     this.db.run("UPDATE task SET updated_at = ? WHERE id = ?", [this.now, task.id]);
-    return { profile: d.name, added: products.added, removed: products.removed, other };
+    return {
+      profile: d.name,
+      added: products.added,
+      removed: products.removed,
+      qty: products.qty,
+      other,
+    };
   }
 
   private createCheckoutTask(
-    groupId: number,
+    plan: TaskGroupPlan,
     profileId: number,
     d: DesiredProfile,
     skus: string[],
   ): number {
     const template = this.checkoutTemplate();
     const browserId = this.createBrowser(
-      this.options.tasks.checkoutProxyGroupId ?? template.proxyGroupId,
+      plan.checkoutProxyGroupId ?? template.proxyGroupId,
       this.fingerprintFor("checkout"),
     );
     const imapId = d.mailbox ? (this.imapIdByMailbox.get(lower(d.mailbox.username)) ?? null) : null;
     const id = this.insertTask({
-      groupId,
+      groupId: plan.id,
       type: template.type,
       flowKey: template.flowKey,
       targetKind: template.targetKind,
@@ -1504,7 +1563,7 @@ class InstanceBuilder {
       options: template.options,
       state: "{}",
     });
-    this.syncProducts(id, skus, this.options.tasks.checkoutQty);
+    this.syncProducts(id, skus, this.qtyFor(d));
     return id;
   }
 
@@ -1539,8 +1598,10 @@ class InstanceBuilder {
       this.db.run("UPDATE task SET options = ? WHERE id = ?", [pyJson(options), task.id]);
       touched = true;
     }
-    const products = this.syncProducts(task.id, skus, null);
-    if (products.added.length || products.removed.length || products.qtyChanged) touched = true;
+    // A watchdog's products buy nothing: no qty, as Shikari leaves them.
+    const products = this.syncProducts(task.id, skus, () => null);
+    if (products.added.length || products.removed.length || products.qty.length || products.prices)
+      touched = true;
     if (this.moveBrowser(task.browserId, this.options.tasks.watchdogProxyGroupId)) touched = true;
     if (touched) this.db.run("UPDATE task SET updated_at = ? WHERE id = ?", [this.now, task.id]);
   }
@@ -1581,7 +1642,7 @@ class InstanceBuilder {
       options: pyJson(options),
       state: pyJson(state),
     });
-    if (skus.length > 0) this.syncProducts(id, skus, null);
+    if (skus.length > 0) this.syncProducts(id, skus, () => null);
     return id;
   }
 
@@ -1753,10 +1814,11 @@ class InstanceBuilder {
         state: "{}",
       });
       if (templateProducts.length > 0) {
+        const qty = new Map(templateProducts.map((p) => [p.data, p.qty]));
         this.syncProducts(
           id,
           templateProducts.map((p) => p.data),
-          templateProducts[0].qty,
+          (sku) => qty.get(sku) ?? null,
         );
       }
       report.added.push({ name: d.name, owner: d.ownerName, fields: d.pending?.fields });
@@ -1816,16 +1878,28 @@ class InstanceBuilder {
     );
   }
 
-  /** Makes a task's product rows exactly `skus`, at `qty`, keeping rows that already match. */
-  private syncProducts(taskId: number, skus: string[], qty: number | null) {
-    const rows = this.db.all<{ id: number; target_data: string; qty: number | null }>(
-      "SELECT id, target_data, qty FROM target_product WHERE task_id = ? ORDER BY id",
+  /**
+   * Makes a task's product rows exactly `skus`, each at `qtyOf(sku)` and at Shikari's default
+   * price limits, keeping rows that already match. Answers what changed: the products added
+   * and removed, the kept ones whose qty moved, and how many kept ones had price limits taken
+   * off.
+   */
+  private syncProducts(taskId: number, skus: string[], qtyOf: (sku: string) => number | null) {
+    const rows = this.db.all<{
+      id: number;
+      target_data: string;
+      qty: number | null;
+      min_price: number | null;
+      max_price: number | null;
+    }>(
+      "SELECT id, target_data, qty, min_price, max_price FROM target_product WHERE task_id = ? ORDER BY id",
       [taskId],
     );
     const want = new Set(skus);
     const have = new Set<string>();
     const removed: string[] = [];
-    let qtyChanged = false;
+    const qty: QtyChange[] = [];
+    let prices = 0;
     for (const row of rows) {
       const sku = String(row.target_data);
       if (!want.has(sku) || have.has(sku)) {
@@ -1834,26 +1908,28 @@ class InstanceBuilder {
         continue;
       }
       have.add(sku);
-      if ((row.qty ?? null) !== qty) {
-        this.db.run("UPDATE target_product SET qty = ?, updated_at = ? WHERE id = ?", [
-          qty,
-          this.now,
-          row.id,
-        ]);
-        qtyChanged = true;
-      }
+      const from = row.qty ?? null;
+      const to = qtyOf(sku);
+      const priced = (row.min_price ?? null) !== MIN_PRICE || (row.max_price ?? null) !== MAX_PRICE;
+      if (from === to && !priced) continue;
+      this.db.run(
+        "UPDATE target_product SET qty = ?, min_price = ?, max_price = ?, updated_at = ? WHERE id = ?",
+        [to, MIN_PRICE, MAX_PRICE, this.now, row.id],
+      );
+      if (from !== to) qty.push({ sku, from, to });
+      if (priced) prices += 1;
     }
     const added = skus.filter((sku) => !have.has(sku));
     for (const sku of added) {
       this.db.run(
         `INSERT INTO target_product (created_at, updated_at, task_id, target_method, target_data,
                                      min_price, max_price, qty, miscellaneous_data)
-         VALUES (?, NULL, ?, ?, ?, NULL, NULL, ?, '{}')`,
-        [this.now, taskId, TARGET_METHOD, sku, qty],
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, '{}')`,
+        [this.now, taskId, TARGET_METHOD, sku, MIN_PRICE, MAX_PRICE, qtyOf(sku)],
       );
       have.add(sku);
     }
-    return { added, removed, qtyChanged };
+    return { added, removed, qty, prices };
   }
 
   /**

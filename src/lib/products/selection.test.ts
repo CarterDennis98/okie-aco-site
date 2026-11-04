@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { skusByProfile } from "@/lib/products/selection";
+import { qtysByProfile, skusByProfile } from "@/lib/products/selection";
 
 const catalog = [
   { id: "p1", sku: "100" },
@@ -44,5 +44,76 @@ describe("skusByProfile", () => {
     );
     expect(skus.get("a1")).toEqual([]);
     expect(skus.get("b1")).toEqual([]);
+  });
+});
+
+describe("qtysByProfile", () => {
+  it("gives a profile its own qty, else the pick's, and leaves the standard ones out", () => {
+    const qty = qtysByProfile(
+      profiles,
+      [
+        // Alice: 1 of p1 everywhere but a2, which buys 3.
+        {
+          productId: "p1",
+          discordUserId: "alice",
+          allProfiles: true,
+          profileIds: [],
+          qty: 1,
+          profileQty: { a2: 3 },
+        },
+        // The standard qty of p2, but 4 on a1.
+        {
+          productId: "p2",
+          discordUserId: "alice",
+          allProfiles: true,
+          profileIds: [],
+          qty: null,
+          profileQty: { a1: 4 },
+        },
+        // Bob never picked a qty.
+        { productId: "p3", discordUserId: "bob", allProfiles: true, profileIds: [] },
+      ],
+      catalog,
+    );
+    expect(Object.fromEntries(qty)).toEqual({
+      a1: { "100": 1, "200": 4 },
+      a2: { "100": 3 },
+      b1: {},
+    });
+  });
+
+  it("puts no qty on a product the profile doesn't run, or another member's profile", () => {
+    const qty = qtysByProfile(
+      profiles,
+      [
+        // Narrowed to a2: a1's own qty for it runs nothing.
+        {
+          productId: "p1",
+          discordUserId: "alice",
+          allProfiles: false,
+          profileIds: ["a2"],
+          qty: 1,
+          profileQty: { a1: 5 },
+        },
+        // Retired: not in the catalog.
+        {
+          productId: "retired",
+          discordUserId: "alice",
+          allProfiles: true,
+          profileIds: [],
+          qty: 2,
+        },
+        // Bob's pick, with a qty for alice's profile.
+        {
+          productId: "p2",
+          discordUserId: "bob",
+          allProfiles: true,
+          profileIds: [],
+          profileQty: { a1: 3 },
+        },
+      ],
+      catalog,
+    );
+    expect(Object.fromEntries(qty)).toEqual({ a1: {}, a2: { "100": 1 }, b1: {} });
   });
 });

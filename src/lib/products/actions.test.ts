@@ -3,7 +3,8 @@
  *
  * The properties with something behind them: a member can only narrow a pick to their OWN
  * profiles; nothing retired can be switched on; and what the export builds tasks from is
- * exactly what the member chose -- all profiles, some, or none.
+ * exactly what the member chose -- all profiles, some, or none, at the qty they picked for
+ * each.
  *
  * Faked: who is signed in (the guard reads a session cookie that can't exist outside a
  * request) and Next's cache revalidation. Everything else is the real database.
@@ -16,7 +17,8 @@ import {
   getSelectionCounts,
   getSkusForProfiles,
 } from "@/db/queries/products";
-import { saveProductChoice } from "@/lib/products/actions";
+import { saveProductChoice, saveProductQty } from "@/lib/products/actions";
+import { MAX_QTY } from "@/lib/products/qty";
 
 const asking = vi.hoisted(() => ({ viewer: { discordUserId: "" } }));
 vi.mock("@/lib/auth/guard", () => ({ requireMember: async () => asking.viewer }));
@@ -146,8 +148,8 @@ describe.skipIf(!canRun)("member product picks", () => {
     expect(skus.get(profileIds.b1)).toEqual([]);
 
     expect(await getMemberChoices(ALICE, SITE)).toEqual({
-      [products[0].id]: { all: false, profileIds: [profileIds.a2] },
-      [products[1].id]: { all: true, profileIds: [] },
+      [products[0].id]: { all: false, profileIds: [profileIds.a2], qty: null, profileQty: {} },
+      [products[1].id]: { all: true, profileIds: [], qty: null, profileQty: {} },
     });
     const counts = await getSelectionCounts(SITE);
     expect(counts[products[0].id]).toEqual({ members: 1, profiles: 1 });
@@ -188,6 +190,8 @@ describe.skipIf(!canRun)("member product picks", () => {
     expect((await getMemberChoices(ALICE, SITE))[products[0].id]).toEqual({
       all: true,
       profileIds: [],
+      qty: null,
+      profileQty: {},
     });
   });
 
@@ -224,6 +228,75 @@ describe.skipIf(!canRun)("member product picks", () => {
     expect(
       await saveProductChoice({ productIds: [products[0].id], mode: "all", discordUserId: BOB }),
     ).toMatchObject({ ok: false });
+  });
+
+  it("sets a qty for every profile or one profile's own, and the export reads it", async () => {
+    as(ALICE);
+    const id = products[1].id;
+    const qtyOf = async () => {
+      const { qty } = await getSkusForProfiles(SITE, [
+        { id: profileIds.a1, discordUserId: ALICE },
+        { id: profileIds.a2, discordUserId: ALICE },
+      ]);
+      return [qty.get(profileIds.a1), qty.get(profileIds.a2)];
+    };
+    const choice = async () => (await getMemberChoices(ALICE, SITE))[id];
+
+    expect(await saveProductQty({ productId: id, qty: 1 })).toEqual({ ok: true });
+    expect(await saveProductQty({ productId: id, qty: 3, profileId: profileIds.a2 })).toEqual({
+      ok: true,
+    });
+    expect(await choice()).toEqual({
+      all: true,
+      profileIds: [],
+      qty: 1,
+      profileQty: { [profileIds.a2]: 3 },
+    });
+    expect(await qtyOf()).toEqual([{ "99000002": 1 }, { "99000002": 3 }]);
+
+    // A profile's own qty that is the pick's anyway goes: it follows the pick again.
+    await saveProductQty({ productId: id, qty: 1, profileId: profileIds.a2 });
+    expect((await choice())?.profileQty).toEqual({});
+
+    // One qty for every profile sets every profile's own aside.
+    await saveProductQty({ productId: id, qty: 3, profileId: profileIds.a2 });
+    await saveProductQty({ productId: id, qty: null });
+    expect(await choice()).toMatchObject({ qty: null, profileQty: {} });
+    expect(await qtyOf()).toEqual([{}, {}]);
+
+    // Narrowing the pick keeps its qty; a profile it no longer runs on buys none of it.
+    await saveProductQty({ productId: id, qty: 4 });
+    await saveProductChoice({ productIds: [id], mode: "some", profileIds: [profileIds.a1] });
+    expect(await qtyOf()).toEqual([{ "99000002": 4 }, {}]);
+
+    // Switching it off forgets the qty with the pick.
+    await saveProductChoice({ productIds: [id], mode: "off" });
+    await saveProductChoice({ productIds: [id], mode: "all" });
+    expect(await choice()).toMatchObject({ qty: null, profileQty: {} });
+  });
+
+  it("refuses a qty for a product that's off, somebody else's profile, or out of range", async () => {
+    as(BOB);
+    expect(await saveProductQty({ productId: products[0].id, qty: 1 })).toEqual({
+      ok: false,
+      error: "Switch it on first, then pick a qty.",
+    });
+    as(ALICE);
+    expect(
+      await saveProductQty({ productId: products[1].id, qty: 1, profileId: profileIds.b1 }),
+    ).toEqual({ ok: false, error: "That isn't your profile." });
+    for (const qty of [0, MAX_QTY + 1, 1.5, "2"]) {
+      expect(await saveProductQty({ productId: products[1].id, qty })).toMatchObject({
+        ok: false,
+      });
+    }
+    expect(
+      await saveProductQty({ productId: products[1].id, qty: 1, discordUserId: BOB }),
+    ).toMatchObject({ ok: false });
+    expect((await getMemberChoices(ALICE, SITE))[products[1].id]).toMatchObject({
+      qty: null,
+      profileQty: {},
+    });
   });
 });
 

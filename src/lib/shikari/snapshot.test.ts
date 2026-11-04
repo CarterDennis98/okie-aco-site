@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { STANDARD_QTY } from "@/lib/products/qty";
 import { checkShikariSchema } from "@/lib/shikari/schema";
 import {
   currentTaskSettings,
   groupsToClear,
+  ispAllGroup,
   readSnapshot,
   summarize,
   userOf,
@@ -28,6 +30,29 @@ describe("userOf", () => {
   });
 });
 
+describe("ispAllGroup", () => {
+  const group = (name: string, proxies = 1) => ({ name, proxies: Array(proxies).fill(null) });
+
+  it.each(["ISP - All", "ISP All", "isp-all", "All ISP", "ISPAll", "ISPs - All"])(
+    "finds %s",
+    (name) => {
+      expect(ispAllGroup([group("Checkout"), group(name)])?.name).toBe(name);
+    },
+  );
+
+  it.each(["ISP Harvest 1", "ISP Small", "Resi All", "Checkout", "localhost"])(
+    "doesn't take %s for it",
+    (name) => {
+      expect(ispAllGroup([group(name)])).toBeUndefined();
+    },
+  );
+
+  it("prefers one with proxies in it, then Shikari's order", () => {
+    expect(ispAllGroup([group("ISP All", 0), group("ISP - All", 3)])?.name).toBe("ISP - All");
+    expect(ispAllGroup([group("ISP All", 0)])?.name).toBe("ISP All");
+  });
+});
+
 describe("reading a backup", () => {
   it("summarizes what the upload holds, without a secret in it", async () => {
     const { db } = await fixtureBackup();
@@ -48,7 +73,7 @@ describe("reading a backup", () => {
     ]);
     // Shikari's built-in localhost group isn't a list anyone uploaded.
     expect(summary.proxyGroups.map((g) => [g.name, g.count])).toEqual([
-      ["ISP - Monitor", 4],
+      ["ISP - All", 4],
       ["Resi", 6],
     ]);
     const target = summary.taskGroups.find((g) => g.name === "Target");
@@ -103,6 +128,8 @@ describe("reading a backup", () => {
     expect(currentTaskSettings(readSnapshot(db))).toEqual({
       checkoutQty: 2,
       checkoutProxyGroupId: 1,
+      // "ISP - All", wherever the Miscellaneous line's checkout tasks are now.
+      miscCheckoutProxyGroupId: 0,
       watchdogProxyGroupId: 0,
       // Not the 3333/4444/5555 the fixture still has: the third comes out on export.
       watchdogIntervals: [3333, 4444],
@@ -117,13 +144,34 @@ describe("reading a backup", () => {
     ).toEqual([SKU_A, SKU_B]);
   });
 
+  it("starts at the site's standard qty, whatever qty most of the backup runs at", async () => {
+    const { db } = await fixtureBackup();
+    // Members who picked 1 are most of the backup now: still not the standard.
+    db.run("UPDATE target_product SET qty = 1 WHERE qty IS NOT NULL");
+    expect(currentTaskSettings(readSnapshot(db)).checkoutQty).toBe(STANDARD_QTY);
+  });
+
+  it("puts the Miscellaneous line's checkout tasks on the checkout group with no ISP - All", async () => {
+    const { db } = await fixtureBackup();
+    db.run("UPDATE proxy_group SET name = 'ISP - Monitor' WHERE id = 0");
+    expect(currentTaskSettings(readSnapshot(db))).toMatchObject({
+      checkoutProxyGroupId: 1,
+      miscCheckoutProxyGroupId: 1,
+    });
+  });
+
   it("knows the Shikari version, and flags one newer than it was built against", async () => {
     const { db } = await fixtureBackup();
     expect(checkShikariSchema(db)).toEqual({
       ok: true,
-      version: "e5b1c9d3a7f2",
+      version: "f2b6d8e4a1c9",
       newerVersion: false,
     });
+    // The two before it, with their tables, are known too.
+    for (const version of ["e5b1c9d3a7f2", "d4e8b21c7f05"]) {
+      db.run("UPDATE alembic_version SET version_num = ?", [version]);
+      expect(checkShikariSchema(db)).toMatchObject({ ok: true, newerVersion: false });
+    }
     db.run("UPDATE alembic_version SET version_num = 'ffffffffffff'");
     expect(checkShikariSchema(db)).toMatchObject({ ok: true, newerVersion: true });
   });

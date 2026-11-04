@@ -185,6 +185,15 @@ function CheckoutBlock({
                     − {t.removed.map(name).join(", ")}
                   </span>
                 )}
+                {t.qty.length > 0 && (
+                  <span className="text-[var(--color-fg)]">
+                    {" "}
+                    · qty{" "}
+                    {t.qty
+                      .map((q) => `${name(q.sku)} ${q.from ?? "—"} → ${q.to ?? "—"}`)
+                      .join(", ")}
+                  </span>
+                )}
                 {t.other.length > 0 && (
                   <span className="text-[var(--color-muted)]"> · {t.other.join(", ")}</span>
                 )}

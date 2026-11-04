@@ -13,6 +13,7 @@ import {
   getSetOrder,
 } from "@/db/queries/products";
 import { requireMember } from "@/lib/auth/guard";
+import { STANDARD_QTY } from "@/lib/products/qty";
 
 /**
  * Target Products ("SKUs" in the dashboard's links): which Target products a member wants to
@@ -79,7 +80,8 @@ export default async function ProductsPage() {
           </p>
         ) : running === 1 ? (
           <p className="mt-4 max-w-2xl rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-muted)]">
-            A product you switch on runs on your Target profile, and on any you add later.
+            A product you switch on runs on your Target profile, and on any you add later. Each
+            checkout buys {STANDARD_QTY} unless you pick another qty under it.
           </p>
         ) : (
           <p className="mt-4 max-w-2xl rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-muted)]">
@@ -88,7 +90,8 @@ export default async function ProductsPage() {
               all {running} of your Target profiles
             </strong>
             , including any you add later. To run it on only some of them, choose &ldquo;Only
-            some&rdquo; under it.
+            some&rdquo; under it. Each checkout buys {STANDARD_QTY} unless you pick another qty
+            &mdash; for every profile, or &ldquo;By profile&rdquo;.
           </p>
         )}
 

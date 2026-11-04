@@ -2,6 +2,7 @@
 
 import { useId, useState } from "react";
 import type { ShikariMember } from "@/db/queries/shikari";
+import { STANDARD_QTY } from "@/lib/products/qty";
 import { scopesOverlap, type GroupChoice, type ShikariInstanceConfig } from "@/lib/shikari/config";
 import type { ParsedProxyList } from "@/lib/shikari/proxies";
 import {
@@ -739,13 +740,13 @@ function TaskSettingsForm({
       <summary className="cursor-pointer text-sm font-bold text-white">
         Task settings{" "}
         <span className="text-xs font-normal text-[var(--color-muted)]">
-          — qty {settings.checkoutQty}, {settings.watchdogIntervals.length} watchdogs per{" "}
+          — standard qty {settings.checkoutQty}, {settings.watchdogIntervals.length} watchdogs per{" "}
           {settings.skusPerWatchdog} products, {settings.remoteWatchdogs} remote
         </span>
       </summary>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label className="text-xs text-[var(--color-muted)]">
-          Qty per product (checkout)
+          Standard qty per product (where a member picked none)
           <input
             type="number"
             min={1}
@@ -759,11 +760,21 @@ function TaskSettingsForm({
             }
             className={`${field} mt-1 block w-full`}
           />
+          {settings.checkoutQty !== STANDARD_QTY && (
+            <span className="mt-1 block text-[var(--color-warn)]">
+              Members are told {STANDARD_QTY} is the standard.
+            </span>
+          )}
         </label>
         {groupSelect(
           settings.checkoutProxyGroupId,
           (id) => onChange({ ...settings, checkoutProxyGroupId: id }),
           "Checkout proxy group",
+        )}
+        {groupSelect(
+          settings.miscCheckoutProxyGroupId,
+          (id) => onChange({ ...settings, miscCheckoutProxyGroupId: id }),
+          `Checkout proxy group, "${MISC_GROUP}"`,
         )}
         {groupSelect(
           settings.watchdogProxyGroupId,

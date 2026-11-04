@@ -1,7 +1,9 @@
 -- Shikari's schema, copied verbatim from a real backup's sqlite_master (Alembic revision
--- e5b1c9d3a7f2, 2026-10-06). The fixture builds synthetic backups on it, so the tests run
+-- f2b6d8e4a1c9, 2026-11-04). The fixture builds synthetic backups on it, so the tests run
 -- against the exact tables, constraints and quirks the export meets in production. `legacy`
 -- in fixture.ts takes a backup back to d4e8b21c7f05, from before tasks had an order_index.
+-- f2b6d8e4a1c9 differs from the e5b1c9d3a7f2 before it only by `sign_up` and its index, at
+-- the end: its per-product qty and price limits are target_product columns every version has.
 
 CREATE TABLE alembic_version (
 	version_num VARCHAR(32) NOT NULL, 
@@ -283,3 +285,12 @@ CREATE TABLE "task" (
 );
 
 CREATE INDEX ix_task_task_group_id_order_index ON task (task_group_id, order_index);
+
+CREATE TABLE sign_up (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	created_at DATETIME,
+	updated_at DATETIME,
+	website_id INTEGER NOT NULL
+);
+
+CREATE INDEX ix_sign_up_website_id_created_at ON sign_up (website_id, created_at);

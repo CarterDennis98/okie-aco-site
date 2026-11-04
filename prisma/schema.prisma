@@ -667,6 +667,8 @@ model VaultProfile {
   // The products this profile was picked for by name, when its owner chose "only some
   // profiles" rather than all of them. See ProductSelection.
   productSelections ProductSelectionProfile[]
+  // Its own qty of a product, where its owner set one apart from the pick's.
+  productQtys       ProductSelectionQty[]
 
   @@unique([siteKey, name])
   @@index([discordUserId, siteKey])
@@ -970,12 +972,18 @@ model ProductSelection {
   // default, and what a ✅ always meant. False: only the profiles listed beneath it.
   allProfiles Boolean @default(true) @map("all_profiles")
 
+  // How many Shikari buys in one checkout, on every profile it runs on -- and on one added
+  // later -- unless that profile has its own (ProductSelectionQty). Null: the standard qty
+  // (STANDARD_QTY, lib/products/qty.ts). Switching the product off forgets it.
+  qty Int?
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  product  DropProduct               @relation(fields: [productId], references: [id], onDelete: Cascade)
-  member   DiscordMember             @relation(fields: [discordUserId], references: [discordUserId])
-  profiles ProductSelectionProfile[]
+  product    DropProduct               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  member     DiscordMember             @relation(fields: [discordUserId], references: [discordUserId])
+  profiles   ProductSelectionProfile[]
+  quantities ProductSelectionQty[]
 
   @@unique([productId, discordUserId])
   @@index([discordUserId])
@@ -994,6 +1002,23 @@ model ProductSelectionProfile {
   @@id([selectionId, profileId])
   @@index([profileId])
   @@map("product_selection_profiles")
+}
+
+// One profile's own qty for a pick, where it differs from the pick's (ProductSelection.qty).
+// Kept apart from ProductSelectionProfile, which says WHICH profiles a pick runs on: a qty set
+// here holds however the pick is narrowed, and survives switching between "All profiles" and
+// "Only some". Deleting the profile, or switching the product off, deletes it.
+model ProductSelectionQty {
+  selectionId String @map("selection_id")
+  profileId   String @map("profile_id")
+  qty         Int
+
+  selection ProductSelection @relation(fields: [selectionId], references: [id], onDelete: Cascade)
+  profile   VaultProfile     @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([selectionId, profileId])
+  @@index([profileId])
+  @@map("product_selection_qtys")
 }
 
 // ---------------------------------------------------------------------------

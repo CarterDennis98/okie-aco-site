@@ -3,8 +3,9 @@
 import { useCallback, useId, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { CatalogProduct, ProductLine, SetDetails } from "@/db/queries/products";
 import { money } from "@/lib/money";
-import { saveProductChoice } from "@/lib/products/actions";
+import { saveProductChoice, saveProductQty } from "@/lib/products/actions";
 import { setDropProductActive } from "@/lib/products/admin-actions";
+import { QTY_OPTIONS, STANDARD_QTY, qtyLabel } from "@/lib/products/qty";
 import type { Choice } from "@/lib/products/selection";
 import {
   groupByLine,
@@ -30,6 +31,10 @@ import { SetEditor } from "@/components/products/set-editor";
  * "All profiles" is the default and means every profile they hold on Target, including any
  * they add later -- what a ✅ on the drop channel always meant. "Only some" narrows it to the
  * ones they tick, and is only offered to a member with more than one profile to choose from.
+ *
+ * Each product they're in for also has a qty: how many each checkout buys, the standard one
+ * until they pick another. One qty covers every profile it runs on; "By profile" sets one
+ * each.
  *
  * Built for hundreds of products: a search across names, SKUs and sets, and every set can be
  * folded away to its heading -- remembered in this browser, so the sets someone is done with
@@ -171,6 +176,9 @@ function useFolded(store: ReturnType<typeof foldedStore>): Set<string> {
 const quiet =
   "inline-flex min-h-11 items-center rounded-lg px-2.5 text-xs font-medium text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] disabled:opacity-40 sm:min-h-0 sm:py-1";
 
+/** A product just switched on: every profile, at the standard qty -- what the server makes. */
+const switchedOn = (): Choice => ({ all: true, profileIds: [], qty: null, profileQty: {} });
+
 export function ProductPicker({
   products,
   retired,
@@ -263,6 +271,47 @@ export function ProductPicker({
     }
   }
 
+  /**
+   * Saves a product's qty: for every profile (no `profileId`), setting aside any of their own,
+   * or for one. Null is the standard qty, or for one profile, the pick's. Optimistic, like save.
+   */
+  async function saveQty(productId: string, qty: number | null, profileId?: string) {
+    const before = choices[productId];
+    if (!before) return;
+    setChoices((current) => {
+      const choice = current[productId];
+      if (!choice) return current;
+      const profileQty = { ...choice.profileQty };
+      if (profileId !== undefined) {
+        if (qty === null) delete profileQty[profileId];
+        else profileQty[profileId] = qty;
+      }
+      return {
+        ...current,
+        [productId]:
+          profileId === undefined ? { ...choice, qty, profileQty: {} } : { ...choice, profileQty },
+      };
+    });
+    setErrors((current) => {
+      const copy = { ...current };
+      delete copy[productId];
+      return copy;
+    });
+    setSaving((current) => new Set([...current, productId]));
+
+    const result = await saveProductQty({
+      productId,
+      qty,
+      ...(profileId === undefined ? {} : { profileId }),
+    }).catch(() => ({ ok: false as const, error: "That didn't save. Check your connection." }));
+
+    setSaving((current) => new Set([...current].filter((id) => id !== productId)));
+    if (!result.ok) {
+      setChoices((current) => ({ ...current, [productId]: before }));
+      setErrors((current) => ({ ...current, [productId]: result.error }));
+    }
+  }
+
   // Only what's still listed is remembered: a deleted set's or line's fold needn't outlive it.
   const setNames = groups.map((g) => g.setName);
   const lineKeys = lined ? allByLine.map((g) => g.line?.id ?? OTHER) : [];
@@ -322,6 +371,7 @@ export function ProductPicker({
       active={active}
       choosable={choosable}
       save={save}
+      saveQty={saveQty}
     />
   );
 
@@ -560,6 +610,7 @@ function SetSection({
   active,
   choosable,
   save,
+  saveQty,
 }: {
   setName: string;
   logo: string | null;
@@ -579,6 +630,7 @@ function SetSection({
   active: Profile[];
   choosable: boolean;
   save: (productIds: string[], next: Choice | null) => void;
+  saveQty: (productId: string, qty: number | null, profileId?: string) => void;
 }) {
   const listId = useId();
   const ids = products.map((p) => p.id);
@@ -648,7 +700,7 @@ function SetSection({
           <button
             type="button"
             disabled={busy || off.length === 0}
-            onClick={() => save(off, { all: true, profileIds: [] })}
+            onClick={() => save(off, switchedOn())}
             className={quiet}
           >
             All on
@@ -680,7 +732,7 @@ function SetSection({
                   on={Boolean(choice)}
                   disabled={busyHere}
                   label={`Run me for ${product.name}`}
-                  onChange={() => save([product.id], choice ? null : { all: true, profileIds: [] })}
+                  onChange={() => save([product.id], choice ? null : switchedOn())}
                 />
                 <ProductImage src={product.imageUrl} />
                 <div className="min-w-0 flex-1">
@@ -721,6 +773,16 @@ function SetSection({
                       profiles={active}
                       disabled={busyHere}
                       onChange={(next) => save([product.id], next)}
+                    />
+                  )}
+
+                  {choice && (
+                    <QtyChoice
+                      productName={product.name}
+                      choice={choice}
+                      profiles={active}
+                      disabled={busyHere}
+                      onChange={(qty, profileId) => saveQty(product.id, qty, profileId)}
                     />
                   )}
 
@@ -787,7 +849,9 @@ function ProfileChoice({
             onClick={() =>
               choice.all !== option.all &&
               onChange(
-                option.all ? { all: true, profileIds: [] } : { all: false, profileIds: picked },
+                option.all
+                  ? { ...choice, all: true, profileIds: [] }
+                  : { ...choice, all: false, profileIds: picked },
               )
             }
             className={
@@ -819,6 +883,7 @@ function ProfileChoice({
                     disabled={disabled || last}
                     onChange={() =>
                       onChange({
+                        ...choice,
                         all: false,
                         profileIds: checked
                           ? picked.filter((id) => id !== profile.id)
@@ -828,6 +893,138 @@ function ProfileChoice({
                     className="size-4 accent-[var(--color-brand)]"
                   />
                   {profile.name}
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const qtySelect =
+  "min-h-11 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none disabled:opacity-60 sm:min-h-0 sm:py-1";
+
+/** The qtys a select offers: every one a member can pick, and the one it holds if not. */
+const qtyOptions = (current: number | null) =>
+  current === null || QTY_OPTIONS.includes(current)
+    ? QTY_OPTIONS
+    : [...QTY_OPTIONS, current].sort((a, b) => a - b);
+
+/**
+ * How many each checkout buys: one qty for every profile the product runs on, or -- under "By
+ * profile", offered once it runs on more than one -- one each. While the profiles differ, the
+ * qty for all reads "Mixed" and the list stays open; picking one for all sets them all.
+ */
+function QtyChoice({
+  productName,
+  choice,
+  profiles,
+  disabled,
+  onChange,
+}: {
+  productName: string;
+  choice: Choice;
+  /** The member's active profiles. */
+  profiles: Profile[];
+  disabled: boolean;
+  /** A qty for every profile (no profileId) or for one: null, the standard or the pick's. */
+  onChange: (qty: number | null, profileId?: string) => void;
+}) {
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+  const running = choice.all ? profiles : profiles.filter((p) => choice.profileIds.includes(p.id));
+  const pickQty = choice.qty ?? STANDARD_QTY;
+  const qtyOf = (profileId: string) => choice.profileQty[profileId] ?? pickQty;
+  const qtys = [...new Set(running.map((p) => qtyOf(p.id)))];
+  // The qty every profile it runs on buys; null while they differ.
+  const shared = qtys.length > 1 ? null : (qtys[0] ?? pickQty);
+  const byProfile = running.length > 1;
+  const listed = byProfile && (open || shared === null);
+
+  const setAll = (qty: number) => onChange(qty === STANDARD_QTY ? null : qty);
+  const setOne = (profileId: string, qty: number) => {
+    // Kept open once used, so the list doesn't vanish when the profiles agree again.
+    setOpen(true);
+    // Every profile at one qty again is the pick's qty, not one each.
+    if (running.every((p) => (p.id === profileId ? qty : qtyOf(p.id)) === qty)) setAll(qty);
+    else onChange(qty === pickQty ? null : qty, profileId);
+  };
+
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <label className="inline-flex items-center gap-2 text-xs text-[var(--color-muted)]">
+          Qty
+          <select
+            value={shared ?? ""}
+            disabled={disabled}
+            onChange={(event) => setAll(Number(event.currentTarget.value))}
+            aria-label={
+              byProfile ? `Qty of ${productName} on every profile` : `Qty of ${productName}`
+            }
+            className={qtySelect}
+          >
+            {shared === null && (
+              <option value="" disabled>
+                Mixed
+              </option>
+            )}
+            {qtyOptions(shared).map((qty) => (
+              <option key={qty} value={qty}>
+                {qtyLabel(qty)}
+              </option>
+            ))}
+          </select>
+        </label>
+        {byProfile && shared !== null && (
+          <button
+            type="button"
+            onClick={() => setOpen(!open)}
+            aria-expanded={listed}
+            aria-controls={listId}
+            className={`${quiet} gap-1`}
+          >
+            By profile
+            <svg
+              aria-hidden
+              viewBox="0 0 20 20"
+              className={"size-3.5 transition-transform " + (listed ? "rotate-90" : "")}
+            >
+              <path
+                d="M7.5 4.5 13 10l-5.5 5.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
+      </div>
+      {listed && (
+        <ul id={listId} className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          {running.map((profile) => {
+            const qty = qtyOf(profile.id);
+            return (
+              <li key={profile.id}>
+                <label className="inline-flex min-h-11 items-center gap-2 text-xs text-[var(--color-fg)] sm:min-h-0">
+                  {profile.name}
+                  <select
+                    value={qty}
+                    disabled={disabled}
+                    onChange={(event) => setOne(profile.id, Number(event.currentTarget.value))}
+                    aria-label={`Qty of ${productName} for ${profile.name}`}
+                    className={qtySelect}
+                  >
+                    {qtyOptions(qty).map((option) => (
+                      <option key={option} value={option}>
+                        {qtyLabel(option)}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </li>
             );

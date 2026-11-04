@@ -18,9 +18,10 @@
  *
  *   2. A DROP. The same state with the edits a real export makes -- a changed card, a new
  *      member, a profile moved to another instance, one with no products, 35 products, picks
- *      from the Miscellaneous line, a swapped proxy list -- checked for what the summary must
- *      say, the references SQLite enforces, its own integrity check, and the tables no export
- *      may touch.
+ *      from the Miscellaneous line, qty picks, a swapped proxy list -- checked for what the
+ *      summary must say, every product's qty and price limits, the Miscellaneous line's proxy
+ *      group, the references SQLite enforces, its own integrity check, and the tables no
+ *      export may touch.
  *
  *   3. AGAIN. The drop's output exported once more with the same state: a clean backup must
  *      stay as it is -- nothing more to remove, nothing activated or deactivated.
@@ -57,6 +58,7 @@ import type {
   DesiredInstance,
   DesiredProfile,
   ShikariAddress,
+  TaskSettings,
 } from "../src/lib/shikari/types";
 
 const args = process.argv.slice(2);
@@ -82,8 +84,11 @@ function loginFor(s: ShikariSnapshot, email: string) {
     .sort((a, b) => Number(b.signedIn) - Number(a.signedIn) || a.id - b.id)[0];
 }
 
-/** The desired state the backup already describes, for the profiles the export may touch. */
-function desiredFromBackup(s: ShikariSnapshot): DesiredInstance {
+/**
+ * The desired state the backup already describes, for the profiles the export may touch: a
+ * product's qty is a pick of the member's wherever it isn't the standard qty.
+ */
+function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInstance {
   const groups = targetGroups(s);
   const misc = findGroup(s.taskGroups, MISC_GROUP);
   // Each profile's checkout tasks, oldest first: one in "Target", one in MISC_GROUP.
@@ -162,6 +167,13 @@ function desiredFromBackup(s: ShikariSnapshot): DesiredInstance {
           own.flatMap((t) => s.products.filter((x) => x.taskId === t.id).map((x) => x.data)),
         ),
       ],
+      qty: Object.fromEntries(
+        own.flatMap((t) =>
+          s.products
+            .filter((x) => x.taskId === t.id && x.qty !== null && x.qty !== standardQty)
+            .map((x) => [x.data, x.qty as number]),
+        ),
+      ),
       pending: null,
     });
   }
@@ -281,9 +293,51 @@ function checkFile(
   original: { db: ShikariDb; wal: boolean },
   built: ReturnType<typeof buildFrom>,
   desired: DesiredInstance,
+  settings: TaskSettings,
 ) {
   const db = built.open.db;
   check(forbiddenChanges(built.diff).length === 0, "untouchable tables untouched");
+
+  // Every product on a checkout task of ours at the qty picked for it, or the standard one,
+  // with no price limits; the Miscellaneous line's tasks on their own proxy group.
+  const ourRows = db.all<{
+    email: string;
+    sku: string;
+    qty: number | null;
+    min_price: number | null;
+    max_price: number | null;
+    misc: number;
+    proxy_group_id: number | null;
+  }>(
+    `SELECT p.email, tp.target_data AS sku, tp.qty, tp.min_price, tp.max_price,
+            g.name = ? AS misc, b.proxy_group_id
+       FROM target_product tp JOIN task t ON t.id = tp.task_id
+       JOIN profile p ON p.id = t.profile_id JOIN browser b ON b.id = t.browser_id
+       JOIN task_group g ON g.id = t.task_group_id
+      WHERE lower(t.flow_key) = 'checkout' AND t.website_id = ?`,
+    [MISC_GROUP, readSnapshot(db).targetWebsiteId],
+  );
+  const byEmail = new Map(desired.profiles.map((d) => [lower(d.email), d]));
+  const products = ourRows.filter((r) => byEmail.has(lower(r.email)));
+  const wrongQty = products.filter((r) => {
+    const d = byEmail.get(lower(r.email))!;
+    return r.qty !== (d.qty[r.sku] ?? settings.checkoutQty);
+  });
+  const picked = products.filter((r) => byEmail.get(lower(r.email))!.qty[r.sku] !== undefined);
+  check(
+    wrongQty.length === 0,
+    `every product of ours at its qty (${picked.length} picked, ${products.length - picked.length} standard ${settings.checkoutQty})`,
+  );
+  check(
+    products.every((r) => r.min_price === null && r.max_price === null),
+    "no price limits on a product of ours",
+  );
+  const miscRows = products.filter((r) => r.misc === 1);
+  check(
+    settings.miscCheckoutProxyGroupId === null ||
+      miscRows.every((r) => r.proxy_group_id === settings.miscCheckoutProxyGroupId),
+    `"${MISC_GROUP}" checkout tasks on proxy group ${settings.miscCheckoutProxyGroupId} (${new Set(miscRows.map((r) => r.email)).size} tasks)`,
+  );
 
   // Clean: "Target" holds this instance's profiles and nothing else, and no paused group.
   const s = readSnapshot(db);
@@ -475,7 +529,7 @@ async function main() {
     .map((g) => g.id);
   const before = untouchable(original.db, snapshot, kept);
 
-  const desired = desiredFromBackup(snapshot);
+  const desired = desiredFromBackup(snapshot, settings.checkoutQty);
   console.log(
     `  desired (read back): ${desired.profiles.length} profiles, ${desired.products.length} products`,
   );
@@ -553,7 +607,11 @@ async function main() {
     untouchable(trip.open.db, snapshot, kept) === before,
     "nothing outside the Target side touched",
   );
-  checkFile(SQL, original, trip, desired);
+  check(
+    trip.report.checkout.changed.every((c) => c.qty.length === 0),
+    "no product's qty changed",
+  );
+  checkFile(SQL, original, trip, desired, settings);
   trip.open.db.close();
 
   // --- 2. a drop -----------------------------------------------------------
@@ -586,6 +644,12 @@ async function main() {
     const entry = edited.known.find((k) => k.name === moved.name);
     if (entry) Object.assign(entry, { why: "member", instance: 2 });
   }
+  // Qty picks: one product at 1 on one profile, and everything at 3 on another -- the
+  // Miscellaneous line's picks among it.
+  const qtyOne = edited.profiles[2];
+  const qtyAll = edited.profiles[4];
+  if (qtyOne?.skus[0]) qtyOne.qty = { ...qtyOne.qty, [qtyOne.skus[0]]: 1 };
+  if (qtyAll) qtyAll.qty = Object.fromEntries(qtyAll.skus.map((sku) => [sku, 3]));
   if (first) {
     edited.profiles.push({
       ...structuredClone(first),
@@ -658,7 +722,13 @@ async function main() {
     untouchable(drop.open.db, snapshot, kept) === before,
     "nothing outside the Target side touched",
   );
-  const pickers = edited.profiles.filter((d) => d.skus.some((sku) => odd.includes(sku)));
+  // The line's picks: the synthetic ones above, and any the backup already ran from the
+  // line's own group.
+  const lineSkus = new Set(edited.products.filter((x) => x.misc).map((x) => x.sku));
+  const pickers = edited.profiles.filter((d) => d.skus.some((sku) => lineSkus.has(sku)));
+  const watchedLine = [
+    ...new Set(pickers.flatMap((d) => d.skus.filter((sku) => lineSkus.has(sku)))),
+  ].sort();
   const misc = drop.report.misc;
   check(
     pickers.length === 0 ||
@@ -669,10 +739,10 @@ async function main() {
   );
   check(
     pickers.length === 0 ||
-      (JSON.stringify([...new Set(misc?.watchdogs.after.flatMap((w) => w.skus))]) ===
-        JSON.stringify(odd) &&
+      (JSON.stringify([...new Set(misc?.watchdogs.after.flatMap((w) => w.skus))].sort()) ===
+        JSON.stringify(watchedLine) &&
         misc?.watchdogs.remote.after === settings.remoteWatchdogs),
-    `its watchdogs watch the line's ${odd.length} products, with ${settings.remoteWatchdogs} remote`,
+    `its watchdogs watch the line's ${watchedLine.length} products, with ${settings.remoteWatchdogs} remote`,
   );
   check(
     !loner ||
@@ -708,7 +778,19 @@ async function main() {
       "the wipe's browser is in a proxy group that exists",
     );
   }
-  const out = checkFile(SQL, original, drop, edited);
+  const qtyChanged = (name: string | undefined, to: number) =>
+    [drop.report.checkout, ...(drop.report.misc ? [drop.report.misc.checkout] : [])].some((c) =>
+      c.changed.some((t) => t.profile === name && t.qty.some((q) => q.to === to)),
+    );
+  check(
+    !qtyOne?.skus[0] || qtyChanged(qtyOne.name, 1),
+    `a qty of 1 picked on ${qtyOne?.name} reported on its task`,
+  );
+  check(
+    !qtyAll?.skus.length || qtyChanged(qtyAll.name, 3),
+    `a qty of 3 on everything ${qtyAll?.name} runs reported`,
+  );
+  const out = checkFile(SQL, original, drop, edited, settings);
   drop.open.db.close();
 
   // --- 3. again --------------------------------------------------------------

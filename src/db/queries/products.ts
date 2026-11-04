@@ -1,7 +1,12 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
-import { skusByProfile, type Choice, type SelectionRow } from "@/lib/products/selection";
+import {
+  qtysByProfile,
+  skusByProfile,
+  type Choice,
+  type SelectionRow,
+} from "@/lib/products/selection";
 import { countDrops, type DropStats } from "@/lib/products/stats";
 
 /**
@@ -118,12 +123,23 @@ export async function getMemberChoices(
 ): Promise<Record<string, Choice>> {
   const rows = await prisma.productSelection.findMany({
     where: { discordUserId, product: { siteKey } },
-    select: { productId: true, allProfiles: true, profiles: { select: { profileId: true } } },
+    select: {
+      productId: true,
+      allProfiles: true,
+      qty: true,
+      profiles: { select: { profileId: true } },
+      quantities: { select: { profileId: true, qty: true } },
+    },
   });
   return Object.fromEntries(
     rows.map((row) => [
       row.productId,
-      { all: row.allProfiles, profileIds: row.profiles.map((p) => p.profileId) },
+      {
+        all: row.allProfiles,
+        profileIds: row.profiles.map((p) => p.profileId),
+        qty: row.qty,
+        profileQty: Object.fromEntries(row.quantities.map((q) => [q.profileId, q.qty])),
+      },
     ]),
   );
 }
@@ -154,7 +170,9 @@ async function selectionRows(where: {
       productId: true,
       discordUserId: true,
       allProfiles: true,
+      qty: true,
       profiles: { select: { profileId: true } },
+      quantities: { select: { profileId: true, qty: true } },
     },
   });
   return rows.map((row) => ({
@@ -162,6 +180,8 @@ async function selectionRows(where: {
     discordUserId: row.discordUserId,
     allProfiles: row.allProfiles,
     profileIds: row.profiles.map((p) => p.profileId),
+    qty: row.qty,
+    profileQty: Object.fromEntries(row.quantities.map((q) => [q.profileId, q.qty])),
   }));
 }
 
@@ -232,16 +252,25 @@ export async function getDropStats(siteKey: string): Promise<DropStats> {
 
 /**
  * The TCINs each of these profiles runs for, in watch order -- what the Shikari export puts
- * on their checkout tasks, and the union of which its watchdogs watch.
+ * on their checkout tasks, and the union of which its watchdogs watch -- and the qty of each
+ * where its member picked one (see qtysByProfile).
  */
 export async function getSkusForProfiles(
   siteKey: string,
   profiles: { id: string; discordUserId: string }[],
-): Promise<{ skus: Map<string, string[]>; catalog: CatalogProduct[] }> {
+): Promise<{
+  skus: Map<string, string[]>;
+  qty: Map<string, Record<string, number>>;
+  catalog: CatalogProduct[];
+}> {
   const members = [...new Set(profiles.map((p) => p.discordUserId))];
   const [catalog, selections] = await Promise.all([
     getCatalog(siteKey),
     selectionRows({ siteKey, discordUserIds: members }),
   ]);
-  return { skus: skusByProfile(profiles, selections, catalog), catalog };
+  return {
+    skus: skusByProfile(profiles, selections, catalog),
+    qty: qtysByProfile(profiles, selections, catalog),
+    catalog,
+  };
 }

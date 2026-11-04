@@ -16,7 +16,8 @@
  *                           the 5555 one was dropped
  *   Task group "Target Wipe"  one old Wipe Account task, alice - 1's: what wipes are copied
  *                           from, and what a clean export clears
- *   Proxy groups            "ISP - Monitor" (4) for watchdogs, "Resi" (6) for checkouts,
+ *   Proxy groups            "ISP - All" (4) for watchdogs, and the Miscellaneous line's
+ *                           checkout tasks once there are any; "Resi" (6) for checkouts;
  *                           every task browser pinned to one of them
  *   Accounts                one per profile, alice's signed in with cookie jars, plus an
  *                           old account with no profile
@@ -85,6 +86,7 @@ export function vaultProfiles(): DesiredProfile[] {
         password: "app pass alic",
       },
       skus: [SKU_A, SKU_B],
+      qty: {},
       pending: null,
     },
     {
@@ -104,6 +106,7 @@ export function vaultProfiles(): DesiredProfile[] {
         password: "app pass alic",
       },
       skus: [SKU_A],
+      qty: {},
       pending: null,
     },
     {
@@ -118,6 +121,7 @@ export function vaultProfiles(): DesiredProfile[] {
       password: "bob-pass-1",
       mailbox: null,
       skus: [SKU_B],
+      qty: {},
       pending: null,
     },
   ];
@@ -185,7 +189,7 @@ export async function fixtureBackup(): Promise<{ db: ShikariDb; bytes: Uint8Arra
   const db = new ShikariDb(raw);
   const run = (sql: string, params: (string | number | null)[] = []) => db.run(sql, params);
 
-  run("INSERT INTO alembic_version VALUES ('e5b1c9d3a7f2')");
+  run("INSERT INTO alembic_version VALUES ('f2b6d8e4a1c9')");
   run(
     "INSERT INTO config (id, created_at, license_key, stealth_browser_headless, cookie_lifetime) VALUES (1, NULL, 'SH-TEST-LICENCE', 1, 400)",
   );
@@ -201,7 +205,7 @@ export async function fixtureBackup(): Promise<{ db: ShikariDb; bytes: Uint8Arra
     "INSERT INTO proxy_group (id, created_at, name, order_index) VALUES (-1, NULL, 'localhost', 0)",
   );
   run(
-    `INSERT INTO proxy_group (id, created_at, name, order_index) VALUES (0, '${T0}', 'ISP - Monitor', 1)`,
+    `INSERT INTO proxy_group (id, created_at, name, order_index) VALUES (0, '${T0}', 'ISP - All', 1)`,
   );
   run(`INSERT INTO proxy_group (id, created_at, name, order_index) VALUES (1, '${T0}', 'Resi', 2)`);
   for (let i = 1; i <= 4; i++) {
@@ -602,6 +606,7 @@ export async function mainInstanceBackup(): Promise<{ db: ShikariDb; bytes: Uint
 export const TASKS: TaskSettings = {
   checkoutQty: 2,
   checkoutProxyGroupId: 1,
+  miscCheckoutProxyGroupId: 0,
   watchdogProxyGroupId: 0,
   watchdogIntervals: [3333, 4444],
   skusPerWatchdog: 30,

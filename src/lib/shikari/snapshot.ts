@@ -1,3 +1,4 @@
+import { STANDARD_QTY } from "@/lib/products/qty";
 import { jsonObject } from "@/lib/shikari/format";
 import { checkShikariSchema, hasTaskOrder } from "@/lib/shikari/schema";
 import type { ShikariDb } from "@/lib/shikari/sqlite";
@@ -621,15 +622,37 @@ export function summarize(snapshot: ShikariSnapshot): BackupSummary {
 export const WATCHDOG_INTERVALS = [3333, 4444];
 
 /**
+ * The instance's "ISP - All" proxy group -- every ISP proxy it has, in one list -- which the
+ * Miscellaneous line's checkout tasks run on. Matched on its words, however the instance
+ * spells it ("ISP - All", "ISP All", "All ISP", "ISPAll"), so "ISP Harvest 1" and "ISP Small"
+ * aren't it. Of two, the first in Shikari's order that has proxies; none, undefined.
+ */
+export function ispAllGroup<T extends { name: string; proxies: unknown[] }>(
+  groups: T[],
+): T | undefined {
+  const matches = groups.filter((g) => {
+    const key = groupKey(g.name);
+    if (key === "ispall" || key === "allisp") return true;
+    const words = lower(g.name).split(/[^a-z0-9]+/);
+    return (words.includes("isp") || words.includes("isps")) && words.includes("all");
+  });
+  return matches.find((g) => g.proxies.length > 0) ?? matches[0];
+}
+
+/**
  * The task settings the page pre-fills, so the operator only ever edits what they mean to
- * change: qty and proxy groups as the backup has them now -- what "leave it as it is" means
- * -- and the standard watchdog layout, which an export brings every backup to.
+ * change: proxy groups as the backup has them now -- what "leave it as it is" means -- with
+ * the Miscellaneous line's checkout tasks on "ISP - All"; the site's standard qty; and the
+ * standard watchdog layout, which an export brings every backup to.
+ *
+ * The standard qty is the site's, not read from the backup: once members pick their own,
+ * the qty most of a backup's products run at is theirs, and taking it for the standard would
+ * hand their pick to everyone who made none.
  */
 export function currentTaskSettings(snapshot: ShikariSnapshot): TaskSettings {
   const target = targetGroups(snapshot).tasks;
   const inTarget = snapshot.tasks.filter((t) => target && t.groupId === target.id);
   const checkouts = inTarget.filter(isCheckout);
-  const checkoutIds = new Set(checkouts.map((t) => t.id));
   const watchdogs = inTarget.filter((t) => isWatchdog(t) && !isRemoteWatchdog(t));
   // A browser can point at a proxy group that has since been deleted -- 71 on the main
   // instance do -- and a setting that names one would move every browser into nothing.
@@ -638,15 +661,12 @@ export function currentTaskSettings(snapshot: ShikariSnapshot): TaskSettings {
     const id = snapshot.browsers.get(task.browserId)?.proxyGroupId ?? null;
     return id !== null && live.has(id) ? id : null;
   };
+  const checkoutProxyGroupId = mostCommon(checkouts.map(browserGroup).filter((id) => id !== null));
 
   return {
-    checkoutQty:
-      mostCommon(
-        snapshot.products
-          .filter((p) => p.taskId !== null && checkoutIds.has(p.taskId) && p.qty !== null)
-          .map((p) => p.qty as number),
-      ) ?? 1,
-    checkoutProxyGroupId: mostCommon(checkouts.map(browserGroup).filter((id) => id !== null)),
+    checkoutQty: STANDARD_QTY,
+    checkoutProxyGroupId,
+    miscCheckoutProxyGroupId: ispAllGroup(snapshot.proxyGroups)?.id ?? checkoutProxyGroupId,
     watchdogProxyGroupId: mostCommon(watchdogs.map(browserGroup).filter((id) => id !== null)),
     watchdogIntervals: [...WATCHDOG_INTERVALS],
     skusPerWatchdog: 30,

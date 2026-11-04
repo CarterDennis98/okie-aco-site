@@ -60,6 +60,11 @@ export type DesiredProfile = {
   /** TCINs this profile is run for, in catalog order. Empty means it runs for nothing. */
   skus: string[];
   /**
+   * How many of each TCIN its checkout buys, where its member picked a qty -- by TCIN, and
+   * only TCINs in `skus`. One not listed buys the standard qty, TaskSettings.checkoutQty.
+   */
+  qty: Record<string, number>;
+  /**
    * Unconfirmed changes to this profile, and which fields. Earns it a Wipe Account task, so
    * the stale card and address saved on the Target account come off before the new ones go
    * on. Exporting never confirms them: that stays a separate, manual step.
@@ -130,9 +135,17 @@ export type ProxyEntry = {
 };
 
 export type TaskSettings = {
-  /** Units per product on every checkout task. */
+  /**
+   * The standard qty: units of a product on a checkout task whose member picked none for it
+   * (see DesiredProfile.qty). Starts at the site's own STANDARD_QTY.
+   */
   checkoutQty: number;
   checkoutProxyGroupId: number | null;
+  /**
+   * The checkout tasks' proxy group in "Target - Miscellaneous". Starts at the instance's
+   * "ISP - All" (see ispAllGroup), and at the checkout one when it has none.
+   */
+  miscCheckoutProxyGroupId: number | null;
   watchdogProxyGroupId: number | null;
   /** One check interval per watchdog in a list, in ms. Two by default: 3333 and 4444. */
   watchdogIntervals: number[];
@@ -166,11 +179,14 @@ export type ProfileLine = {
   group?: string;
 };
 export type TaskLine = { profile: string; skus: number };
+/** A product the task already ran whose qty changed, and from what. */
+export type QtyChange = { sku: string; from: number | null; to: number | null };
 export type TaskChange = {
   profile: string;
   added: string[];
   removed: string[];
-  /** Anything else about the task that moved: qty, mailbox, proxy group, group. */
+  qty: QtyChange[];
+  /** Anything else about the task that moved: price limits, mailbox, proxy group, group. */
   other: string[];
 };
 export type WatchList = { interval: number | null; skus: string[] };

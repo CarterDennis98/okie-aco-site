@@ -427,13 +427,169 @@ describe("buildInstance", () => {
   it("moves a picked product onto a task in place, and drops one that was unpicked", async () => {
     const { report, db } = await build(profiles((list) => (list[2].skus = [SKU_A])));
     expect(report.checkout.changed).toEqual([
-      { profile: "bob - 1", added: [SKU_A], removed: [SKU_B], other: [] },
+      { profile: "bob - 1", added: [SKU_A], removed: [SKU_B], qty: [], other: [] },
     ]);
     // Same task, same browser: its preload state is the thing an export must not cost it.
     expect(db.get("SELECT preloaded, browser_id FROM task WHERE id = 7")).toEqual({
       preloaded: 1,
       browser_id: 8,
     });
+  });
+
+  describe("each product's qty and price limits", () => {
+    /** Every checkout product row: whose, which, how many, and its price limits. */
+    const rowsOf = (db: ShikariDb) =>
+      db.all(
+        `SELECT p.name, tp.target_data AS sku, tp.qty, tp.min_price, tp.max_price
+           FROM target_product tp JOIN task t ON t.id = tp.task_id
+           JOIN profile p ON p.id = t.profile_id
+          WHERE t.flow_key = 'checkout' ORDER BY p.name, tp.target_data`,
+      );
+    /** alice - 1 picked 1 of A and bob - 1 4 of B; everything else is at the standard qty. */
+    const picked = () =>
+      profiles((list) => {
+        list[0].qty = { [SKU_A]: 1 };
+        list[2].qty = { [SKU_B]: 4 };
+      });
+
+    it("runs each product at the qty picked for it on that profile, the standard where none was", async () => {
+      const { db, report, open, diff } = await build(picked());
+      expect(report.checkout.changed).toEqual([
+        {
+          profile: "alice - 1",
+          added: [],
+          removed: [],
+          qty: [{ sku: SKU_A, from: 2, to: 1 }],
+          other: [],
+        },
+        {
+          profile: "bob - 1",
+          added: [],
+          removed: [],
+          qty: [{ sku: SKU_B, from: 2, to: 4 }],
+          other: [],
+        },
+      ]);
+      expect(report.checkout.unchanged).toBe(1);
+      expect(rowsOf(db)).toEqual([
+        { name: "alice - 1", sku: SKU_A, qty: 1, min_price: null, max_price: null },
+        { name: "alice - 1", sku: SKU_B, qty: 2, min_price: null, max_price: null },
+        { name: "alice - 2", sku: SKU_A, qty: 2, min_price: null, max_price: null },
+        { name: "bob - 1", sku: SKU_B, qty: 4, min_price: null, max_price: null },
+      ]);
+      // The same rows, rewritten where they stand; the tasks keep their browsers.
+      expect(touched(diff)).toEqual({
+        target_product: { added: 0, removed: 0, changed: 2 },
+        // Each changed task's updated_at.
+        task: { added: 0, removed: 0, changed: 2 },
+      });
+      // Watchdogs watch, they don't buy: still no qty.
+      expect(
+        db.all(
+          `SELECT DISTINCT tp.qty FROM target_product tp JOIN task t ON t.id = tp.task_id
+            WHERE t.flow_key = 'watchdog'`,
+        ),
+      ).toEqual([{ qty: null }]);
+
+      // The next export with the same picks has nothing left to do.
+      const again = openBackup(await sqljs(), backupBytes(open));
+      const baseline = tableHashes(again.db);
+      const next = buildInstance(again.db, desiredInstance(picked()), options());
+      expect(next.checkout).toMatchObject({ changed: [], unchanged: 3 });
+      expect(touched(diffTables(baseline, tableHashes(again.db)))).toEqual({});
+    });
+
+    it("runs a product nobody picked a qty for at the export's standard qty", async () => {
+      const { db, report } = await build(picked(), { tasks: { ...TASKS, checkoutQty: 3 } });
+      expect(rowsOf(db).map((r) => [r.name, r.sku, r.qty])).toEqual([
+        ["alice - 1", SKU_A, 1],
+        ["alice - 1", SKU_B, 3],
+        ["alice - 2", SKU_A, 3],
+        ["bob - 1", SKU_B, 4],
+      ]);
+      expect(report.checkout.changed.map((c) => [c.profile, c.qty.length])).toEqual([
+        ["alice - 1", 2],
+        ["alice - 2", 1],
+        ["bob - 1", 1],
+      ]);
+    });
+
+    it("builds a new task's products at the qty picked, with no price limits", async () => {
+      const carol: DesiredProfile = {
+        ...vaultProfiles()[2],
+        key: "vault-carol-1",
+        ownerName: "carol",
+        name: "carol - 1",
+        email: "carol1@example.com",
+        skus: [SKU_A, SKU_B],
+        qty: { [SKU_B]: 1 },
+      };
+      const { db, report } = await build([...vaultProfiles(), carol]);
+      expect(report.checkout.added).toEqual([{ profile: "carol - 1", skus: 2 }]);
+      expect(rowsOf(db).filter((r) => r.name === "carol - 1")).toEqual([
+        { name: "carol - 1", sku: SKU_A, qty: 2, min_price: null, max_price: null },
+        { name: "carol - 1", sku: SKU_B, qty: 1, min_price: null, max_price: null },
+      ]);
+    });
+
+    it("runs a qty that isn't a whole number from 1 up at the standard qty", async () => {
+      const { db } = await build(profiles((list) => (list[0].qty = { [SKU_A]: 0, [SKU_B]: 2.5 })));
+      expect(rowsOf(db).filter((r) => r.name === "alice - 1")).toMatchObject([
+        { sku: SKU_A, qty: 2 },
+        { sku: SKU_B, qty: 2 },
+      ]);
+    });
+
+    it("takes off a price limit set by hand in Shikari, on checkout tasks and watchdogs alike", async () => {
+      const { bytes } = await cleanBackup();
+      const open = openBackup(await sqljs(), bytes);
+      const taskOf = (name: string) =>
+        `(SELECT t.id FROM task t JOIN profile p ON p.id = t.profile_id WHERE p.name = '${name}')`;
+      open.db.run(
+        `UPDATE target_product SET max_price = 49.99 WHERE target_data = ? AND task_id = ${taskOf("alice - 1")}`,
+        [SKU_A],
+      );
+      open.db.run(
+        `UPDATE target_product SET min_price = 1, max_price = 100
+          WHERE target_data = ? AND task_id = (SELECT MIN(id) FROM task WHERE target_kind = 'tcins' AND flow_key = 'watchdog')`,
+        [SKU_B],
+      );
+      const report = buildInstance(open.db, desiredInstance(), options());
+      expect(report.checkout.changed).toEqual([
+        { profile: "alice - 1", added: [], removed: [], qty: [], other: ["min/max price reset"] },
+      ]);
+      expect(
+        open.db.get(
+          "SELECT COUNT(*) AS n FROM target_product WHERE min_price IS NOT NULL OR max_price IS NOT NULL",
+        ),
+      ).toEqual({ n: 0 });
+    });
+  });
+
+  it("warns when a group's checkout tasks would go to a proxy group with no proxies", async () => {
+    const withEmptyGroup = async () => {
+      const { db } = await cleanBackup();
+      db.run(
+        "INSERT INTO proxy_group (id, created_at, name, order_index) VALUES (2, NULL, 'ISP - All 2', 3)",
+      );
+      return { db, bytes: db.bytes() };
+    };
+    const { report, db } = await build(
+      profiles((list) => (list[0].skus = [SKU_A, SKU_B, SKU_M])),
+      { tasks: { ...TASKS, miscCheckoutProxyGroupId: 2 } },
+      withEmptyGroup,
+    );
+    expect(report.warnings).toEqual([
+      'Proxy group "ISP - All 2" has no proxies, so the checkout tasks in "Target - Miscellaneous" have none to run on.',
+    ]);
+    // Put there all the same -- it's the operator's call -- just not pinned to a proxy.
+    expect(
+      db.get(
+        `SELECT b.proxy_group_id, b.proxy_id FROM task t JOIN browser b ON b.id = t.browser_id
+           JOIN task_group g ON g.id = t.task_group_id
+          WHERE g.name = 'Target - Miscellaneous' AND t.flow_key = 'checkout'`,
+      ),
+    ).toEqual({ proxy_group_id: 2, proxy_id: null });
   });
 
   it("gives a profile that picked nothing no checkout task, but keeps the profile", async () => {
@@ -1041,8 +1197,8 @@ describe.each([
     expect(report.checkout).toMatchObject({ added: [], changed: [], removed: [], unchanged: 3 });
     expect(report.profiles).toMatchObject({ activated: [], updated: [], unchanged: 3 });
 
-    // Set up as "Target"'s are: checkout tasks on the checkout proxies with the profile's own
-    // mailbox and qty, the watchdogs on the watchdog proxies, each on a new device.
+    // Set up as "Target"'s are -- the profile's own mailbox and qty -- but on "ISP - All",
+    // pinned; the watchdogs on the watchdog proxies, each on a new device.
     const checkouts = db.all<Record<string, unknown>>(
       `SELECT p.name, t.imap_account_id, t.preloaded, b.proxy_group_id, b.proxy_id,
               (SELECT qty FROM target_product WHERE task_id = t.id) AS qty
@@ -1051,8 +1207,8 @@ describe.each([
         WHERE g.name = 'Target - Miscellaneous' ORDER BY p.name`,
     );
     expect(checkouts).toMatchObject([
-      { name: "alice - 1", imap_account_id: 1, preloaded: 0, proxy_group_id: 1, qty: 2 },
-      { name: "bob - 1", imap_account_id: null, preloaded: 0, proxy_group_id: 1, qty: 2 },
+      { name: "alice - 1", imap_account_id: 1, preloaded: 0, proxy_group_id: 0, qty: 2 },
+      { name: "bob - 1", imap_account_id: null, preloaded: 0, proxy_group_id: 0, qty: 2 },
     ]);
     expect(checkouts.every((c) => c.proxy_id !== null)).toBe(true);
     const watchdogs = db.all<{ target_kind: string; proxy_group_id: number | null; data: string }>(
@@ -1089,7 +1245,14 @@ describe.each([
     expect(report.misc?.checkout).toMatchObject({
       added: [],
       changed: [
-        { profile: "bob - 1", added: [SKU_M], removed: [SKU_B], other: ['moved in from "Target"'] },
+        {
+          profile: "bob - 1",
+          added: [SKU_M],
+          removed: [SKU_B],
+          qty: [],
+          // Off the checkout proxies and onto "ISP - All", like every task in the group.
+          other: ['moved in from "Target"', "proxy group"],
+        },
       ],
     });
     // Out of "Target" without coming off: its browser and preload state came along.
@@ -1187,6 +1350,7 @@ describe("buildInstance on a main instance", () => {
         profile: "alice - 2",
         added: [],
         removed: [],
+        qty: [],
         // Its browser came out of the deleted proxy group too. It wasn't pinned, and isn't now.
         other: ['moved in from "NO IMAP"', "proxy group"],
       },
@@ -1208,9 +1372,14 @@ describe("buildInstance on a main instance", () => {
         profile: "alice - 2",
         added: [SKU_M],
         removed: [SKU_A],
+        qty: [],
         other: ['moved in from "NO IMAP"', "proxy group"],
       },
     ]);
+    // Onto "ISP - All", where the line's checkout tasks run.
+    expect(db.get("SELECT proxy_group_id FROM browser WHERE id = 7")).toEqual({
+      proxy_group_id: 0,
+    });
     expect(
       db.get(
         "SELECT g.name FROM task t JOIN task_group g ON g.id = t.task_group_id WHERE t.id = 6",

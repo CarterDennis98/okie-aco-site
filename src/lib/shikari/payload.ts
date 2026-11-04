@@ -30,7 +30,8 @@ import { normalizePhone } from "@/lib/vault/profile-input";
  * the operator's own assignments only, the main/backup split by the one shared rule, every
  * member's share recorded in `vault_exports` BEFORE anything is decrypted, and nothing logged.
  * What goes back is the vault's view of each profile -- card, address, password, mailbox,
- * products -- for the operator's browser to write into backups it never uploads.
+ * products and the qty of each -- for the operator's browser to write into backups it never
+ * uploads.
  *
  * Refused outright, rather than half-built, when the request would put one profile on two
  * instances: that is a member checked out twice, the failure every export split exists to
@@ -127,7 +128,7 @@ export async function buildShikariPayload(
 
   const all = chosen.flatMap((c) => c.rows);
   const accountToProfile = new Map(all.map((r) => [r.account.id, r.id]));
-  const [coverage, { skus, catalog }, pending, known, miscSets] = await Promise.all([
+  const [coverage, { skus, qty, catalog }, pending, known, miscSets] = await Promise.all([
     // Unscoped, like every other coverage read: an alias row is unique globally.
     loadMailboxCoverage(),
     getSkusForProfiles(
@@ -257,6 +258,7 @@ export async function buildShikariPayload(
         : null,
       mailbox: box ? (mailboxByEmail.get(box.toLowerCase()) ?? null) : null,
       skus: skus.get(row.id) ?? [],
+      qty: qty.get(row.id) ?? {},
       pending: fields ? { fields: [...fields] } : null,
     };
   };

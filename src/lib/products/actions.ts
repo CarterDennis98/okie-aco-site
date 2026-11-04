@@ -4,9 +4,10 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/db/client";
 import { requireMember } from "@/lib/auth/guard";
+import { MAX_QTY, STANDARD_QTY } from "@/lib/products/qty";
 
 /**
- * A member picking which drop products they want to be run for.
+ * A member picking which drop products they want to be run for, and how many of each.
  *
  * Every write is narrowed to the signed-in member: the id comes from the guard, never the
  * request, and a profile id in the request counts only if it is theirs and on the product's
@@ -86,6 +87,83 @@ export async function saveProductChoice(raw: unknown): Promise<ChoiceResult> {
   } catch (error) {
     console.error(
       "products: saving a choice failed",
+      error instanceof Error ? error.message : "unknown",
+    );
+    return { ok: false, error: "That didn't save. Try again." };
+  }
+
+  revalidatePath("/dashboard/products");
+  return { ok: true };
+}
+
+const qtyInput = z
+  .object({
+    productId: z.uuid(),
+    // How many to buy in one checkout. Null: the standard qty -- or, for one profile, the
+    // pick's own.
+    qty: z.number().int().min(1).max(MAX_QTY).nullable(),
+    // One profile's own qty. Absent: the pick's, for every profile it runs on, setting aside
+    // any profile's own.
+    profileId: z.uuid().optional(),
+  })
+  .strict();
+
+/**
+ * Sets how many of a product the member's checkouts buy: for every profile it runs on at
+ * once, or for one of them. Only for a product they're in for -- switching it off forgets the
+ * qty along with the pick.
+ */
+export async function saveProductQty(raw: unknown): Promise<ChoiceResult> {
+  const viewer = await requireMember();
+  const parsed = qtyInput.safeParse(raw);
+  if (!parsed.success)
+    return { ok: false, error: "That didn't save. Reload the page and try again." };
+  const { productId, profileId } = parsed.data;
+
+  const selection = await prisma.productSelection.findUnique({
+    where: { productId_discordUserId: { productId, discordUserId: viewer.discordUserId } },
+    select: { id: true, qty: true, product: { select: { siteKey: true, active: true } } },
+  });
+  if (!selection) return { ok: false, error: "Switch it on first, then pick a qty." };
+  if (!selection.product.active) {
+    return { ok: false, error: "That product isn't available any more. Reload the page." };
+  }
+  if (profileId !== undefined) {
+    const mine = await prisma.vaultProfile.count({
+      where: {
+        id: profileId,
+        discordUserId: viewer.discordUserId,
+        siteKey: selection.product.siteKey,
+      },
+    });
+    if (mine !== 1) return { ok: false, error: "That isn't your profile." };
+  }
+  // A profile's own qty that is the pick's anyway is no qty of its own: it follows the pick.
+  const qty =
+    profileId !== undefined && parsed.data.qty === (selection.qty ?? STANDARD_QTY)
+      ? null
+      : parsed.data.qty;
+
+  try {
+    if (profileId === undefined) {
+      await prisma.$transaction([
+        prisma.productSelection.update({ where: { id: selection.id }, data: { qty } }),
+        prisma.productSelectionQty.deleteMany({ where: { selectionId: selection.id } }),
+      ]);
+    } else if (qty === null) {
+      await prisma.productSelectionQty.deleteMany({
+        where: { selectionId: selection.id, profileId },
+      });
+    } else {
+      await prisma.productSelectionQty.upsert({
+        where: { selectionId_profileId: { selectionId: selection.id, profileId } },
+        create: { selectionId: selection.id, profileId, qty },
+        update: { qty },
+      });
+    }
+  } catch (error) {
+    console.error(
+      "products: saving a qty failed",
       error instanceof Error ? error.message : "unknown",
     );
     return { ok: false, error: "That didn't save. Try again." };

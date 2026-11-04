@@ -13,10 +13,13 @@ import type { ShikariDb } from "@/lib/shikari/sqlite";
  */
 
 /**
- * The Alembic revisions of the backups these tables were read from: 2026-10-05's, and
- * 2026-10-06's, which gave tasks drag-and-drop order (see hasTaskOrder).
+ * The Alembic revisions of the backups these tables were read from: 2026-10-05's;
+ * 2026-10-06's, which gave tasks drag-and-drop order (see hasTaskOrder); and 2026-11-04's,
+ * which put a qty and price limits on each product in Shikari's task editor -- on the
+ * target_product columns every version has had -- and added a `sign_up` table the export
+ * never reads.
  */
-export const KNOWN_SHIKARI_VERSIONS = ["d4e8b21c7f05", "e5b1c9d3a7f2"];
+export const KNOWN_SHIKARI_VERSIONS = ["d4e8b21c7f05", "e5b1c9d3a7f2", "f2b6d8e4a1c9"];
 
 /**
  * Every column the export touches, per table. `inserts` marks the tables it creates rows
