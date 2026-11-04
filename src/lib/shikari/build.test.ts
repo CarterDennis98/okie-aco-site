@@ -519,10 +519,11 @@ describe("buildInstance", () => {
       ]);
     });
 
-    it("never runs past Target's limit of 2, or none, whatever was saved or set", async () => {
-      // 3 and 4 saved before the limit came down; 0 and 2.5 never could be.
+    it("runs a pick past Target's usual 2, but never past 10, or none", async () => {
+      // 4 is past what Target usually allows, which a member may pick, warned; 12 is past the
+      // most they can pick; 0 and 2.5 never could be picked.
       const odd = profiles((list) => {
-        list[0].qty = { [SKU_A]: 3, [SKU_B]: 0 };
+        list[0].qty = { [SKU_A]: 12, [SKU_B]: 0 };
         list[1].qty = { [SKU_A]: 2.5 };
         list[2].qty = { [SKU_B]: 4 };
       });
@@ -532,19 +533,19 @@ describe("buildInstance", () => {
           r.sku,
           r.qty,
         ]);
-      // Too many is the limit; none or a fraction is the standard qty.
+      // Too many is the most; none or a fraction is the standard qty.
       expect(await atStandard(1)).toEqual([
-        ["alice - 1", SKU_A, 2],
+        ["alice - 1", SKU_A, 10],
         ["alice - 1", SKU_B, 1],
         ["alice - 2", SKU_A, 1],
-        ["bob - 1", SKU_B, 2],
+        ["bob - 1", SKU_B, 4],
       ]);
-      // A standard past the limit is the limit too.
-      expect(await atStandard(3)).toEqual([
-        ["alice - 1", SKU_A, 2],
-        ["alice - 1", SKU_B, 2],
-        ["alice - 2", SKU_A, 2],
-        ["bob - 1", SKU_B, 2],
+      // A standard past the most is the most too.
+      expect(await atStandard(11)).toEqual([
+        ["alice - 1", SKU_A, 10],
+        ["alice - 1", SKU_B, 10],
+        ["alice - 2", SKU_A, 10],
+        ["bob - 1", SKU_B, 4],
       ]);
     });
 

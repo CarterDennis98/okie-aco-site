@@ -11,8 +11,14 @@
 
 export const STANDARD_QTY = 2;
 
-/** Target's limit on one checkout: nothing buys more of a product than this. */
-export const MAX_QTY = 2;
+/** The most a member can pick, and the most any checkout buys of a product. */
+export const MAX_QTY = 10;
+
+/**
+ * What Target usually lets one checkout buy of a product. A member may pick more, up to
+ * MAX_QTY -- the page warns that more than this may cause problems at checkout.
+ */
+export const TARGET_LIMIT = 2;
 
 /** Every qty a member can pick, lowest first. */
 export const QTY_OPTIONS: number[] = Array.from({ length: MAX_QTY }, (_, i) => i + 1);
@@ -27,9 +33,8 @@ const isQty = (value: unknown): value is number =>
 
 /**
  * The qty a checkout actually runs at: `qty` if it's a whole number from 1 up, else
- * `fallback` (else the standard), and never more than MAX_QTY -- whatever was saved before a
- * limit was lowered, or typed into the export. Buying none of a product is no checkout, and
- * Target refuses one past its limit.
+ * `fallback` (else the standard), and never more than MAX_QTY -- whatever was saved, or typed
+ * into the export. Buying none of a product is no checkout.
  */
 export function runnableQty(qty: unknown, fallback: number = STANDARD_QTY): number {
   return Math.min(isQty(qty) ? qty : isQty(fallback) ? fallback : STANDARD_QTY, MAX_QTY);

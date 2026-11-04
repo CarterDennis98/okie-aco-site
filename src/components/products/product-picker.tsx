@@ -5,7 +5,7 @@ import type { CatalogProduct, ProductLine, SetDetails } from "@/db/queries/produ
 import { money } from "@/lib/money";
 import { saveProductChoice, saveProductQty } from "@/lib/products/actions";
 import { setDropProductActive } from "@/lib/products/admin-actions";
-import { QTY_OPTIONS, STANDARD_QTY, qtyLabel, runnableQty } from "@/lib/products/qty";
+import { QTY_OPTIONS, STANDARD_QTY, TARGET_LIMIT, qtyLabel, runnableQty } from "@/lib/products/qty";
 import type { Choice } from "@/lib/products/selection";
 import {
   groupByLine,
@@ -34,7 +34,7 @@ import { SetEditor } from "@/components/products/set-editor";
  *
  * Each product they're in for also has a qty: how many each checkout buys, the standard one
  * until they pick another. One qty covers every profile it runs on; "By profile" sets one
- * each.
+ * each. More than Target usually allows can be picked, with a warning beside it.
  *
  * Built for hundreds of products: a search across names, SKUs and sets, and every set can be
  * folded away to its heading -- remembered in this browser, so the sets someone is done with
@@ -903,13 +903,19 @@ function ProfileChoice({
   );
 }
 
-const qtySelect =
-  "min-h-11 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none disabled:opacity-60 sm:min-h-0 sm:py-1";
+/** A qty select, edged in the warning colour while it holds more than Target usually allows. */
+const qtySelect = (over: boolean) =>
+  "min-h-11 rounded-lg border bg-[var(--color-ink)] px-2 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none disabled:opacity-60 sm:min-h-0 sm:py-1 " +
+  (over ? "border-[var(--color-warn)]" : "border-[var(--color-edge)]");
 
 /**
  * How many each checkout buys: one qty for every profile the product runs on, or -- under "By
  * profile", offered once it runs on more than one -- one each. While the profiles differ, the
  * qty for all reads "Mixed" and the list stays open; picking one for all sets them all.
+ *
+ * Up to MAX_QTY can be picked, but past TARGET_LIMIT -- what Target usually allows in one
+ * checkout -- each select that holds too many is edged in the warning colour, and a warning
+ * under them says why. It is announced as it appears, and read with each of those selects.
  */
 function QtyChoice({
   productName,
@@ -927,9 +933,10 @@ function QtyChoice({
   onChange: (qty: number | null, profileId?: string) => void;
 }) {
   const listId = useId();
+  const warningId = useId();
   const [open, setOpen] = useState(false);
   const running = choice.all ? profiles : profiles.filter((p) => choice.profileIds.includes(p.id));
-  // As they run: one saved past Target's limit shows as the limit, which is what it buys.
+  // As they run: never past the most a member can pick.
   const pickQty = runnableQty(choice.qty);
   const qtyOf = (profileId: string) => runnableQty(choice.profileQty[profileId], pickQty);
   const qtys = [...new Set(running.map((p) => qtyOf(p.id)))];
@@ -937,6 +944,8 @@ function QtyChoice({
   const shared = qtys.length > 1 ? null : (qtys[0] ?? pickQty);
   const byProfile = running.length > 1;
   const listed = byProfile && (open || shared === null);
+  const tooMany = (qty: number | null) => qty !== null && qty > TARGET_LIMIT;
+  const warned = (running.length > 0 ? qtys : [pickQty]).some(tooMany);
 
   const setAll = (qty: number) => onChange(qty === STANDARD_QTY ? null : qty);
   const setOne = (profileId: string, qty: number) => {
@@ -959,7 +968,8 @@ function QtyChoice({
             aria-label={
               byProfile ? `Qty of ${productName} on every profile` : `Qty of ${productName}`
             }
-            className={qtySelect}
+            aria-describedby={tooMany(shared) ? warningId : undefined}
+            className={qtySelect(tooMany(shared))}
           >
             {shared === null && (
               <option value="" disabled>
@@ -1012,7 +1022,8 @@ function QtyChoice({
                     disabled={disabled}
                     onChange={(event) => setOne(profile.id, Number(event.currentTarget.value))}
                     aria-label={`Qty of ${productName} for ${profile.name}`}
-                    className={qtySelect}
+                    aria-describedby={tooMany(qty) ? warningId : undefined}
+                    className={qtySelect(tooMany(qty))}
                   >
                     {QTY_OPTIONS.map((option) => (
                       <option key={option} value={option}>
@@ -1026,6 +1037,26 @@ function QtyChoice({
           })}
         </ul>
       )}
+      {/* Always there, so a screen reader hears the warning the moment a qty brings it in. */}
+      <div id={warningId} aria-live="polite">
+        {warned && (
+          <p className="mt-1.5 flex items-start gap-1.5 text-xs text-[var(--color-warn)]">
+            <svg aria-hidden viewBox="0 0 20 20" className="mt-px size-3.5 shrink-0">
+              <path
+                d="M10 2.75 18.25 17H1.75L10 2.75Z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinejoin="round"
+              />
+              <path d="M10 8v4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+              <circle cx="10" cy="14.4" r="1" fill="currentColor" />
+            </svg>
+            Target&rsquo;s limit is usually {TARGET_LIMIT}, so more than {TARGET_LIMIT} may cause
+            problems at checkout.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

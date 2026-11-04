@@ -645,14 +645,15 @@ async function main() {
     const entry = edited.known.find((k) => k.name === moved.name);
     if (entry) Object.assign(entry, { why: "member", instance: 2 });
   }
-  // Qty picks: one product at 1 on one profile; everything at 1 on another, the Miscellaneous
-  // line's picks among it; and a 3 saved before Target's limit of 2 came down, on a third.
+  // Qty picks: one product at 1 on one profile; everything at 4 on another -- past Target's
+  // usual 2, which a member may pick -- the Miscellaneous line's picks among it; and a 12, past
+  // the most a member can pick, on a third.
   const qtyOne = edited.profiles[2];
   const qtyAll = edited.profiles[4];
   const qtyOver = edited.profiles[6];
   if (qtyOne?.skus[0]) qtyOne.qty = { ...qtyOne.qty, [qtyOne.skus[0]]: 1 };
-  if (qtyAll) qtyAll.qty = Object.fromEntries(qtyAll.skus.map((sku) => [sku, 1]));
-  if (qtyOver?.skus[0]) qtyOver.qty = { ...qtyOver.qty, [qtyOver.skus[0]]: 3 };
+  if (qtyAll) qtyAll.qty = Object.fromEntries(qtyAll.skus.map((sku) => [sku, 4]));
+  if (qtyOver?.skus[0]) qtyOver.qty = { ...qtyOver.qty, [qtyOver.skus[0]]: 12 };
   if (first) {
     edited.profiles.push({
       ...structuredClone(first),
@@ -794,12 +795,16 @@ async function main() {
     `a qty of 1 picked on ${qtyOne?.name} reported on its task`,
   );
   check(
-    !qtyAll?.skus.length || qtyChanged(qtyAll.name, 1),
-    `a qty of 1 on everything ${qtyAll?.name} runs reported`,
+    !qtyAll?.skus.length || qtyChanged(qtyAll.name, 4),
+    `a qty of 4 on everything ${qtyAll?.name} runs reported`,
+  );
+  check(
+    !qtyOver?.skus[0] || qtyChanged(qtyOver.name, MAX_QTY),
+    `${qtyOver?.name}'s 12 runs at ${MAX_QTY}, the most a member can pick`,
   );
   check(
     qtyChanges.every((q) => q.to !== null && q.to >= 1 && q.to <= MAX_QTY),
-    `no product of ours set past Target's limit of ${MAX_QTY}, or to none (${qtyOver?.name}'s 3 among them)`,
+    `no product of ours set past ${MAX_QTY}, or to none`,
   );
   const out = checkFile(SQL, original, drop, edited, settings);
   drop.open.db.close();

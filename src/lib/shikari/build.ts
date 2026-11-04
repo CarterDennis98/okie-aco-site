@@ -80,9 +80,9 @@ import type {
  * unless the operator says otherwise (TaskSettings.miscCheckoutProxyGroupId).
  *
  * PER PRODUCT. Each product row on a checkout task carries the qty its member picked for that
- * product on that profile, or the standard qty where they picked none -- never more than
- * Target's limit of 2 -- and Shikari's default price limits, none. The site sets no price
- * limit, so one set by hand comes off.
+ * product on that profile, or the standard qty where they picked none -- past Target's usual
+ * limit of 2 if they chose so, never past the most they can pick, 10 -- and Shikari's default
+ * price limits, none. The site sets no price limit, so one set by hand comes off.
  *
  * WHAT IS NEVER TOUCHED: anything that isn't Target. One instance runs Walmart from the same
  * database, and 131 of its emails and 141 of its names are also a Target profile's -- so a
@@ -1422,8 +1422,8 @@ class InstanceBuilder {
 
   /**
    * How many of each TCIN a profile's checkout buys: the qty its member picked for it, or the
-   * standard qty -- never past Target's limit, MAX_QTY, and never none (see runnableQty). The
-   * site sends neither, but a pick saved before the limit came down can still be on file.
+   * standard qty -- never past MAX_QTY, the most a member can pick, and never none (see
+   * runnableQty). The site sends neither; this is the last line of defence.
    */
   private qtyFor(d: DesiredProfile): (sku: string) => number {
     const standard = this.options.tasks.checkoutQty;
