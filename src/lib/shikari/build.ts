@@ -1,3 +1,4 @@
+import { runnableQty } from "@/lib/products/qty";
 import { freshDeviceData } from "@/lib/shikari/device";
 import { jsonObject, pyJson, shikariTime } from "@/lib/shikari/format";
 import { checkShikariSchema } from "@/lib/shikari/schema";
@@ -79,8 +80,9 @@ import type {
  * unless the operator says otherwise (TaskSettings.miscCheckoutProxyGroupId).
  *
  * PER PRODUCT. Each product row on a checkout task carries the qty its member picked for that
- * product on that profile, or the standard qty where they picked none, and Shikari's default
- * price limits -- none. The site sets no price limit, so one set by hand comes off.
+ * product on that profile, or the standard qty where they picked none -- never more than
+ * Target's limit of 2 -- and Shikari's default price limits, none. The site sets no price
+ * limit, so one set by hand comes off.
  *
  * WHAT IS NEVER TOUCHED: anything that isn't Target. One instance runs Walmart from the same
  * database, and 131 of its emails and 141 of its names are also a Target profile's -- so a
@@ -1420,15 +1422,12 @@ class InstanceBuilder {
 
   /**
    * How many of each TCIN a profile's checkout buys: the qty its member picked for it, or the
-   * standard qty. Anything but a whole number from 1 up -- which the site never sends -- is
-   * the standard qty too: a checkout for none of a product is no checkout.
+   * standard qty -- never past Target's limit, MAX_QTY, and never none (see runnableQty). The
+   * site sends neither, but a pick saved before the limit came down can still be on file.
    */
   private qtyFor(d: DesiredProfile): (sku: string) => number {
     const standard = this.options.tasks.checkoutQty;
-    return (sku) => {
-      const picked = d.qty[sku];
-      return Number.isInteger(picked) && picked >= 1 ? picked : standard;
-    };
+    return (sku) => runnableQty(d.qty[sku], standard);
   }
 
   /**

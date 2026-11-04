@@ -5,7 +5,7 @@ import type { CatalogProduct, ProductLine, SetDetails } from "@/db/queries/produ
 import { money } from "@/lib/money";
 import { saveProductChoice, saveProductQty } from "@/lib/products/actions";
 import { setDropProductActive } from "@/lib/products/admin-actions";
-import { QTY_OPTIONS, STANDARD_QTY, qtyLabel } from "@/lib/products/qty";
+import { QTY_OPTIONS, STANDARD_QTY, qtyLabel, runnableQty } from "@/lib/products/qty";
 import type { Choice } from "@/lib/products/selection";
 import {
   groupByLine,
@@ -906,12 +906,6 @@ function ProfileChoice({
 const qtySelect =
   "min-h-11 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none disabled:opacity-60 sm:min-h-0 sm:py-1";
 
-/** The qtys a select offers: every one a member can pick, and the one it holds if not. */
-const qtyOptions = (current: number | null) =>
-  current === null || QTY_OPTIONS.includes(current)
-    ? QTY_OPTIONS
-    : [...QTY_OPTIONS, current].sort((a, b) => a - b);
-
 /**
  * How many each checkout buys: one qty for every profile the product runs on, or -- under "By
  * profile", offered once it runs on more than one -- one each. While the profiles differ, the
@@ -935,8 +929,9 @@ function QtyChoice({
   const listId = useId();
   const [open, setOpen] = useState(false);
   const running = choice.all ? profiles : profiles.filter((p) => choice.profileIds.includes(p.id));
-  const pickQty = choice.qty ?? STANDARD_QTY;
-  const qtyOf = (profileId: string) => choice.profileQty[profileId] ?? pickQty;
+  // As they run: one saved past Target's limit shows as the limit, which is what it buys.
+  const pickQty = runnableQty(choice.qty);
+  const qtyOf = (profileId: string) => runnableQty(choice.profileQty[profileId], pickQty);
   const qtys = [...new Set(running.map((p) => qtyOf(p.id)))];
   // The qty every profile it runs on buys; null while they differ.
   const shared = qtys.length > 1 ? null : (qtys[0] ?? pickQty);
@@ -971,7 +966,7 @@ function QtyChoice({
                 Mixed
               </option>
             )}
-            {qtyOptions(shared).map((qty) => (
+            {QTY_OPTIONS.map((qty) => (
               <option key={qty} value={qty}>
                 {qtyLabel(qty)}
               </option>
@@ -1019,7 +1014,7 @@ function QtyChoice({
                     aria-label={`Qty of ${productName} for ${profile.name}`}
                     className={qtySelect}
                   >
-                    {qtyOptions(qty).map((option) => (
+                    {QTY_OPTIONS.map((option) => (
                       <option key={option} value={option}>
                         {qtyLabel(option)}
                       </option>

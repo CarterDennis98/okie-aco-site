@@ -31,6 +31,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import initSqlJs from "sql.js";
+import { MAX_QTY, runnableQty } from "../src/lib/products/qty";
 import { buildInstance } from "../src/lib/shikari/build";
 import { diffTables, forbiddenChanges, tableHashes, type TableDiff } from "../src/lib/shikari/diff";
 import {
@@ -321,7 +322,7 @@ function checkFile(
   const products = ourRows.filter((r) => byEmail.has(lower(r.email)));
   const wrongQty = products.filter((r) => {
     const d = byEmail.get(lower(r.email))!;
-    return r.qty !== (d.qty[r.sku] ?? settings.checkoutQty);
+    return r.qty !== runnableQty(d.qty[r.sku], settings.checkoutQty);
   });
   const picked = products.filter((r) => byEmail.get(lower(r.email))!.qty[r.sku] !== undefined);
   check(
@@ -644,12 +645,14 @@ async function main() {
     const entry = edited.known.find((k) => k.name === moved.name);
     if (entry) Object.assign(entry, { why: "member", instance: 2 });
   }
-  // Qty picks: one product at 1 on one profile, and everything at 3 on another -- the
-  // Miscellaneous line's picks among it.
+  // Qty picks: one product at 1 on one profile; everything at 1 on another, the Miscellaneous
+  // line's picks among it; and a 3 saved before Target's limit of 2 came down, on a third.
   const qtyOne = edited.profiles[2];
   const qtyAll = edited.profiles[4];
+  const qtyOver = edited.profiles[6];
   if (qtyOne?.skus[0]) qtyOne.qty = { ...qtyOne.qty, [qtyOne.skus[0]]: 1 };
-  if (qtyAll) qtyAll.qty = Object.fromEntries(qtyAll.skus.map((sku) => [sku, 3]));
+  if (qtyAll) qtyAll.qty = Object.fromEntries(qtyAll.skus.map((sku) => [sku, 1]));
+  if (qtyOver?.skus[0]) qtyOver.qty = { ...qtyOver.qty, [qtyOver.skus[0]]: 3 };
   if (first) {
     edited.profiles.push({
       ...structuredClone(first),
@@ -778,17 +781,25 @@ async function main() {
       "the wipe's browser is in a proxy group that exists",
     );
   }
+  const qtyChanges = [
+    drop.report.checkout,
+    ...(drop.report.misc ? [drop.report.misc.checkout] : []),
+  ]
+    .flatMap((c) => c.changed)
+    .flatMap((t) => t.qty.map((q) => ({ profile: t.profile, ...q })));
   const qtyChanged = (name: string | undefined, to: number) =>
-    [drop.report.checkout, ...(drop.report.misc ? [drop.report.misc.checkout] : [])].some((c) =>
-      c.changed.some((t) => t.profile === name && t.qty.some((q) => q.to === to)),
-    );
+    qtyChanges.some((q) => q.profile === name && q.to === to);
   check(
     !qtyOne?.skus[0] || qtyChanged(qtyOne.name, 1),
     `a qty of 1 picked on ${qtyOne?.name} reported on its task`,
   );
   check(
-    !qtyAll?.skus.length || qtyChanged(qtyAll.name, 3),
-    `a qty of 3 on everything ${qtyAll?.name} runs reported`,
+    !qtyAll?.skus.length || qtyChanged(qtyAll.name, 1),
+    `a qty of 1 on everything ${qtyAll?.name} runs reported`,
+  );
+  check(
+    qtyChanges.every((q) => q.to !== null && q.to >= 1 && q.to <= MAX_QTY),
+    `no product of ours set past Target's limit of ${MAX_QTY}, or to none (${qtyOver?.name}'s 3 among them)`,
   );
   const out = checkFile(SQL, original, drop, edited, settings);
   drop.open.db.close();

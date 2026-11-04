@@ -2,7 +2,7 @@
 
 import { useId, useState } from "react";
 import type { ShikariMember } from "@/db/queries/shikari";
-import { STANDARD_QTY } from "@/lib/products/qty";
+import { MAX_QTY, STANDARD_QTY, runnableQty } from "@/lib/products/qty";
 import { scopesOverlap, type GroupChoice, type ShikariInstanceConfig } from "@/lib/shikari/config";
 import type { ParsedProxyList } from "@/lib/shikari/proxies";
 import {
@@ -746,16 +746,19 @@ function TaskSettingsForm({
       </summary>
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <label className="text-xs text-[var(--color-muted)]">
-          Standard qty per product (where a member picked none)
+          Standard qty per product (where a member picked none; Target&rsquo;s limit is {MAX_QTY})
           <input
             type="number"
             min={1}
-            max={10}
+            max={MAX_QTY}
             value={settings.checkoutQty}
             onChange={(event) =>
               onChange({
                 ...settings,
-                checkoutQty: Math.max(1, number(event.currentTarget.value, settings.checkoutQty)),
+                checkoutQty: runnableQty(
+                  number(event.currentTarget.value, settings.checkoutQty),
+                  settings.checkoutQty,
+                ),
               })
             }
             className={`${field} mt-1 block w-full`}

@@ -445,11 +445,11 @@ describe("buildInstance", () => {
            JOIN profile p ON p.id = t.profile_id
           WHERE t.flow_key = 'checkout' ORDER BY p.name, tp.target_data`,
       );
-    /** alice - 1 picked 1 of A and bob - 1 4 of B; everything else is at the standard qty. */
+    /** alice - 1 and bob - 1 picked 1 of A and of B; everything else is at the standard qty. */
     const picked = () =>
       profiles((list) => {
         list[0].qty = { [SKU_A]: 1 };
-        list[2].qty = { [SKU_B]: 4 };
+        list[2].qty = { [SKU_B]: 1 };
       });
 
     it("runs each product at the qty picked for it on that profile, the standard where none was", async () => {
@@ -466,7 +466,7 @@ describe("buildInstance", () => {
           profile: "bob - 1",
           added: [],
           removed: [],
-          qty: [{ sku: SKU_B, from: 2, to: 4 }],
+          qty: [{ sku: SKU_B, from: 2, to: 1 }],
           other: [],
         },
       ]);
@@ -475,7 +475,7 @@ describe("buildInstance", () => {
         { name: "alice - 1", sku: SKU_A, qty: 1, min_price: null, max_price: null },
         { name: "alice - 1", sku: SKU_B, qty: 2, min_price: null, max_price: null },
         { name: "alice - 2", sku: SKU_A, qty: 2, min_price: null, max_price: null },
-        { name: "bob - 1", sku: SKU_B, qty: 4, min_price: null, max_price: null },
+        { name: "bob - 1", sku: SKU_B, qty: 1, min_price: null, max_price: null },
       ]);
       // The same rows, rewritten where they stand; the tasks keep their browsers.
       expect(touched(diff)).toEqual({
@@ -500,17 +500,51 @@ describe("buildInstance", () => {
     });
 
     it("runs a product nobody picked a qty for at the export's standard qty", async () => {
-      const { db, report } = await build(picked(), { tasks: { ...TASKS, checkoutQty: 3 } });
+      // alice - 1's own 2 of A -- one profile set apart from a pick of 1 -- against a standard
+      // of 1 for everything else.
+      const { db, report } = await build(
+        profiles((list) => (list[0].qty = { [SKU_A]: 2 })),
+        { tasks: { ...TASKS, checkoutQty: 1 } },
+      );
       expect(rowsOf(db).map((r) => [r.name, r.sku, r.qty])).toEqual([
-        ["alice - 1", SKU_A, 1],
-        ["alice - 1", SKU_B, 3],
-        ["alice - 2", SKU_A, 3],
-        ["bob - 1", SKU_B, 4],
+        ["alice - 1", SKU_A, 2],
+        ["alice - 1", SKU_B, 1],
+        ["alice - 2", SKU_A, 1],
+        ["bob - 1", SKU_B, 1],
       ]);
-      expect(report.checkout.changed.map((c) => [c.profile, c.qty.length])).toEqual([
-        ["alice - 1", 2],
-        ["alice - 2", 1],
-        ["bob - 1", 1],
+      expect(report.checkout.changed.map((c) => [c.profile, c.qty])).toEqual([
+        ["alice - 1", [{ sku: SKU_B, from: 2, to: 1 }]],
+        ["alice - 2", [{ sku: SKU_A, from: 2, to: 1 }]],
+        ["bob - 1", [{ sku: SKU_B, from: 2, to: 1 }]],
+      ]);
+    });
+
+    it("never runs past Target's limit of 2, or none, whatever was saved or set", async () => {
+      // 3 and 4 saved before the limit came down; 0 and 2.5 never could be.
+      const odd = profiles((list) => {
+        list[0].qty = { [SKU_A]: 3, [SKU_B]: 0 };
+        list[1].qty = { [SKU_A]: 2.5 };
+        list[2].qty = { [SKU_B]: 4 };
+      });
+      const atStandard = async (checkoutQty: number) =>
+        rowsOf((await build(odd, { tasks: { ...TASKS, checkoutQty } })).db).map((r) => [
+          r.name,
+          r.sku,
+          r.qty,
+        ]);
+      // Too many is the limit; none or a fraction is the standard qty.
+      expect(await atStandard(1)).toEqual([
+        ["alice - 1", SKU_A, 2],
+        ["alice - 1", SKU_B, 1],
+        ["alice - 2", SKU_A, 1],
+        ["bob - 1", SKU_B, 2],
+      ]);
+      // A standard past the limit is the limit too.
+      expect(await atStandard(3)).toEqual([
+        ["alice - 1", SKU_A, 2],
+        ["alice - 1", SKU_B, 2],
+        ["alice - 2", SKU_A, 2],
+        ["bob - 1", SKU_B, 2],
       ]);
     });
 
@@ -529,14 +563,6 @@ describe("buildInstance", () => {
       expect(rowsOf(db).filter((r) => r.name === "carol - 1")).toEqual([
         { name: "carol - 1", sku: SKU_A, qty: 2, min_price: null, max_price: null },
         { name: "carol - 1", sku: SKU_B, qty: 1, min_price: null, max_price: null },
-      ]);
-    });
-
-    it("runs a qty that isn't a whole number from 1 up at the standard qty", async () => {
-      const { db } = await build(profiles((list) => (list[0].qty = { [SKU_A]: 0, [SKU_B]: 2.5 })));
-      expect(rowsOf(db).filter((r) => r.name === "alice - 1")).toMatchObject([
-        { sku: SKU_A, qty: 2 },
-        { sku: SKU_B, qty: 2 },
       ]);
     });
 

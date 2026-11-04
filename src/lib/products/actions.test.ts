@@ -242,32 +242,33 @@ describe.skipIf(!canRun)("member product picks", () => {
     };
     const choice = async () => (await getMemberChoices(ALICE, SITE))[id];
 
+    // 1 on every profile, but a2 keeps buying 2.
     expect(await saveProductQty({ productId: id, qty: 1 })).toEqual({ ok: true });
-    expect(await saveProductQty({ productId: id, qty: 3, profileId: profileIds.a2 })).toEqual({
+    expect(await saveProductQty({ productId: id, qty: 2, profileId: profileIds.a2 })).toEqual({
       ok: true,
     });
     expect(await choice()).toEqual({
       all: true,
       profileIds: [],
       qty: 1,
-      profileQty: { [profileIds.a2]: 3 },
+      profileQty: { [profileIds.a2]: 2 },
     });
-    expect(await qtyOf()).toEqual([{ "99000002": 1 }, { "99000002": 3 }]);
+    expect(await qtyOf()).toEqual([{ "99000002": 1 }, { "99000002": 2 }]);
 
     // A profile's own qty that is the pick's anyway goes: it follows the pick again.
     await saveProductQty({ productId: id, qty: 1, profileId: profileIds.a2 });
     expect((await choice())?.profileQty).toEqual({});
 
     // One qty for every profile sets every profile's own aside.
-    await saveProductQty({ productId: id, qty: 3, profileId: profileIds.a2 });
+    await saveProductQty({ productId: id, qty: 2, profileId: profileIds.a2 });
     await saveProductQty({ productId: id, qty: null });
     expect(await choice()).toMatchObject({ qty: null, profileQty: {} });
     expect(await qtyOf()).toEqual([{}, {}]);
 
     // Narrowing the pick keeps its qty; a profile it no longer runs on buys none of it.
-    await saveProductQty({ productId: id, qty: 4 });
+    await saveProductQty({ productId: id, qty: 1 });
     await saveProductChoice({ productIds: [id], mode: "some", profileIds: [profileIds.a1] });
-    expect(await qtyOf()).toEqual([{ "99000002": 4 }, {}]);
+    expect(await qtyOf()).toEqual([{ "99000002": 1 }, {}]);
 
     // Switching it off forgets the qty with the pick.
     await saveProductChoice({ productIds: [id], mode: "off" });
@@ -285,7 +286,9 @@ describe.skipIf(!canRun)("member product picks", () => {
     expect(
       await saveProductQty({ productId: products[1].id, qty: 1, profileId: profileIds.b1 }),
     ).toEqual({ ok: false, error: "That isn't your profile." });
-    for (const qty of [0, MAX_QTY + 1, 1.5, "2"]) {
+    // Target takes 2 at most; 3 is refused like none, a fraction, or a string.
+    expect(MAX_QTY).toBe(2);
+    for (const qty of [0, 3, 1.5, "2"]) {
       expect(await saveProductQty({ productId: products[1].id, qty })).toMatchObject({
         ok: false,
       });

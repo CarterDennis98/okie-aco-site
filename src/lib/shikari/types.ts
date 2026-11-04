@@ -137,7 +137,7 @@ export type ProxyEntry = {
 export type TaskSettings = {
   /**
    * The standard qty: units of a product on a checkout task whose member picked none for it
-   * (see DesiredProfile.qty). Starts at the site's own STANDARD_QTY.
+   * (see DesiredProfile.qty). Starts at the site's own STANDARD_QTY; never past MAX_QTY.
    */
   checkoutQty: number;
   checkoutProxyGroupId: number | null;

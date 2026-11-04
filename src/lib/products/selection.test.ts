@@ -52,23 +52,23 @@ describe("qtysByProfile", () => {
     const qty = qtysByProfile(
       profiles,
       [
-        // Alice: 1 of p1 everywhere but a2, which buys 3.
+        // Alice: 1 of p1 everywhere but a2, which buys 2.
         {
           productId: "p1",
           discordUserId: "alice",
           allProfiles: true,
           profileIds: [],
           qty: 1,
-          profileQty: { a2: 3 },
+          profileQty: { a2: 2 },
         },
-        // The standard qty of p2, but 4 on a1.
+        // The standard qty of p2, but 1 on a1.
         {
           productId: "p2",
           discordUserId: "alice",
           allProfiles: true,
           profileIds: [],
           qty: null,
-          profileQty: { a1: 4 },
+          profileQty: { a1: 1 },
         },
         // Bob never picked a qty.
         { productId: "p3", discordUserId: "bob", allProfiles: true, profileIds: [] },
@@ -76,8 +76,8 @@ describe("qtysByProfile", () => {
       catalog,
     );
     expect(Object.fromEntries(qty)).toEqual({
-      a1: { "100": 1, "200": 4 },
-      a2: { "100": 3 },
+      a1: { "100": 1, "200": 1 },
+      a2: { "100": 2 },
       b1: {},
     });
   });
@@ -93,7 +93,7 @@ describe("qtysByProfile", () => {
           allProfiles: false,
           profileIds: ["a2"],
           qty: 1,
-          profileQty: { a1: 5 },
+          profileQty: { a1: 2 },
         },
         // Retired: not in the catalog.
         {
@@ -109,7 +109,7 @@ describe("qtysByProfile", () => {
           discordUserId: "bob",
           allProfiles: true,
           profileIds: [],
-          profileQty: { a1: 3 },
+          profileQty: { a1: 1 },
         },
       ],
       catalog,
