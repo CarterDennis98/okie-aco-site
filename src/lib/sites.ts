@@ -21,6 +21,10 @@
  *     sits ΔE2000 1.0 from the brand's #E30613 -- the same red, to the eye -- and Topps
  *     3.2 from it and 3.9 from Mattel. Neither clears 5.5 against Target or Costco, and
  *     like Target's neither clears 3:1 as a UI shape on the chip (2.66:1, 2.80:1).
+ *   - Menards #F58220 is the middle stripe of its logo's own swoosh, and the least bad of
+ *     the three: the swoosh's red sits ΔE2000 3.5 from the brand's (a sixth red), its yellow
+ *     5.3 from Best Buy's. The orange is 4.3 from Crunchyroll's, below floor against that
+ *     one tint, and 23.6 or more from every other.
  *
  * No arrangement of these hues passes. The LOGO and the site NAME carry identity; the
  * tint is decorative reinforcement used at low alpha behind readable text, so it gates
@@ -69,8 +73,8 @@ export type SiteStyle = {
    * Three different reasons it can be false, and all end in the same place -- no app
    * password is wanted, so nothing should nag a member for one:
    *
-   *   - Pokémon Center checks out as a guest. There is no login, so no code is ever sent
-   *     and an app password would do nothing.
+   *   - Pokémon Center and Menards check out as guests. There is no login, so no code is
+   *     ever sent and an app password would do nothing.
    *   - Costco is signed into BY HAND. If Costco asks for a code, the operator is sitting
    *     at the login and can read it out of the member's inbox with them -- there is no
    *     bot mid-drop that has to open the mailbox unattended, which is the only thing a
@@ -141,11 +145,11 @@ export type SiteStyle = {
   /**
    * Whether checking out here needs a retailer login at all.
    *
-   * Pokémon Center checks out as a GUEST: there is no account, so there is no password
-   * to store and asking for one invents a credential that does not exist. The account
-   * row still exists for those profiles -- it carries the email and holds the 1:1 link
-   * -- it just has a null `passwordEnc`, which the schema documents as "no login" rather
-   * than "password unknown".
+   * Pokémon Center checks out as a GUEST, and so does Menards: there is no account, so
+   * there is no password to store and asking for one invents a credential that does not
+   * exist. The account row still exists for those profiles -- it carries the email and
+   * holds the 1:1 link -- it just has a null `passwordEnc`, which the schema documents as
+   * "no login" rather than "password unknown".
    *
    * Defaults to true, matching `usesEmailCodes`: a new retailer almost certainly has
    * logins, and being asked for a password you have is a smaller failure than being
@@ -391,8 +395,8 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // app password -- Alpine reads the code Topps emails at login, so usesEmailCodes stays
     // unset. No profileSoftCap, as on Crunchyroll.
     //
-    // CrispHeinz's Makebot checks out on Topps UK and names it by its domain,
-    // "shop-uk.topps.com", which siteKey folds into this key -- see KEY_ALIASES.
+    // CrispHeinz's Makebot names the store by its domain -- "shop.topps.com" for the US
+    // store, "shop-uk.topps.com" for the UK one -- and siteKey folds both into this key.
     selfServe: true,
   },
   mattel: {
@@ -421,6 +425,26 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     botGeneratesPhone: true,
     selfServe: true,
   },
+  menards: {
+    label: "Menards",
+    // The middle stripe of the logo's own swoosh. See the header for why not its red or
+    // its yellow.
+    tint: "#F58220",
+    logo: "/menards-logo.png",
+    width: 4700,
+    height: 2000,
+    // No tile. 47.7% of the mark is below 3:1 on the dark surface and 49.3% on white: the
+    // white letters sit inside a thick black outline of their own, so either backing sinks
+    // half of it. Bare, the outline merges into the surface and the letters, which carry
+    // the name, stand out.
+    //
+    // Guest checkout, like Pokémon Center: no account, so no password and no code to read,
+    // only the email the order goes to. chess runs every Menards profile -- he is its payee,
+    // so a new member's profile goes to him (see pickDefaultAssignee).
+    usesAccounts: false,
+    usesEmailCodes: false,
+    selfServe: true,
+  },
 };
 
 /**
@@ -430,16 +454,17 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
  * Valor reports Mattel as "Mattel Creations", the store's full name, which normalizes to
  * "mattel-creations". Every lookup here keys it "mattel" -- and so does the bot's payee
  * table, so without this a Mattel checkout would chip as an unknown retailer and, worse,
- * bill as the operator's rather than chess's. Makebot reports Topps UK by its domain,
- * "shop-uk.topps.com", which normalizes to "shop-uk-topps": the same, for CrispHeinz's "topps".
+ * bill as the operator's rather than chess's.
+ *
+ * A store on a SUBDOMAIN needs no entry here: siteKey drops the subdomain itself, so
+ * Makebot's "shop.topps.com" and "shop-uk.topps.com" both reach "topps". An entry per
+ * storefront is how the UK store was aliased and the US one, which Makebot reported for the
+ * first time on 2026-11-04, was not.
  *
  * A Map rather than an object literal, so a key like "toString" can never resolve to
  * something inherited. Kept in step with the bot's port (okie-aco-mirror/src/pas/sites.js).
  */
-const KEY_ALIASES: ReadonlyMap<string, string> = new Map([
-  ["mattel-creations", "mattel"],
-  ["shop-uk-topps", "topps"],
-]);
+const KEY_ALIASES: ReadonlyMap<string, string> = new Map([["mattel-creations", "mattel"]]);
 
 /** Every retailer we can check out on, for the supported-sites section. */
 export function supportedSites(): SiteStyle[] {
@@ -590,9 +615,10 @@ export function loginOnlySiteKeys(): string[] {
 
 /**
  * Vendor bots spell the same retailer differently ("Pokemon Center US" vs
- * "Pokemon Center", "https://www.target.com" from Hidden's Site field), so match on a
- * normalized key rather than the raw string. A spelling that normalizes to some other
- * key entirely ("Mattel Creations") is mapped back onto the retailer's -- see KEY_ALIASES.
+ * "Pokemon Center", "https://www.target.com" from Hidden's Site field, "shop.topps.com"
+ * from Makebot's), so match on a normalized key rather than the raw string. A spelling
+ * that normalizes to some other key entirely ("Mattel Creations") is mapped back onto the
+ * retailer's -- see KEY_ALIASES.
  */
 export function siteKey(site: string | null | undefined): string {
   if (!site) return "unknown";
@@ -600,6 +626,10 @@ export function siteKey(site: string | null | undefined): string {
     .toLowerCase()
     .replace(/^https?:\/\//, "")
     .replace(/^www\./, "")
+    // A domain loses its subdomains: "shop.topps.com" and "shop-uk.topps.com" are both
+    // Topps. Only a domain at the very start counts, so a store name with a space in it
+    // never matches, and nothing in a path after the domain does either.
+    .replace(/^(?:[a-z0-9-]+\.)+(?=[a-z0-9-]+\.(?:com|net|org)\b)/, "")
     .replace(/\.(com|net|org)\b.*$/, "")
     // Apostrophes are dropped, not treated as separators: "Sam's Club" has to reach
     // "sams-club", and turning the apostrophe into a space yields "sam-s-club", which
@@ -621,6 +651,28 @@ export function siteStyle(site: string | null | undefined): SiteStyle {
   // Unknown retailer: neutral chip, still labelled. New sites appear without warning
   // when a vendor bot adds one, and that must never render as a broken image.
   return { key, label: site ?? "Unknown", tint: "#A6A6A6", logo: "", width: 1, height: 1 };
+}
+
+/**
+ * Rows split by retailer, in the order each retailer first appears.
+ *
+ * Grouped by siteKey, never by the raw string: one Topps drop reaches us as "Topps US" from
+ * Alpine and as "shop.topps.com" from Makebot, and grouping on the string showed it as two
+ * drops. Each group keeps the spelling its first row used, which is enough for a chip --
+ * siteStyle reads any of them the same. Rows with no site at all form one group, with a null
+ * `site` and an empty `key`.
+ */
+export function groupBySite<T extends { site: string | null }>(
+  rows: readonly T[],
+): { key: string; site: string | null; rows: T[] }[] {
+  const groups = new Map<string, { key: string; site: string | null; rows: T[] }>();
+  for (const row of rows) {
+    const key = row.site ? siteKey(row.site) : "";
+    const group = groups.get(key);
+    if (group) group.rows.push(row);
+    else groups.set(key, { key, site: row.site || null, rows: [row] });
+  }
+  return [...groups.values()];
 }
 
 /** First letter of each word, max 2 — the fallback when no logo file exists. */

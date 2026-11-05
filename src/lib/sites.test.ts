@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  groupBySite,
   isKnownSite,
   loginOnlySiteKeys,
   siteChangesApplyImmediately,
@@ -37,6 +38,9 @@ describe("siteKey", () => {
     expect(siteKey("Premium Bandai")).toBe("premium-bandai");
     expect(siteKey("Topps")).toBe("topps");
     expect(siteKey("Mattel")).toBe("mattel");
+    expect(siteKey("Menards")).toBe("menards");
+    expect(siteKey("Menard's")).toBe("menards");
+    expect(siteKey("https://www.menards.com")).toBe("menards");
   });
 
   /**
@@ -52,13 +56,26 @@ describe("siteKey", () => {
   });
 
   /**
-   * Makebot names the Topps UK store by its domain. Normalized as-is that is "shop-uk-topps",
-   * which matches no retailer -- a grey chip, and CrispHeinz's fees billed as the operator's.
+   * Makebot names each Topps store by its domain. The UK one was aliased by hand and the US
+   * one was not, so the 2026-11-04 drop's "shop.topps.com" checkouts normalized to
+   * "shop-topps": a grey "S" chip on a drop card of their own, outside CrispHeinz's runner
+   * scope, and his fees billed as the operator's. A domain now loses its subdomains instead,
+   * so every storefront reaches the retailer without an entry each.
    */
-  it("folds Makebot's domain for the Topps UK store onto Topps", () => {
-    expect(siteKey("shop-uk.topps.com")).toBe("topps");
-    expect(siteStyle("shop-uk.topps.com").label).toBe("Topps");
-    expect(isKnownSite("shop-uk.topps.com")).toBe(true);
+  it("folds a store's subdomain onto the retailer, as Makebot names Topps's stores", () => {
+    for (const domain of ["shop.topps.com", "shop-uk.topps.com", "https://shop.topps.com/"]) {
+      expect(siteKey(domain), domain).toBe("topps");
+      expect(siteStyle(domain).label, domain).toBe("Topps");
+      expect(isKnownSite(domain), domain).toBe(true);
+    }
+    expect(siteKey("shop-uk.topps.com/cart/71615158681853:2?storefront=true")).toBe("topps");
+  });
+
+  it("folds only a domain, never a store's name", () => {
+    // A name with a space in it is not a domain, wherever the dots are.
+    expect(siteKey("Some Shop.Topps.com")).toBe("some-shop-topps");
+    // A path is not a subdomain.
+    expect(siteKey("https://www.target.com/p/a.b.com")).toBe("target");
   });
 
   it("never resolves an alias lookup through the object prototype", () => {
@@ -104,6 +121,7 @@ describe("siteStyle", () => {
       "Premium Bandai",
       "Topps",
       "Mattel Creations",
+      "Menards",
     ]) {
       expect(siteStyle(name).logo, `${name} should have a logo`).not.toBe("");
     }
@@ -128,6 +146,53 @@ describe("onTint", () => {
     expect(onTint("#F4C646")).toBe("#121212"); // Premium Bandai gold
     expect(onTint("#D71921")).toBe("#FFFFFF"); // Topps red
     expect(onTint("#E3000B")).toBe("#FFFFFF"); // Mattel red
+    expect(onTint("#F58220")).toBe("#121212"); // Menards orange
+  });
+});
+
+describe("groupBySite", () => {
+  const row = (site: string | null, n: number) => ({ site, n });
+
+  /**
+   * The bug this pins: the home page split each drop by the raw site string, so the
+   * 2026-11-04 Topps drop showed as two cards -- Alpine's "Topps US" and Makebot's
+   * "shop.topps.com" -- one of them under a grey chip.
+   */
+  it("puts every spelling of one retailer in one group", () => {
+    const groups = groupBySite([
+      row("shop.topps.com", 1),
+      row("Topps US", 2),
+      row("shop-uk.topps.com", 3),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe("topps");
+    expect(groups[0].rows.map((r) => r.n)).toEqual([1, 2, 3]);
+    // The first row's spelling, which siteStyle reads as Topps like any other.
+    expect(groups[0].site).toBe("shop.topps.com");
+    expect(siteStyle(groups[0].site).label).toBe("Topps");
+  });
+
+  it("keeps different retailers apart, in the order they first appear", () => {
+    const groups = groupBySite([
+      row("Target", 1),
+      row("Walmart", 2),
+      row("https://www.target.com", 3),
+    ]);
+    expect(groups.map((g) => g.key)).toEqual(["target", "walmart"]);
+    expect(groups[0].rows.map((r) => r.n)).toEqual([1, 3]);
+  });
+
+  it("groups rows with no site together, under no retailer", () => {
+    const groups = groupBySite([row(null, 1), row("Target", 2), row("", 3)]);
+    expect(groups.map((g) => [g.key, g.site])).toEqual([
+      ["", null],
+      ["target", "Target"],
+    ]);
+    expect(groups[0].rows.map((r) => r.n)).toEqual([1, 3]);
+  });
+
+  it("returns nothing for nothing", () => {
+    expect(groupBySite([])).toEqual([]);
   });
 });
 
@@ -143,6 +208,7 @@ describe("selfServeSiteKeys", () => {
       "costco",
       "crunchyroll",
       "mattel",
+      "menards",
       "pokemon-center",
       "premium-bandai",
       "target",
@@ -169,6 +235,8 @@ describe("siteUsesAccounts", () => {
    */
   it("is false for guest checkout", () => {
     expect(siteUsesAccounts("pokemon-center")).toBe(false);
+    // Menards wants only the email the order goes to.
+    expect(siteUsesAccounts("menards")).toBe(false);
   });
 
   it("is true for retailers with real logins", () => {
@@ -201,6 +269,7 @@ describe("siteStoresPassword", () => {
 
   it("is false with no login at all", () => {
     expect(siteStoresPassword("pokemon-center")).toBe(false);
+    expect(siteStoresPassword("menards")).toBe(false);
   });
 
   it("is true wherever a bot signs in with the password", () => {
@@ -292,6 +361,7 @@ describe("usesEmailCodes", () => {
     expect(siteStyle("crunchyroll").usesEmailCodes).toBe(false);
     expect(siteStyle("premium-bandai").usesEmailCodes).toBe(false);
     expect(siteStyle("Mattel Creations").usesEmailCodes).toBe(false);
+    expect(siteStyle("menards").usesEmailCodes).toBe(false);
   });
 
   it("is unset -- and therefore true -- where a bot reads the code", () => {
@@ -320,6 +390,7 @@ describe("siteStoresCardCvv", () => {
       "premium-bandai",
       "topps",
       "mattel",
+      "menards",
     ]) {
       expect(siteStoresCardCvv(key), `${key} stores no account CVV`).toBe(false);
     }
@@ -367,6 +438,7 @@ describe("siteChangesApplyImmediately", () => {
       "premium-bandai",
       "topps",
       "mattel",
+      "menards",
     ]) {
       expect(siteChangesApplyImmediately(key), `${key} must wait`).toBe(false);
     }
@@ -480,6 +552,9 @@ describe("siteBotGeneratesPhone", () => {
       "topps",
       "walmart",
       "sams-club",
+      // Not known to be Valor, so a missing phone exports as a generated number, which
+      // works on Valor too.
+      "menards",
     ]) {
       expect(siteBotGeneratesPhone(key), `${key} needs a real number`).toBe(false);
     }

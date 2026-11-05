@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/db/client";
 import { productLabel } from "@/lib/normalize";
 import { resolveSiteLogo } from "@/lib/site-logo";
+import { groupBySite } from "@/lib/sites";
 
 /**
  * Queries backing the public, unauthenticated home page.
@@ -263,18 +264,9 @@ export async function getRecentDrops(range: StatsRange, limit = MAX_DROPS): Prom
   if (current.length) clusters.push(current);
 
   // 2. Split each cluster by retailer -- a night that hit both Target and Walmart
-  //    reads as two drops, not one mixed card.
-  const split: { site: string | null; rows: Row[] }[] = [];
-  for (const cluster of clusters) {
-    const bySite = new Map<string, Row[]>();
-    for (const row of cluster) {
-      const key = row.site ?? "";
-      const list = bySite.get(key);
-      if (list) list.push(row);
-      else bySite.set(key, [row]);
-    }
-    for (const [site, siteRows] of bySite) split.push({ site: site || null, rows: siteRows });
-  }
+  //    reads as two drops, not one mixed card. By retailer, not by spelling: two bots
+  //    naming the same store differently is still one drop. See groupBySite.
+  const split = clusters.flatMap((cluster) => groupBySite(cluster));
 
   const wanted = split
     .sort((a, b) => b.rows[0].occurredAt.getTime() - a.rows[0].occurredAt.getTime())
@@ -297,7 +289,7 @@ export async function getRecentDrops(range: StatsRange, limit = MAX_DROPS): Prom
   });
   const userByKey = new Map(profileRows.map((p) => [p.profileKey, p.discordUserId]));
 
-  return wanted.map(({ site, rows: cluster }) => {
+  return wanted.map(({ key, site, rows: cluster }) => {
     const unitsByItem = new Map<string, number>();
     const members = new Set<string>();
     let units = 0;
@@ -326,7 +318,9 @@ export async function getRecentDrops(range: StatsRange, limit = MAX_DROPS): Prom
     const startedAt = cluster[cluster.length - 1].occurredAt;
 
     return {
-      id: `${startedAt.getTime()}-${site ?? "unknown"}`,
+      // The key, not the spelling: the group's spelling is its newest row's, and can change
+      // as checkouts arrive.
+      id: `${startedAt.getTime()}-${key || "unknown"}`,
       site,
       siteLogo: resolveSiteLogo(site),
       startedAt,

@@ -6,6 +6,7 @@
  * and never someone who has since lost the role.
  */
 import { describe, expect, it } from "vitest";
+import { payeeForSite } from "@/lib/billing/payees";
 import { pickDefaultAssignee } from "@/lib/vault/assignment";
 
 const OPERATOR = "111111111111111111";
@@ -30,6 +31,17 @@ describe("pickDefaultAssignee", () => {
 
   it("gives a brand-new member to the retailer's own runner", () => {
     expect(pick({ sitePayee: CHESS })).toBe(CHESS);
+  });
+
+  /**
+   * chess runs every Menards profile. What sends a new one to him is his payee entry, and it
+   * only lands while he holds the Menards runner role -- without it, the operator gets it.
+   */
+  it("gives a new Menards member to chess, through his payee entry", () => {
+    const sitePayee = payeeForSite("Menards")?.id ?? null;
+    expect(sitePayee).toBe(CHESS);
+    expect(pick({ sitePayee })).toBe(CHESS);
+    expect(pick({ sitePayee, eligible: new Set([OPERATOR]) })).toBe(OPERATOR);
   });
 
   it("gives everything else to the operator", () => {

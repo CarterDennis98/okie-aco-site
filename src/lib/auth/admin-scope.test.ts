@@ -74,17 +74,25 @@ describe("runner roles", () => {
       "walmart",
       "topps",
       "mattel",
+      "menards",
     ]) {
       expect(runnerRoleFor(site), site).toMatch(/^\d{15,25}$/);
     }
+  });
+
+  it("finds Menards's role under the spellings a member or a bot might use", () => {
+    expect(runnerRoleFor("Menards")).toBe(RUNNER_ROLES.menards);
+    expect(runnerRoleFor("Menard's")).toBe(RUNNER_ROLES.menards);
+    expect(runnerSitesFor([RUNNER_ROLES.menards])).toEqual(["menards"]);
   });
 
   it("finds Mattel's role under the name Valor reports it by", () => {
     expect(runnerRoleFor("Mattel Creations")).toBe(RUNNER_ROLES.mattel);
   });
 
-  it("finds Topps's role under the domain Makebot reports its UK store by", () => {
+  it("finds Topps's role under the domains Makebot reports its stores by", () => {
     expect(runnerRoleFor("shop-uk.topps.com")).toBe(RUNNER_ROLES.topps);
+    expect(runnerRoleFor("shop.topps.com")).toBe(RUNNER_ROLES.topps);
   });
 
   it("names none where only full admins reach", () => {
@@ -205,6 +213,22 @@ describe("billCoversSite", () => {
     expect(billCoversSite(OPERATOR, "shop-uk.topps.com")).toBe(false);
     expect(billCoversSite(OPERATOR, "Mattel Creations")).toBe(false);
     expect(billCoversSite(OPERATOR, "topps")).toBe(false);
+  });
+
+  /**
+   * Makebot's US store, which it first reported on 2026-11-04. Read as its own retailer, its
+   * checkouts were left off CrispHeinz's bill breakdown and put on the operator's.
+   */
+  it("gives Topps's US store to CrispHeinz under Makebot's domain for it", () => {
+    expect(billCoversSite(CRISP, "shop.topps.com")).toBe(true);
+    expect(billCoversSite(OPERATOR, "shop.topps.com")).toBe(false);
+  });
+
+  it("gives Menards to chess and not to the operator", () => {
+    expect(billCoversSite(CHESS, "Menards")).toBe(true);
+    expect(billCoversSite(CHESS, "menards.com")).toBe(true);
+    expect(billCoversSite(OPERATOR, "menards")).toBe(false);
+    expect(billCoversSite(CRISP, "menards")).toBe(false);
   });
 });
 

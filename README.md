@@ -160,8 +160,8 @@ crafted header skipping middleware outright.
   those members' whole inboxes; see `mayExport` in `src/lib/auth/admin-scope.ts`.
 - **Every profile has exactly one runner.** New ones are assigned as they are saved: to the
   runner already holding that member on the retailer, else to the retailer's payee (chess on
-  Crunchyroll and Mattel, peacemaker on Premium Bandai, CrispHeinz on Topps), else to the
-  operator — the first id in
+  Crunchyroll, Mattel and Menards, peacemaker on Premium Bandai, CrispHeinz on Topps), else to
+  the operator — the first id in
   `ADMIN_DISCORD_IDS`. A full admin's profiles page and exports open on their **own**
   assignments, since an export is what gets loaded onto a bot and someone else's profiles on
   yours would run a member twice. A move writes a pair of queue entries — "take these off"

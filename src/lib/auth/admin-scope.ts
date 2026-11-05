@@ -9,9 +9,9 @@ import { siteKey, siteStyle } from "@/lib/sites";
  *                retailer, every mailbox, every charge -- and the only people who can move a
  *                profile from one runner to another.
  *   RUNNERS      anyone holding one of the Discord roles in RUNNER_ROLES: somebody who runs
- *                a retailer's bot. Chess on Crunchyroll and Mattel, peacemaker on Premium
- *                Bandai, CrispHeinz on Topps, and whoever else is given the Target role to
- *                share that one.
+ *                a retailer's bot. Chess on Crunchyroll, Mattel and Menards, peacemaker on
+ *                Premium Bandai, CrispHeinz on Topps, and whoever else is given the Target
+ *                role to share that one.
  *
  * A runner's reach is TWO facts, and it takes both. The role says which retailers they MAY
  * be given; a full admin's assignment (VaultAccount.assigneeId) says which profiles they
@@ -54,6 +54,7 @@ export const RUNNER_ROLES: Readonly<Record<string, string>> = {
   walmart: "1553942026851196959",
   topps: "1554199946633158881",
   mattel: "1554259902925373471",
+  menards: "1567931613340368937",
 };
 
 /** `process.env`, or a stand-in for it in a test. Only ADMIN_DISCORD_IDS is read. */
