@@ -144,6 +144,35 @@ describe("checkoutInput", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts a Hayha checkout exactly as the mirror builds it", () => {
+    // The shape toPayload produces from chess's Hayha on Menards. Its posts name no product
+    // -- no name, no SKU, no link -- so all three go up null and the route files the checkout
+    // under "(no product listed)", as /pas run bills it. Its thumbnail is Hayha's own logo,
+    // which the parser drops, and it sets no embed timestamp, so occurredAt is the post's.
+    const result = checkoutBatch.safeParse({
+      checkouts: [
+        {
+          sourceBot: "hayha",
+          discordMessageId: "1568018653184655522",
+          discordChannelId: "1568017350265933994",
+          orderId: "USM00000001",
+          occurredAt: "2026-11-05T21:46:19.297Z",
+          site: "Menards",
+          productRaw: null,
+          sku: null,
+          productUrl: null,
+          imageUrl: null,
+          profileRaw: "carter - 3",
+          quantity: 10,
+          quantityAssumed: false,
+          flags: [],
+          rawEmbed: { title: "Successful Checkout!" },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("accepts a quantity of zero rather than stalling the outbox", () => {
     // Alpine sent "Quantity: 0" on 9 of 32 real Topps successes on 2026-10-16. The rejection
     // held every checkout behind them, from every vendor, for four days. The route reads

@@ -326,17 +326,25 @@ describe("sanitizeEmbed", () => {
   });
 
   it.runIf(embeds.length > 0)("keeps the product and order fields on every real embed", () => {
-    for (const { vendor, kind, embed } of embeds) {
-      const { embed: safe } = sanitizeEmbed(embed);
-      const names = ((safe?.fields as { name: string }[]) ?? []).map((f) =>
+    const fieldNames = (fields: unknown) =>
+      ((fields as { name: string }[] | undefined) ?? []).map((f) =>
         f.name.replace(/\*\*/g, "").replace(/:\s*$/, "").toLowerCase(),
       );
-      const hasIdentity =
-        names.some((n) => n.startsWith("order")) ||
-        names.includes("product") ||
-        names.includes("item") ||
-        names.includes("id");
-      expect(hasIdentity, `${vendor}/${kind} kept none of order/product/item/id`).toBe(true);
+    const hasIdentity = (names: string[]) =>
+      names.some((n) => n.startsWith("order")) ||
+      names.includes("product") ||
+      names.includes("item") ||
+      names.includes("id");
+
+    for (const { vendor, kind, embed } of embeds) {
+      // Only where the vendor sent one. A Hayha decline names no product and has no order
+      // yet, so there is nothing to keep.
+      if (!hasIdentity(fieldNames(embed.fields))) continue;
+      const { embed: safe } = sanitizeEmbed(embed);
+      expect(
+        hasIdentity(fieldNames(safe?.fields)),
+        `${vendor}/${kind} kept none of order/product/item/id`,
+      ).toBe(true);
     }
   });
 });

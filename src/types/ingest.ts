@@ -34,6 +34,7 @@ export const checkoutInput = z
       "alpine",
       "sniped",
       "makebot",
+      "hayha",
     ]),
     discordMessageId: snowflake,
     discordChannelId: snowflake,
