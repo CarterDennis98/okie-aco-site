@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ShikariExport } from "@/components/export/shikari-export";
+import { ValorExport } from "@/components/export/valor-export";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getCatalog } from "@/db/queries/products";
 import { SHIKARI_SITE, getShikariInstances, getShikariMembers } from "@/db/queries/shikari";
+import { getValorOverview } from "@/db/queries/valor";
 import { operatorId } from "@/lib/auth/admin-scope";
 import { requireAdmin } from "@/lib/auth/guard";
+import { MISC_LINE } from "@/lib/products/misc-line";
 import { siteStyle } from "@/lib/sites";
 
 /**
@@ -18,6 +21,10 @@ import { siteStyle } from "@/lib/sites";
  * Shikari is the first: each instance's own backup goes in, the vault's profiles, logins,
  * mailboxes and drop picks are written into it in place, and the same file comes back out
  * after a review. The backup never leaves the browser -- see lib/shikari/sqlite.ts.
+ *
+ * Valor is the second, the same way: its two instances' backups take the Pokémon Center
+ * profiles, split between them, and the second takes the Target Miscellaneous line's picks,
+ * which Shikari no longer runs -- see lib/valor/build.ts.
  */
 export const dynamic = "force-dynamic";
 
@@ -27,10 +34,11 @@ export default async function ExportPage() {
   const viewer = await requireAdmin();
   if (viewer.discordUserId !== operatorId()) notFound();
 
-  const [members, saved, catalog] = await Promise.all([
+  const [members, saved, catalog, valor] = await Promise.all([
     getShikariMembers(viewer.discordUserId),
     getShikariInstances(),
     getCatalog(SHIKARI_SITE),
+    getValorOverview(viewer.discordUserId),
   ]);
 
   return (
@@ -88,6 +96,27 @@ export default async function ExportPage() {
             cap={siteStyle(SHIKARI_SITE).profileSoftCap ?? null}
             productCount={catalog.length}
           />
+        </section>
+
+        <section className="mt-12">
+          <h2 className="mb-1 flex items-center gap-2.5 text-xl font-bold tracking-tight">
+            <span aria-hidden className="h-5 w-1 rounded-full bg-[var(--color-brand)]" />
+            Valor
+          </h2>
+          <p className="mb-5 max-w-3xl text-sm text-[var(--color-muted)]">
+            Add each Valor instance&rsquo;s backup (the setup <code>.json</code>). It&rsquo;s read
+            and rebuilt here in your browser — the file is never uploaded. Pokémon Center profiles
+            come from the vault, and the second instance&rsquo;s Target tasks from the {MISC_LINE}{" "}
+            line on{" "}
+            <Link
+              href="/dashboard/products"
+              className="underline underline-offset-2 hover:text-[var(--color-fg)]"
+            >
+              {siteStyle(SHIKARI_SITE).label} Products
+            </Link>
+            , which Shikari leaves out.
+          </p>
+          <ValorExport overview={valor} />
         </section>
       </main>
 

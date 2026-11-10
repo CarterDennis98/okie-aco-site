@@ -4,7 +4,6 @@ import { checkShikariSchema } from "@/lib/shikari/schema";
 import {
   currentTaskSettings,
   groupsToClear,
-  ispAllGroup,
   readSnapshot,
   summarize,
   userOf,
@@ -27,29 +26,6 @@ describe("userOf", () => {
     ["ichigosensei", "ichigosensei"],
   ])("%s belongs to %s", (name, user) => {
     expect(userOf(name)).toBe(user);
-  });
-});
-
-describe("ispAllGroup", () => {
-  const group = (name: string, proxies = 1) => ({ name, proxies: Array(proxies).fill(null) });
-
-  it.each(["ISP - All", "ISP All", "isp-all", "All ISP", "ISPAll", "ISPs - All"])(
-    "finds %s",
-    (name) => {
-      expect(ispAllGroup([group("Checkout"), group(name)])?.name).toBe(name);
-    },
-  );
-
-  it.each(["ISP Harvest 1", "ISP Small", "Resi All", "Checkout", "localhost"])(
-    "doesn't take %s for it",
-    (name) => {
-      expect(ispAllGroup([group(name)])).toBeUndefined();
-    },
-  );
-
-  it("prefers one with proxies in it, then Shikari's order", () => {
-    expect(ispAllGroup([group("ISP All", 0), group("ISP - All", 3)])?.name).toBe("ISP - All");
-    expect(ispAllGroup([group("ISP All", 0)])?.name).toBe("ISP All");
   });
 });
 
@@ -113,7 +89,7 @@ describe("reading a backup", () => {
     ]);
   });
 
-  it("never takes the Miscellaneous line's group for the one rebuilt as Target", async () => {
+  it("never takes an earlier export's Miscellaneous group for the one rebuilt as Target", async () => {
     const { db } = await mainInstanceBackup();
     // More of the Target profiles' checkout tasks than any other group holds.
     db.run(
@@ -128,8 +104,6 @@ describe("reading a backup", () => {
     expect(currentTaskSettings(readSnapshot(db))).toEqual({
       checkoutQty: 2,
       checkoutProxyGroupId: 1,
-      // "ISP - All", wherever the Miscellaneous line's checkout tasks are now.
-      miscCheckoutProxyGroupId: 0,
       watchdogProxyGroupId: 0,
       // Not the 3333/4444/5555 the fixture still has: the third comes out on export.
       watchdogIntervals: [3333, 4444],
@@ -149,15 +123,6 @@ describe("reading a backup", () => {
     // Members who picked 1 are most of the backup now: still not the standard.
     db.run("UPDATE target_product SET qty = 1 WHERE qty IS NOT NULL");
     expect(currentTaskSettings(readSnapshot(db)).checkoutQty).toBe(STANDARD_QTY);
-  });
-
-  it("puts the Miscellaneous line's checkout tasks on the checkout group with no ISP - All", async () => {
-    const { db } = await fixtureBackup();
-    db.run("UPDATE proxy_group SET name = 'ISP - Monitor' WHERE id = 0");
-    expect(currentTaskSettings(readSnapshot(db))).toMatchObject({
-      checkoutProxyGroupId: 1,
-      miscCheckoutProxyGroupId: 1,
-    });
   });
 
   it("knows the Shikari version, and flags one newer than it was built against", async () => {

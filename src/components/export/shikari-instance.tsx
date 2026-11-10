@@ -2,12 +2,12 @@
 
 import { useId, useState } from "react";
 import type { ShikariMember } from "@/db/queries/shikari";
+import { MISC_LINE } from "@/lib/products/misc-line";
 import { MAX_QTY, STANDARD_QTY, runnableQty } from "@/lib/products/qty";
 import { scopesOverlap, type GroupChoice, type ShikariInstanceConfig } from "@/lib/shikari/config";
 import type { ParsedProxyList } from "@/lib/shikari/proxies";
 import {
   MISC_GROUP,
-  MISC_LINE,
   TARGET_GROUP,
   defaultGroupChoice,
   groupChoice,
@@ -66,7 +66,7 @@ const SECTIONS: { key: keyof Sections; label: string; hint: string }[] = [
   {
     key: "tasks",
     label: "Target tasks",
-    hint: `Watchdogs and checkout tasks, from Target Products. ${MISC_LINE} picks get a group of their own, “${MISC_GROUP}”.`,
+    hint: `Watchdogs and checkout tasks, from Target Products. ${MISC_LINE} picks run on Valor, so they're left out, and “${MISC_GROUP}” is left as it is.`,
   },
   {
     key: "wipes",
@@ -778,11 +778,6 @@ function TaskSettingsForm({
           settings.checkoutProxyGroupId,
           (id) => onChange({ ...settings, checkoutProxyGroupId: id }),
           "Checkout proxy group",
-        )}
-        {groupSelect(
-          settings.miscCheckoutProxyGroupId,
-          (id) => onChange({ ...settings, miscCheckoutProxyGroupId: id }),
-          `Checkout proxy group, "${MISC_GROUP}"`,
         )}
         {groupSelect(
           settings.watchdogProxyGroupId,

@@ -166,11 +166,13 @@ export const UPDATES_GROUP = "Target - Profile Updates";
 export const PAUSED_PROFILE_GROUP = "Target - Paused";
 
 /**
- * The product line on Target Products whose picks run from a task group of their own,
- * MISC_GROUP, apart from everything else in "Target": its drops come at their own times, so
- * its tasks are started and stopped on their own. Found by name, case aside.
+ * The task group earlier exports ran the Miscellaneous line from, before the line moved to
+ * Valor (see MISC_LINE). Never built, changed, emptied or taken out now: it is the
+ * operator's to clear by hand, and until then nothing in it is the export's -- not its
+ * watchdogs, and not its checkout tasks, which don't count as a profile's Target task. The
+ * one exception is a task whose profile the export deletes: a task can't outlive its
+ * profile, so it goes with it, and the review says how many did.
  */
-export const MISC_LINE = "Miscellaneous";
 export const MISC_GROUP = "Target - Miscellaneous";
 
 /** A group name with case, spaces and punctuation ignored: "Target - Paused" -> "targetpaused". */
@@ -205,7 +207,7 @@ export type TargetGroups = {
   /**
    * The task group the export rebuilds as "Target": the one already called that, or failing
    * that the one holding most of the Target profiles' checkout tasks -- "Target - All
-   * Products" on the main instance -- never MISC_GROUP, which is a group of its own. Null
+   * Products" on the main instance -- never MISC_GROUP, which the export leaves alone. Null
    * when there are no such tasks to go by.
    */
   tasks: STaskGroup | null;
@@ -622,28 +624,10 @@ export function summarize(snapshot: ShikariSnapshot): BackupSummary {
 export const WATCHDOG_INTERVALS = [3333, 4444];
 
 /**
- * The instance's "ISP - All" proxy group -- every ISP proxy it has, in one list -- which the
- * Miscellaneous line's checkout tasks run on. Matched on its words, however the instance
- * spells it ("ISP - All", "ISP All", "All ISP", "ISPAll"), so "ISP Harvest 1" and "ISP Small"
- * aren't it. Of two, the first in Shikari's order that has proxies; none, undefined.
- */
-export function ispAllGroup<T extends { name: string; proxies: unknown[] }>(
-  groups: T[],
-): T | undefined {
-  const matches = groups.filter((g) => {
-    const key = groupKey(g.name);
-    if (key === "ispall" || key === "allisp") return true;
-    const words = lower(g.name).split(/[^a-z0-9]+/);
-    return (words.includes("isp") || words.includes("isps")) && words.includes("all");
-  });
-  return matches.find((g) => g.proxies.length > 0) ?? matches[0];
-}
-
-/**
  * The task settings the page pre-fills, so the operator only ever edits what they mean to
- * change: proxy groups as the backup has them now -- what "leave it as it is" means -- with
- * the Miscellaneous line's checkout tasks on "ISP - All"; the site's standard qty; and the
- * standard watchdog layout, which an export brings every backup to.
+ * change: proxy groups as the backup has them now -- what "leave it as it is" means -- the
+ * site's standard qty, and the standard watchdog layout, which an export brings every backup
+ * to.
  *
  * The standard qty is the site's, not read from the backup: once members pick their own,
  * the qty most of a backup's products run at is theirs, and taking it for the standard would
@@ -661,12 +645,9 @@ export function currentTaskSettings(snapshot: ShikariSnapshot): TaskSettings {
     const id = snapshot.browsers.get(task.browserId)?.proxyGroupId ?? null;
     return id !== null && live.has(id) ? id : null;
   };
-  const checkoutProxyGroupId = mostCommon(checkouts.map(browserGroup).filter((id) => id !== null));
-
   return {
     checkoutQty: STANDARD_QTY,
-    checkoutProxyGroupId,
-    miscCheckoutProxyGroupId: ispAllGroup(snapshot.proxyGroups)?.id ?? checkoutProxyGroupId,
+    checkoutProxyGroupId: mostCommon(checkouts.map(browserGroup).filter((id) => id !== null)),
     watchdogProxyGroupId: mostCommon(watchdogs.map(browserGroup).filter((id) => id !== null)),
     watchdogIntervals: [...WATCHDOG_INTERVALS],
     skusPerWatchdog: 30,

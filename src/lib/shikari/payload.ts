@@ -5,8 +5,8 @@ import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { getSetsInLine, getSkusForProfiles } from "@/db/queries/products";
 import { SHIKARI_SITE } from "@/db/queries/shikari";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
+import { MISC_LINE } from "@/lib/products/misc-line";
 import type { ExportRequest } from "@/lib/shikari/config";
-import { MISC_LINE } from "@/lib/shikari/snapshot";
 import type {
   AbsentReason,
   DesiredInstance,
@@ -36,6 +36,10 @@ import { normalizePhone } from "@/lib/vault/profile-input";
  * Refused outright, rather than half-built, when the request would put one profile on two
  * instances: that is a member checked out twice, the failure every export split exists to
  * prevent.
+ *
+ * The Miscellaneous line's products are never sent: they run on Valor (see MISC_LINE), and a
+ * product on both bots is the same double checkout. A profile that picked only from the line
+ * goes out picking nothing.
  */
 
 export type PayloadResult =
@@ -160,9 +164,11 @@ export async function buildShikariPayload(
         account: { select: { email: true, assigneeId: true } },
       },
     }),
-    // The Miscellaneous line's sets: their products run from a task group of their own.
+    // The Miscellaneous line's sets: their products run on Valor, so none of them go here.
     getSetsInLine(SHIKARI_SITE, MISC_LINE),
   ]);
+  const shikariCatalog = catalog.filter((p) => !miscSets.has(p.setName));
+  const runsHere = new Set(shikariCatalog.map((p) => p.sku));
 
   const pendingFields = new Map<string, Set<string>>();
   for (const change of pending) {
@@ -257,17 +263,18 @@ export async function buildShikariPayload(
         ? decrypt(row.account.passwordEnc, { entity: "vault_account", field: "password" })
         : null,
       mailbox: box ? (mailboxByEmail.get(box.toLowerCase()) ?? null) : null,
-      skus: skus.get(row.id) ?? [],
-      qty: qty.get(row.id) ?? {},
+      skus: (skus.get(row.id) ?? []).filter((sku) => runsHere.has(sku)),
+      qty: Object.fromEntries(
+        Object.entries(qty.get(row.id) ?? {}).filter(([sku]) => runsHere.has(sku)),
+      ),
       pending: fields ? { fields: [...fields] } : null,
     };
   };
 
-  const products = catalog.map((p) => ({
+  const products = shikariCatalog.map((p) => ({
     sku: p.sku,
     name: p.name,
     setName: p.setName,
-    misc: miscSets.has(p.setName),
     // The builder's to apply, against the standard qty the operator types in the browser.
     maxQty: p.maxQty,
   }));

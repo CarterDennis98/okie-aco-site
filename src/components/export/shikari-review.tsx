@@ -3,8 +3,8 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { ChangeSummary, CopyButton } from "@/components/export/shikari-summary";
+import { MISC_LINE } from "@/lib/products/misc-line";
 import type { TableDiff } from "@/lib/shikari/diff";
-import { MISC_LINE } from "@/lib/shikari/snapshot";
 import { summaryText } from "@/lib/shikari/summary";
 import type {
   BuildReport,
@@ -276,10 +276,12 @@ function InstanceReview({
               Task group &ldquo;{r.taskGroup.name}&rdquo; is new in this backup.
             </p>
           )}
-          {r?.misc?.created && (
+          {r?.misc && (
             <p className="mt-0.5 text-xs text-[var(--color-fg)]">
-              Task group &ldquo;{r.misc.name}&rdquo; is new in this backup, for the {MISC_LINE}{" "}
-              line&rsquo;s picks.
+              Task group &ldquo;{r.misc.name}&rdquo; is left as it is ({n(r.misc.tasks, "task")}
+              ): the {MISC_LINE} line runs on Valor now, so clear it out in Shikari by hand.
+              {r.misc.removed > 0 &&
+                ` ${n(r.misc.removed, "task")} in it went with profiles that came out.`}
             </p>
           )}
         </div>
@@ -431,21 +433,6 @@ function ReviewDetails({ built, report: r }: { built: BuiltInstance; report: Bui
         />
       </CheckoutBlock>
       <WatchdogBlock title="Watchdogs" watchdogs={r.watchdogs} names={built.productNames} />
-
-      {r.misc && (
-        <>
-          <CheckoutBlock
-            title={`${MISC_LINE} checkout tasks`}
-            checkout={r.misc.checkout}
-            name={name}
-          />
-          <WatchdogBlock
-            title={`${MISC_LINE} watchdogs`}
-            watchdogs={r.misc.watchdogs}
-            names={built.productNames}
-          />
-        </>
-      )}
 
       <Block
         title="Profile updates"

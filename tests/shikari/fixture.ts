@@ -16,9 +16,8 @@
  *                           the 5555 one was dropped
  *   Task group "Target Wipe"  one old Wipe Account task, alice - 1's: what wipes are copied
  *                           from, and what a clean export clears
- *   Proxy groups            "ISP - All" (4) for watchdogs, and the Miscellaneous line's
- *                           checkout tasks once there are any; "Resi" (6) for checkouts;
- *                           every task browser pinned to one of them
+ *   Proxy groups            "ISP - All" (4) for watchdogs; "Resi" (6) for checkouts; every
+ *                           task browser pinned to one of them
  *   Accounts                one per profile, alice's signed in with cookie jars, plus an
  *                           old account with no profile
  *   Everything else         a licence row, notification settings, a harvester -- the
@@ -51,7 +50,10 @@ const SCHEMA = readFileSync(fileURLToPath(new URL("./schema.sql", import.meta.ur
 
 export const SKU_A = "90000001";
 export const SKU_B = "90000002";
-/** In the Miscellaneous line, so run from "Target - Miscellaneous". Nobody picks it by default. */
+/**
+ * In the Miscellaneous line, which runs on Valor: the payload never sends it to Shikari. Only
+ * an earlier export's "Target - Miscellaneous" group holds it -- see withMiscGroup.
+ */
 export const SKU_M = "90000003";
 export const T0 = "2026-09-25 03:03:10.934300";
 
@@ -152,9 +154,8 @@ export function desiredInstance(
     profiles,
     known,
     products: [
-      { sku: SKU_A, name: "Product A", setName: "Set One", misc: false, maxQty: null },
-      { sku: SKU_B, name: "Product B", setName: "Set One", misc: false, maxQty: null },
-      { sku: SKU_M, name: "Product M", setName: "Odds and Ends", misc: true, maxQty: null },
+      { sku: SKU_A, name: "Product A", setName: "Set One", maxQty: null },
+      { sku: SKU_B, name: "Product B", setName: "Set One", maxQty: null },
     ],
   };
 }
@@ -606,7 +607,6 @@ export async function mainInstanceBackup(): Promise<{ db: ShikariDb; bytes: Uint
 export const TASKS: TaskSettings = {
   checkoutQty: 2,
   checkoutProxyGroupId: 1,
-  miscCheckoutProxyGroupId: 0,
   watchdogProxyGroupId: 0,
   watchdogIntervals: [3333, 4444],
   skusPerWatchdog: 30,
@@ -652,6 +652,106 @@ export function legacy(
     db.run("DROP INDEX ix_task_task_group_id_order_index");
     db.run("ALTER TABLE task DROP COLUMN order_index");
     db.run("UPDATE alembic_version SET version_num = 'd4e8b21c7f05'");
+    return { db, bytes: db.bytes() };
+  };
+}
+
+/**
+ * A fixture with the "Target - Miscellaneous" group an earlier export built for the
+ * Miscellaneous line, before the line moved to Valor -- laid out as that export left it: a
+ * remote watchdog, a watchdog on Product M at each interval, and checkout tasks for alice - 1
+ * (reading her mailbox) and bob - 1 on Product M, their browsers pinned to "ISP - All".
+ */
+export function withMiscGroup(
+  fixture: () => Promise<{ db: ShikariDb }>,
+): () => Promise<{ db: ShikariDb; bytes: Uint8Array }> {
+  return async () => {
+    const { db } = await fixture();
+    const group = db.insert(
+      `INSERT INTO task_group (created_at, name, color, order_index)
+       VALUES (?, 'Target - Miscellaneous', '#039BE5', (SELECT MAX(order_index) + 1 FROM task_group))`,
+      [T0],
+    );
+    const browser = (proxyGroup: number | null, proxy: number | null, fingerprint: string) => {
+      const jar = db.insert("INSERT INTO cookie_jar (created_at, cookies) VALUES (?, '[]')", [T0]);
+      return db.insert(
+        "INSERT INTO browser (created_at, proxy_group_id, proxy_id, fingerprint_name, cookie_jar_id) VALUES (?, ?, ?, ?, ?)",
+        [T0, proxyGroup, proxy, fingerprint, jar],
+      );
+    };
+    let place = 0;
+    const task = (t: {
+      type: string;
+      flow: string;
+      kind: string;
+      profile: number | null;
+      browser: number;
+      imap?: number | null;
+      options?: string;
+      generic?: string;
+    }) => {
+      place += 1;
+      return db.insert(
+        `INSERT INTO task (created_at, task_group_id, running, preloaded, type, website_id, profile_id,
+                           generic_data, browser_id, imap_account_id, flow_key, options, state,
+                           target_kind, order_index)
+         VALUES (?, ?, 0, 0, ?, 5, ?, ?, ?, ?, ?, ?, '{}', ?, ?)`,
+        [
+          T0,
+          group,
+          t.type,
+          t.profile,
+          t.generic ?? "{}",
+          t.browser,
+          t.imap ?? null,
+          t.flow,
+          t.options ?? "{}",
+          t.kind,
+          place,
+        ],
+      );
+    };
+    const watch = (taskId: number, qty: number | null) =>
+      db.run(
+        "INSERT INTO target_product (created_at, task_id, target_method, target_data, qty, miscellaneous_data) VALUES (?, ?, 'tcins', ?, ?, '{}')",
+        [T0, taskId, SKU_M, qty],
+      );
+
+    task({
+      type: "Watchdog",
+      flow: "watchdog",
+      kind: "remote",
+      profile: null,
+      browser: browser(null, null, "macOS-Chrome-w0.json"),
+      generic: WATCHDOG_DATA("misc-remote-device"),
+    });
+    for (const interval of [3333, 4444]) {
+      const id = task({
+        type: "Watchdog",
+        flow: "watchdog",
+        kind: "tcins",
+        profile: null,
+        browser: browser(0, 1, "macOS-Chrome-w1.json"),
+        generic: WATCHDOG_DATA(`misc-device-${interval}`),
+        options: `{"check_interval": ${interval}}`,
+      });
+      watch(id, null);
+    }
+    for (const [profile, imap, proxy] of [
+      [1, 1, 2],
+      [3, null, 3],
+    ] as const) {
+      const id = task({
+        type: "Checkout",
+        flow: "checkout",
+        kind: "tcins",
+        profile,
+        browser: browser(0, proxy, "macOS-Chrome-c1.json"),
+        imap,
+        options: CHECKOUT_OPTIONS,
+      });
+      watch(id, 2);
+    }
     return { db, bytes: db.bytes() };
   };
 }

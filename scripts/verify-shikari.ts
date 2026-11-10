@@ -17,11 +17,15 @@
  *      uses, old wipes, emptied groups. Nothing outside the Target side may change at all.
  *
  *   2. A DROP. The same state with the edits a real export makes -- a changed card, a new
- *      member, a profile moved to another instance, one with no products, 35 products, picks
- *      from the Miscellaneous line, qty picks, a swapped proxy list -- checked for what the
- *      summary must say, every product's qty and price limits, the Miscellaneous line's proxy
- *      group, the references SQLite enforces, its own integrity check, and the tables no
- *      export may touch.
+ *      member, a profile moved to another instance, one with no products, 35 products, qty
+ *      picks, a swapped proxy list -- checked for what the summary must say, every product's
+ *      qty and price limits, the references SQLite enforces, its own integrity check, and the
+ *      tables no export may touch.
+ *
+ *   Every pass also checks "Target - Miscellaneous", where earlier exports ran the
+ *   Miscellaneous line before it moved to Valor: left exactly as it was, but for the tasks of
+ *   profiles that came out. The line's products never reach the builder (the payload drops
+ *   them), so a desired state read back from a backup leaves them out too.
  *
  *   3. AGAIN. The drop's output exported once more with the same state: a clean backup must
  *      stay as it is -- nothing more to remove, nothing activated or deactivated.
@@ -36,7 +40,6 @@ import { buildInstance } from "../src/lib/shikari/build";
 import { diffTables, forbiddenChanges, tableHashes, type TableDiff } from "../src/lib/shikari/diff";
 import {
   MISC_GROUP,
-  MISC_LINE,
   PAUSED_PROFILE_GROUP,
   TARGET_GROUP,
   UPDATES_GROUP,
@@ -87,23 +90,21 @@ function loginFor(s: ShikariSnapshot, email: string) {
 
 /**
  * The desired state the backup already describes, for the profiles the export may touch: a
- * product's qty is a pick of the member's wherever it isn't the standard qty.
+ * product's qty is a pick of the member's wherever it isn't the standard qty. What a profile
+ * runs from MISC_GROUP is the Miscellaneous line's, which the payload never sends, so it is
+ * left out here too.
  */
 function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInstance {
   const groups = targetGroups(s);
   const misc = findGroup(s.taskGroups, MISC_GROUP);
-  // Each profile's checkout tasks, oldest first: one in "Target", one in MISC_GROUP.
+  // Each profile's checkout tasks, oldest first, wherever they are -- MISC_GROUP's too.
   const tasks = new Map<number, STask[]>();
   for (const t of s.tasks) {
     if (!isCheckout(t) || t.websiteId !== s.targetWebsiteId || t.profileId === null) continue;
     tasks.set(t.profileId, [...(tasks.get(t.profileId) ?? []), t]);
   }
-  // What the backup runs from MISC_GROUP is what the line holds.
   const inMisc = new Set(
     s.tasks.filter((t) => isCheckout(t) && t.groupId === misc?.id).map((t) => t.id),
-  );
-  const miscSkus = new Set(
-    s.products.filter((x) => x.taskId !== null && inMisc.has(x.taskId)).map((x) => x.data),
   );
   const imap = new Map(s.imap.map((m) => [m.id, m]));
   const toAddress = (id: number | null): ShikariAddress | null => {
@@ -135,8 +136,10 @@ function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInst
   const profiles: DesiredProfile[] = [];
   for (const p of [...byEmail.values()].sort((x, y) => x.id - y.id)) {
     const card = s.cards.get(p.cardId);
-    const own = tasks.get(p.id) ?? [];
-    const task = own.filter((t) => !inMisc.has(t.id)).at(-1) ?? own.at(-1);
+    const all = tasks.get(p.id) ?? [];
+    // The tasks the export answers for: none of MISC_GROUP's.
+    const own = all.filter((t) => !inMisc.has(t.id));
+    const task = own.at(-1) ?? all.at(-1);
     const box = task?.imapId != null ? imap.get(task.imapId) : undefined;
     // Members are told apart by the name their profiles start with ("shockereyes - 6").
     const member = p.name.replace(/\s*-\s*\d+$/, "");
@@ -192,13 +195,7 @@ function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInst
         why: wanted.has(`backup-${p.id}`) ? null : ("inactive" as const),
       })),
     // A backup records no limits: every product reads as having none, so its standard holds.
-    products: skus.map((sku) => ({
-      sku,
-      name: sku,
-      setName: "",
-      misc: miscSkus.has(sku),
-      maxQty: null,
-    })),
+    products: skus.map((sku) => ({ sku, name: sku, setName: "", maxQty: null })),
   };
 }
 
@@ -285,11 +282,9 @@ function describe(report: BuildReport) {
       `wipes +${report.wipes.added.length} -${report.wipes.removed} (template: ${report.wipes.template})`,
   );
   if (report.misc) {
-    const { checkout, watchdogs } = report.misc;
     console.log(
-      `  "${report.misc.name}"${report.misc.created ? " (created)" : ""}: ` +
-        `checkout +${checkout.added.length} ~${checkout.changed.length} -${checkout.removed.length} =${checkout.unchanged}; ` +
-        `watchdogs ${watchdogs.before.length} -> ${watchdogs.after.length}, remote ${watchdogs.remote.after}`,
+      `  "${report.misc.name}": left as it is, ${report.misc.tasks} tasks ` +
+        `(${report.misc.removed} went with profiles that came out)`,
     );
   }
   for (const warning of report.warnings) console.log(`  warning: ${warning}`);
@@ -307,23 +302,20 @@ function checkFile(
   check(forbiddenChanges(built.diff).length === 0, "untouchable tables untouched");
 
   // Every product on a checkout task of ours at the qty picked for it, or the standard one,
-  // with no price limits; the Miscellaneous line's tasks on their own proxy group.
+  // with no price limits. MISC_GROUP's tasks aren't ours: they're checked as left alone below.
   const ourRows = db.all<{
     email: string;
     sku: string;
     qty: number | null;
     min_price: number | null;
     max_price: number | null;
-    misc: number;
-    proxy_group_id: number | null;
   }>(
-    `SELECT p.email, tp.target_data AS sku, tp.qty, tp.min_price, tp.max_price,
-            g.name = ? AS misc, b.proxy_group_id
+    `SELECT p.email, tp.target_data AS sku, tp.qty, tp.min_price, tp.max_price
        FROM target_product tp JOIN task t ON t.id = tp.task_id
-       JOIN profile p ON p.id = t.profile_id JOIN browser b ON b.id = t.browser_id
-       JOIN task_group g ON g.id = t.task_group_id
-      WHERE lower(t.flow_key) = 'checkout' AND t.website_id = ?`,
-    [MISC_GROUP, readSnapshot(db).targetWebsiteId],
+       JOIN profile p ON p.id = t.profile_id
+       LEFT JOIN task_group g ON g.id = t.task_group_id
+      WHERE lower(t.flow_key) = 'checkout' AND t.website_id = ? AND IFNULL(g.name, '') <> ?`,
+    [readSnapshot(db).targetWebsiteId, MISC_GROUP],
   );
   const byEmail = new Map(desired.profiles.map((d) => [lower(d.email), d]));
   const limits = new Map(desired.products.map((p) => [p.sku, p.maxQty]));
@@ -342,12 +334,6 @@ function checkFile(
   check(
     products.every((r) => r.min_price === null && r.max_price === null),
     "no price limits on a product of ours",
-  );
-  const miscRows = products.filter((r) => r.misc === 1);
-  check(
-    settings.miscCheckoutProxyGroupId === null ||
-      miscRows.every((r) => r.proxy_group_id === settings.miscCheckoutProxyGroupId),
-    `"${MISC_GROUP}" checkout tasks on proxy group ${settings.miscCheckoutProxyGroupId} (${new Set(miscRows.map((r) => r.email)).size} tasks)`,
   );
 
   // Clean: "Target" holds this instance's profiles and nothing else, and no paused group.
@@ -417,41 +403,61 @@ function checkFile(
   );
 
   check(
-    [...built.report.watchdogs.after, ...(built.report.misc?.watchdogs.after ?? [])].every(
-      (w) => w.skus.length <= 30,
-    ),
+    built.report.watchdogs.after.every((w) => w.skus.length <= 30),
     "no watchdog over 30 products",
   );
 
-  // The Miscellaneous line's picks run from its own group, and nothing else runs there.
-  const miscSkus = new Set(desired.products.filter((p) => p.misc).map((p) => p.sku));
+  // MISC_GROUP exactly as it was -- every task, its products and its browser -- but for the
+  // tasks of profiles that came out, which go with their profile; and never made by the export.
   const miscGroup = findGroup(s.taskGroups, MISC_GROUP);
-  const skusOf = (taskId: number) =>
-    s.products.filter((x) => x.taskId === taskId).map((x) => x.data);
-  const checkouts = s.tasks.filter(
-    (t) =>
-      isCheckout(t) &&
-      t.websiteId === s.targetWebsiteId &&
-      t.profileId !== null &&
-      ids.has(t.profileId),
-  );
+  const hadMisc = findGroup(readSnapshot(original.db).taskGroups, MISC_GROUP);
+  const miscTasks = (from: ShikariDb, groupId: number | undefined) =>
+    new Map(
+      from
+        .all<{ id: number; profile_id: number | null }>(
+          "SELECT id, profile_id FROM task WHERE task_group_id = ? ORDER BY id",
+          [groupId ?? -1],
+        )
+        .map((t) => [
+          Number(t.id),
+          {
+            profile: t.profile_id === null ? null : Number(t.profile_id),
+            row: rows(
+              from,
+              `SELECT t.*, b.proxy_group_id, b.proxy_id, b.fingerprint_name, b.cookie_jar_id
+                 FROM task t JOIN browser b ON b.id = t.browser_id WHERE t.id = ?`,
+              [t.id],
+            ),
+            products: rows(from, "SELECT * FROM target_product WHERE task_id = ? ORDER BY id", [
+              t.id,
+            ]),
+          },
+        ]),
+    );
+  const miscBefore = miscTasks(original.db, hadMisc?.id);
+  const miscAfter = miscTasks(db, miscGroup?.id);
+  const profilesLeft = new Set(s.profiles.map((p) => p.id));
   check(
-    checkouts.every((t) =>
-      skusOf(t.id).every((sku) => miscSkus.has(sku) === (t.groupId === miscGroup?.id)),
-    ),
-    `the ${MISC_LINE} line's picks in "${MISC_GROUP}", and only there ` +
-      `(${checkouts.filter((t) => t.groupId === miscGroup?.id).length} tasks)`,
+    Boolean(hadMisc) === Boolean(miscGroup) &&
+      [...miscAfter].every(([id, t]) => {
+        const was = miscBefore.get(id);
+        return was !== undefined && was.row === t.row && was.products === t.products;
+      }) &&
+      [...miscBefore].every(
+        ([id, t]) => miscAfter.has(id) || (t.profile !== null && !profilesLeft.has(t.profile)),
+      ),
+    hadMisc
+      ? `"${MISC_GROUP}" left as it was (${miscAfter.size} of ${miscBefore.size} tasks; the rest went with their profiles)`
+      : `no "${MISC_GROUP}" made`,
   );
 
-  // In order, as Shikari lists each group -- by each task's place, or by id before tasks had
+  // In order, as Shikari lists the group -- by each task's place, or by id before tasks had
   // one: the watchdogs at the top, then each member's checkout tasks together.
   const ownerOf = new Map(desired.profiles.map((d) => [lower(d.email), d.ownerId]));
   const emailOf = new Map(s.profiles.map((p) => [p.id, lower(p.email)]));
   for (const [name, taskGroup] of [
     [TARGET_GROUP, findGroup(s.taskGroups, TARGET_GROUP)],
-    [MISC_GROUP, miscGroup],
   ] as const) {
-    if (name === MISC_GROUP && !taskGroup) continue;
     const position = new Map(
       db
         .values(
@@ -637,18 +643,9 @@ async function main() {
   if (second) second.skus = []; // switched everything off
   const extra = Array.from({ length: 35 }, (_, i) => String(96000000 + i));
   edited.products.push(
-    ...extra.map((sku) => ({ sku, name: sku, setName: "Synthetic", misc: false, maxQty: null })),
+    ...extra.map((sku) => ({ sku, name: sku, setName: "Synthetic", maxQty: null })),
   );
   for (const p of edited.profiles.slice(2, 12)) p.skus = [...p.skus, ...extra];
-  // Three from the Miscellaneous line: picked beside the rest by a few, and alone by one,
-  // whose task moves into the line's group.
-  const odd = Array.from({ length: 3 }, (_, i) => String(97000000 + i));
-  edited.products.push(
-    ...odd.map((sku) => ({ sku, name: sku, setName: "Synthetic odds", misc: true, maxQty: null })),
-  );
-  for (const p of edited.profiles.slice(4, 8)) p.skus = [...p.skus, ...odd];
-  const loner = edited.profiles[8];
-  if (loner) loner.skus = [...odd];
   // One profile taken off this instance -- Instance 2 runs it now.
   const [moved] = edited.profiles.splice(3, 1);
   if (moved) {
@@ -656,8 +653,7 @@ async function main() {
     if (entry) Object.assign(entry, { why: "member", instance: 2 });
   }
   // Qty picks: one product at 1 on one profile; everything at 4 on another -- which a member
-  // may pick past any product's limit -- the Miscellaneous line's picks among it; and a 12,
-  // past the most a member can pick, on a third.
+  // may pick past any product's limit; and a 12, past the most a member can pick, on a third.
   const qtyOne = edited.profiles[2];
   const qtyAll = edited.profiles[4];
   const qtyOver = edited.profiles[6];
@@ -736,37 +732,6 @@ async function main() {
     untouchable(drop.open.db, snapshot, kept) === before,
     "nothing outside the Target side touched",
   );
-  // The line's picks: the synthetic ones above, and any the backup already ran from the
-  // line's own group.
-  const lineSkus = new Set(edited.products.filter((x) => x.misc).map((x) => x.sku));
-  const pickers = edited.profiles.filter((d) => d.skus.some((sku) => lineSkus.has(sku)));
-  const watchedLine = [
-    ...new Set(pickers.flatMap((d) => d.skus.filter((sku) => lineSkus.has(sku)))),
-  ].sort();
-  const misc = drop.report.misc;
-  check(
-    pickers.length === 0 ||
-      (misc !== null &&
-        misc.checkout.added.length + misc.checkout.changed.length + misc.checkout.unchanged ===
-          pickers.length),
-    `a task in "${MISC_GROUP}" for each of the ${pickers.length} profiles that picked from the line`,
-  );
-  check(
-    pickers.length === 0 ||
-      (JSON.stringify([...new Set(misc?.watchdogs.after.flatMap((w) => w.skus))].sort()) ===
-        JSON.stringify(watchedLine) &&
-        misc?.watchdogs.remote.after === settings.remoteWatchdogs),
-    `its watchdogs watch the line's ${watchedLine.length} products, with ${settings.remoteWatchdogs} remote`,
-  );
-  check(
-    !loner ||
-      !drop.open.db.get(
-        `SELECT 1 FROM task t JOIN profile p ON p.id = t.profile_id JOIN task_group g ON g.id = t.task_group_id
-          WHERE lower(p.email) = ? AND g.name <> ? AND lower(t.flow_key) = 'checkout'`,
-        [lower(loner.email), MISC_GROUP],
-      ),
-    "a profile that picked from the line alone has no task outside its group",
-  );
   if (drop.report.wipes.added.length > 0) {
     const wipe = drop.open.db.get<{
       type: string | null;
@@ -792,12 +757,9 @@ async function main() {
       "the wipe's browser is in a proxy group that exists",
     );
   }
-  const qtyChanges = [
-    drop.report.checkout,
-    ...(drop.report.misc ? [drop.report.misc.checkout] : []),
-  ]
-    .flatMap((c) => c.changed)
-    .flatMap((t) => t.qty.map((q) => ({ profile: t.profile, ...q })));
+  const qtyChanges = drop.report.checkout.changed.flatMap((t) =>
+    t.qty.map((q) => ({ profile: t.profile, ...q })),
+  );
   const qtyChanged = (name: string | undefined, to: number) =>
     qtyChanges.some((q) => q.profile === name && q.to === to);
   check(
@@ -846,10 +808,8 @@ async function main() {
     "the pending wipe is rebuilt from the last one",
   );
   check(
-    [a.checkout, ...(a.misc ? [a.misc.checkout] : [])].every(
-      (c) => c.added.length + c.changed.length + c.removed.length === 0,
-    ),
-    "no checkout task changes the second time, in either group",
+    a.checkout.added.length + a.checkout.changed.length + a.checkout.removed.length === 0,
+    "no checkout task changes the second time",
   );
   again.open.db.close();
 

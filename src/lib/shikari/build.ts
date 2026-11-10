@@ -30,14 +30,12 @@ import type {
   AbsentReason,
   BuildOptions,
   BuildReport,
-  CheckoutReport,
   DesiredInstance,
   DesiredProfile,
   KnownProfile,
   QtyChange,
   ShikariAddress,
   TaskChange,
-  WatchdogReport,
   WatchList,
 } from "@/lib/shikari/types";
 
@@ -72,12 +70,12 @@ import type {
  * each task's place in it (by task id before drag-and-drop), so that is done by handing the
  * group's own places back out -- see orderGroupTasks.
  *
- * APART. The Miscellaneous line's picks run from a task group of their own, "Target -
- * Miscellaneous", built by the same rules: its own watchdogs on its own products, laid out
- * the same way. A profile that picked from both has a checkout task in each, its picks
- * split between them; one that picked from the line alone has its task there and none in
- * "Target". Its checkout tasks have a proxy group of their own: the instance's "ISP - All"
- * unless the operator says otherwise (TaskSettings.miscCheckoutProxyGroupId).
+ * NOT THE MISCELLANEOUS LINE. Its picks run on Valor now, so the payload never sends them,
+ * and "Target - Miscellaneous" -- the group earlier exports ran them from -- is left exactly
+ * as it is for the operator to clear by hand: never built, changed, emptied or taken out.
+ * Its checkout tasks don't count as a profile's Target task, so none is moved out of it,
+ * kept as a profile's own, or deleted as a second copy. Only the tasks of a profile the
+ * export deletes go, since a task can't outlive its profile; the review counts them.
  *
  * PER PRODUCT. Each product row on a checkout task carries the qty its member picked for that
  * product on that profile -- past the product's posted limit if they chose so, never past the
@@ -197,7 +195,6 @@ const ABSENT: Record<AbsentReason, string> = {
 /** Shikari's own colours for its groups; the new one matches the old "Target Wipe" green. */
 const TARGET_COLOR = "#D81B60";
 const UPDATES_COLOR = "#0B8043";
-const MISC_COLOR = "#039BE5";
 
 /** Products are watched by TCIN, the only method any Target task in a backup has used. */
 const TARGET_METHOD = "tcins";
@@ -237,30 +234,11 @@ type ProfileMatch = {
 /** A profile of ours that isn't this instance's, and what became of it. */
 type Departure = { profile: SProfile; why: string; deleted: boolean };
 
-/**
- * A task group the export builds checkout tasks and watchdogs in, and which picks run from
- * it: "Target" every one but the Miscellaneous line's, MISC_GROUP those.
- */
+/** The "Target" task group, as the tasks section builds it: checkout tasks and watchdogs. */
 type TaskGroupPlan = {
   id: number;
   /** As the report names it. */
   name: string;
-  /** The TCINs a profile runs from this group, in catalog order. */
-  skusOf: (d: DesiredProfile) => string[];
-  /** Where its checkout tasks' browsers go. Null: each stays where it is. */
-  checkoutProxyGroupId: number | null;
-  checkout: CheckoutReport;
-  watchdogs: WatchdogReport;
-  /**
-   * What a new watchdog copies when the group has none of its own: for MISC_GROUP, the
-   * "Target" group's. Null, the built-in shape.
-   */
-  borrow: { watchdog: STask | null; remote: STask | null };
-  /**
-   * Whether its remote watchdogs stay when it runs nothing. "Target"'s do; MISC_GROUP between
-   * drops of its line is left holding nothing.
-   */
-  keepsRemote: boolean;
   /** Each running profile's checkout task in it, by desired key. */
   taskByKey: Map<string, number>;
   /** Every TCIN its checkout tasks run, repeats and all. */
@@ -310,10 +288,12 @@ class InstanceBuilder {
   private targetProfileGroupId: number | null = null;
   /** The task group this export rebuilds as "Target", once claimed. */
   private targetTaskGroupId: number | null = null;
-  /** MISC_GROUP, once found or made. */
-  private miscTaskGroupId: number | null = null;
-  /** The task groups the tasks section builds in: "Target", then MISC_GROUP if it's needed. */
-  private plans: TaskGroupPlan[] = [];
+  /** MISC_GROUP, when the backup has it: left alone, see the note at the top. */
+  private readonly miscGroupId: number | null;
+  /** MISC_GROUP's tasks that went with a profile the export deleted. */
+  private miscRemoved = 0;
+  /** The "Target" task group, once the tasks section has claimed it. */
+  private plan: TaskGroupPlan | null = null;
   /** A task's id now -> the id the backup gave it, for each task orderGroupTasks moved. */
   private readonly renumbered = new Map<number, number>();
 
@@ -328,6 +308,7 @@ class InstanceBuilder {
     this.sticky = new StickyProxies(db);
     this.fkBefore = foreignKeyProblems(db);
     this.liveProxyGroups = new Set(this.s.proxyGroups.map((g) => g.id));
+    this.miscGroupId = findGroup(this.s.taskGroups, MISC_GROUP)?.id ?? null;
     for (const p of this.s.profiles) {
       for (const id of [p.shippingId, p.billingId])
         if (id !== null) ref(this.addressRefs, id, p.id);
@@ -335,7 +316,7 @@ class InstanceBuilder {
     }
     const stocked = new Set(this.s.products.map((p) => p.taskId));
     for (const task of this.s.tasks) {
-      if (!this.isTargetCheckout(task) || task.profileId === null) continue;
+      if (!this.isOurCheckout(task) || task.profileId === null) continue;
       this.withCheckout.add(task.profileId);
       if (stocked.has(task.id)) this.runningBefore.add(task.profileId);
     }
@@ -398,6 +379,17 @@ class InstanceBuilder {
     return isCheckout(task) && task.websiteId === this.s.targetWebsiteId;
   }
 
+  /**
+   * A Target checkout task the export answers for: one anywhere but MISC_GROUP, whose tasks
+   * are left as they are (see the note at the top).
+   */
+  private isOurCheckout(task: STask): boolean {
+    return (
+      this.isTargetCheckout(task) &&
+      (this.miscGroupId === null || task.groupId !== this.miscGroupId)
+    );
+  }
+
   private groupName(id: number | null | undefined): string {
     return this.s.profileGroups.find((g) => g.id === id)?.name ?? `group ${id}`;
   }
@@ -425,8 +417,9 @@ class InstanceBuilder {
     this.dropEmptiedGroups();
     // Last of the edits: in a backup from before drag-and-drop it renumbers tasks, and
     // everything above finds them by the id the backup gave them.
-    if (sections.tasks) for (const plan of this.plans) this.orderGroupTasks(plan.id, plan.order);
+    if (sections.tasks && this.plan) this.orderGroupTasks(this.plan.id, this.plan.order);
 
+    this.reportMiscGroup();
     this.sortProfiles();
     this.checkIntegrity();
     return this.report;
@@ -438,6 +431,20 @@ class InstanceBuilder {
     this.report.warnings.push(
       say(names.length > LISTED ? `${shown} and ${names.length - LISTED} more` : shown),
     );
+  }
+
+  /** What's left in MISC_GROUP, which the export leaves alone, and what went with profiles. */
+  private reportMiscGroup() {
+    if (this.miscGroupId === null) return;
+    const left = this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM task WHERE task_group_id = ?",
+      [this.miscGroupId],
+    );
+    this.report.misc = {
+      name: this.s.taskGroups.find((g) => g.id === this.miscGroupId)?.name ?? MISC_GROUP,
+      tasks: Number(left?.n ?? 0),
+      removed: this.miscRemoved,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -600,10 +607,10 @@ class InstanceBuilder {
 
   /**
    * Deletes a profile that isn't this instance's, with every Target task that uses it --
-   * checkout, wipe, whatever group it sits in -- and the address and card rows it leaves
-   * unused. Not when a task for ANOTHER site uses it: deleting the profile would leave that
-   * task pointing at nothing, and the export never touches another site's tasks. Answers
-   * whether it was deleted.
+   * checkout, wipe, whatever group it sits in, MISC_GROUP's too, since a task can't outlive
+   * its profile -- and the address and card rows it leaves unused. Not when a task for
+   * ANOTHER site uses it: deleting the profile would leave that task pointing at nothing,
+   * and the export never touches another site's tasks. Answers whether it was deleted.
    */
   private removeProfile(profile: SProfile): boolean {
     const tasks = this.db.all<{
@@ -611,12 +618,20 @@ class InstanceBuilder {
       type: string | null;
       flow_key: string | null;
       website_id: number;
-    }>("SELECT id, type, flow_key, website_id FROM task WHERE profile_id = ?", [profile.id]);
+      task_group_id: number | null;
+    }>("SELECT id, type, flow_key, website_id, task_group_id FROM task WHERE profile_id = ?", [
+      profile.id,
+    ]);
     if (tasks.some((t) => Number(t.website_id) !== this.s.targetWebsiteId)) return false;
 
     for (const task of tasks) {
       const kind = { type: task.type, flowKey: task.flow_key } as STask;
       if (!this.deleteTask(task.id)) continue;
+      if (this.miscGroupId !== null && task.task_group_id === this.miscGroupId) {
+        // Counted on its own: the review says what the group lost, which it otherwise keeps.
+        this.miscRemoved += 1;
+        continue;
+      }
       if (isWipe(kind)) this.report.wipes.removed += 1;
       else if (!isCheckout(kind)) this.otherTasks.push(task.type || task.flow_key || "task");
     }
@@ -630,8 +645,9 @@ class InstanceBuilder {
 
   /**
    * Sorts every profile into the report's lists, once nothing else will change: whether a
-   * profile is RUNNING -- has a Target checkout task with products to check out -- is the
-   * difference between activated and updated, and deactivated and removed.
+   * profile is RUNNING -- has a Target checkout task with products to check out, outside
+   * MISC_GROUP, which isn't the export's -- is the difference between activated and updated,
+   * and deactivated and removed.
    */
   private sortProfiles() {
     const report = this.report.profiles;
@@ -641,8 +657,9 @@ class InstanceBuilder {
           `SELECT DISTINCT t.profile_id AS id FROM task t
             WHERE t.website_id = ? AND t.profile_id IS NOT NULL
               AND (lower(t.type) = 'checkout' OR lower(t.flow_key) = 'checkout')
+              AND (? IS NULL OR t.task_group_id IS NOT ?)
               AND EXISTS (SELECT 1 FROM target_product p WHERE p.task_id = t.id)`,
-          [this.s.targetWebsiteId],
+          [this.s.targetWebsiteId, this.miscGroupId, this.miscGroupId],
         )
         .map((r) => Number(r.id)),
     );
@@ -1232,87 +1249,35 @@ class InstanceBuilder {
   }
 
   /**
-   * The groups the tasks section builds in: "Target", and MISC_GROUP when anything in the
-   * Miscellaneous line is picked -- or when the backup already has it, to be emptied if
-   * nothing is. A backup isn't given a group it never had with nothing to put in it.
+   * Every profile of ours that picked anything gets exactly ONE Target checkout task, in
+   * "Target".
+   *
+   * A profile's existing task is used wherever it sits -- the main instance keeps some in
+   * "NO IMAP" -- and moved into "Target" if it isn't there, keeping its browser, session and
+   * preload state: the one it already has in "Target" stays, and failing that the oldest it
+   * has anywhere else is moved in, before a new one is built. Building a second one beside it
+   * would run the member twice. A profile of ours that this instance isn't running loses its
+   * Target checkout tasks wherever they are; a profile the site doesn't know keeps its tasks
+   * exactly as they are. MISC_GROUP's tasks are none of these: see the note at the top.
    */
-  private planTaskGroups(): TaskGroupPlan[] {
-    const misc = new Set(this.desired.products.filter((p) => p.misc).map((p) => p.sku));
-    const targetId = this.claimTargetTaskGroup();
-    const target: TaskGroupPlan = {
-      id: targetId,
+  private syncTargetTasks(match: ProfileMatch) {
+    const plan: TaskGroupPlan = {
+      id: this.claimTargetTaskGroup(),
       name: this.report.taskGroup?.name ?? TARGET_GROUP,
-      skusOf: (d) => d.skus.filter((sku) => !misc.has(sku)),
-      checkoutProxyGroupId: this.options.tasks.checkoutProxyGroupId,
-      checkout: this.report.checkout,
-      watchdogs: this.report.watchdogs,
-      borrow: { watchdog: null, remote: null },
-      keepsRemote: true,
       taskByKey: new Map(),
       running: [],
       order: [],
     };
-    const skusOf = (d: DesiredProfile) => d.skus.filter((sku) => misc.has(sku));
-    const found = findGroup(this.s.taskGroups, MISC_GROUP);
-    const picked = this.people.some((d) => this.profileIdByKey.has(d.key) && skusOf(d).length > 0);
-    if (!found && !picked) return [target];
-
-    this.miscTaskGroupId = found?.id ?? this.ensureGroup("task_group", MISC_GROUP, MISC_COLOR);
-    const report: NonNullable<BuildReport["misc"]> = {
-      name: found?.name ?? MISC_GROUP,
-      created: !found,
-      checkout: { added: [], removed: [], changed: [], unchanged: 0, untouched: [] },
-      watchdogs: { before: [], after: [], remote: { before: 0, after: 0 } },
-    };
-    this.report.misc = report;
-    const targetWatchdogs = this.s.tasks.filter((t) => t.groupId === targetId && isWatchdog(t));
-    return [
-      target,
-      {
-        id: this.miscTaskGroupId,
-        name: report.name,
-        skusOf,
-        checkoutProxyGroupId: this.options.tasks.miscCheckoutProxyGroupId,
-        checkout: report.checkout,
-        watchdogs: report.watchdogs,
-        borrow: {
-          watchdog: targetWatchdogs.find((t) => !isRemoteWatchdog(t)) ?? null,
-          remote: targetWatchdogs.find(isRemoteWatchdog) ?? null,
-        },
-        keepsRemote: false,
-        taskByKey: new Map(),
-        running: [],
-        order: [],
-      },
-    ];
-  }
-
-  /**
-   * Every profile of ours gets exactly ONE Target checkout task in each group it runs
-   * products from: "Target" for its picks outside the Miscellaneous line, MISC_GROUP for its
-   * picks in it.
-   *
-   * A profile's existing tasks are used wherever they sit -- the main instance keeps some in
-   * "NO IMAP" -- and moved where they are needed, keeping their browser, session and preload
-   * state: each group keeps the task the profile already has there, and a group still
-   * without one takes the oldest one left, from wherever it is, before a new one is built.
-   * Building a second one beside it would run the member twice. A profile of ours that this
-   * instance isn't running loses its Target checkout tasks wherever they are; a profile the
-   * site doesn't know keeps its tasks exactly as they are.
-   */
-  private syncTargetTasks(match: ProfileMatch) {
-    this.plans = this.planTaskGroups();
-    const [target] = this.plans;
+    this.plan = plan;
     const report = this.report.checkout;
     const names = new Map(this.s.profiles.map((p) => [p.id, p.name]));
     const groupNames = new Map(this.s.taskGroups.map((g) => [g.id, g.name]));
     const productsOf = (taskId: number) =>
       this.s.products.filter((p) => p.taskId === taskId).map((p) => p.data);
-    const planOf = (task: STask) => this.plans.find((plan) => plan.id === task.groupId);
 
     // --- checkout ---
     const ours = this.s.tasks.filter(
-      (t) => this.isTargetCheckout(t) && t.profileId !== null && match.managed.has(t.profileId),
+      (t) => this.isOurCheckout(t) && t.profileId !== null && match.managed.has(t.profileId),
     );
     // Oldest first, as the snapshot reads them.
     const byProfile = new Map<number, STask[]>();
@@ -1330,48 +1295,35 @@ class InstanceBuilder {
         report.noProducts.push(d.name);
         continue;
       }
-      const wanted = this.plans.filter((plan) => plan.skusOf(d).length > 0);
-      // Each group it runs products from keeps the task it has there; a group still without
-      // one takes the oldest left, from wherever it is.
+      // The task it has in "Target" stays; failing that, the oldest it has anywhere else.
       const spare = [...(byProfile.get(profileId) ?? [])];
-      const taskIn = (plan: TaskGroupPlan) => {
-        const i = spare.findIndex((t) => t.groupId === plan.id);
-        return i < 0 ? undefined : spare.splice(i, 1)[0];
-      };
-      const kept = new Map(wanted.map((plan) => [plan, taskIn(plan)]));
-      for (const plan of wanted) {
-        if (!kept.get(plan)) kept.set(plan, spare.shift());
-      }
+      const inTarget = spare.findIndex((t) => t.groupId === plan.id);
+      const task = inTarget < 0 ? spare.shift() : spare.splice(inTarget, 1)[0];
 
-      // Whatever is left is a second copy -- or its task in a group it runs nothing from now.
+      // Whatever is left is a second copy.
       for (const copy of spare) {
-        const own = planOf(copy);
         this.deleteTask(copy.id);
-        (own ?? target).checkout.removed.push({
-          profile: own && !wanted.includes(own) ? d.name : `${d.name} (a second copy)`,
+        report.removed.push({
+          profile: `${d.name} (a second copy)`,
           skus: productsOf(copy.id).length,
         });
         handled.add(copy.id);
       }
 
-      for (const plan of wanted) {
-        const skus = plan.skusOf(d);
-        plan.running.push(...skus);
-        const task = kept.get(plan);
-        if (!task) {
-          const id = this.createCheckoutTask(plan, profileId, d, skus);
-          handled.add(id);
-          plan.taskByKey.set(d.key, id);
-          plan.checkout.added.push({ profile: d.name, skus: skus.length });
-          continue;
-        }
-        handled.add(task.id);
-        plan.taskByKey.set(d.key, task.id);
-        const from = groupNames.get(task.groupId ?? -1);
-        const change = this.syncCheckoutTask(task, d, skus, plan, from);
-        if (change) plan.checkout.changed.push(change);
-        else plan.checkout.unchanged += 1;
+      plan.running.push(...d.skus);
+      if (!task) {
+        const id = this.createCheckoutTask(plan, profileId, d, d.skus);
+        handled.add(id);
+        plan.taskByKey.set(d.key, id);
+        report.added.push({ profile: d.name, skus: d.skus.length });
+        continue;
       }
+      handled.add(task.id);
+      plan.taskByKey.set(d.key, task.id);
+      const from = groupNames.get(task.groupId ?? -1);
+      const change = this.syncCheckoutTask(task, d, d.skus, plan, from);
+      if (change) report.changed.push(change);
+      else report.unchanged += 1;
     }
 
     // What's left of ours belongs to profiles this instance isn't running: they come off,
@@ -1380,7 +1332,7 @@ class InstanceBuilder {
     for (const task of ours) {
       if (handled.has(task.id)) continue;
       const label = names.get(task.profileId as number) ?? `profile ${task.profileId}`;
-      (planOf(task) ?? target).checkout.removed.push({
+      report.removed.push({
         profile: match.duplicates.has(task.profileId as number)
           ? `${label} (a second copy)`
           : label,
@@ -1388,12 +1340,12 @@ class InstanceBuilder {
       });
       this.deleteTask(task.id);
     }
-    // Other people's checkout tasks in the groups stay as they are.
+    // Other people's checkout tasks in the group stay as they are.
     for (const task of this.s.tasks) {
-      const plan = planOf(task);
-      if (!plan || !this.isTargetCheckout(task) || handled.has(task.id)) continue;
+      if (task.groupId !== plan.id || !this.isTargetCheckout(task) || handled.has(task.id))
+        continue;
       if (task.profileId !== null && match.managed.has(task.profileId)) continue;
-      plan.checkout.untouched.push(
+      report.untouched.push(
         task.profileId === null
           ? `task ${task.id}`
           : (names.get(task.profileId) ?? `task ${task.id}`),
@@ -1401,24 +1353,24 @@ class InstanceBuilder {
     }
 
     // A checkout task's browser in a proxy group with no proxies has nothing to run on --
-    // "ISP - All" emptied for a new list, say -- and Shikari would only say so mid-drop.
-    for (const plan of this.plans) {
-      const group = this.liveGroup(plan.checkoutProxyGroupId);
-      if (group === null || plan.taskByKey.size === 0) continue;
-      if (this.db.get("SELECT 1 FROM proxy WHERE proxy_group_id = ? LIMIT 1", [group])) continue;
+    // "Resi" emptied for a new list, say -- and Shikari would only say so mid-drop.
+    const group = this.liveGroup(this.options.tasks.checkoutProxyGroupId);
+    if (
+      group !== null &&
+      plan.taskByKey.size > 0 &&
+      !this.db.get("SELECT 1 FROM proxy WHERE proxy_group_id = ? LIMIT 1", [group])
+    ) {
       const name = this.s.proxyGroups.find((g) => g.id === group)?.name ?? `group ${group}`;
       this.report.warnings.push(
         `Proxy group "${name}" has no proxies, so the checkout tasks in "${plan.name}" have none to run on.`,
       );
     }
 
-    // --- watchdogs, and each group's layout ---
-    for (const plan of this.plans) {
-      plan.order = [
-        ...this.syncWatchdogs(plan),
-        ...this.byMember.flatMap((d) => plan.taskByKey.get(d.key) ?? []),
-      ];
-    }
+    // --- watchdogs, and the group's layout ---
+    plan.order = [
+      ...this.syncWatchdogs(plan),
+      ...this.byMember.flatMap((d) => plan.taskByKey.get(d.key) ?? []),
+    ];
   }
 
   /**
@@ -1437,12 +1389,13 @@ class InstanceBuilder {
   }
 
   /**
-   * A group's watchdogs: every TCIN its checkout tasks run, in catalog order, split into
+   * The group's watchdogs: every TCIN its checkout tasks run, in catalog order, split into
    * lists of skusPerWatchdog with a watchdog per check interval on each -- the group's own
    * re-pointed first, in the order they were made -- and its remote watchdogs. Answers them in
    * the order they go at the top of the group: the remote ones, then each list's.
    */
   private syncWatchdogs(plan: TaskGroupPlan): number[] {
+    const report = this.report.watchdogs;
     const settings = this.options.tasks;
     const inGroup = this.s.tasks.filter((t) => t.groupId === plan.id);
     const productsOf = (taskId: number) =>
@@ -1458,9 +1411,9 @@ class InstanceBuilder {
 
     const watchdogs = inGroup.filter((t) => isWatchdog(t) && !isRemoteWatchdog(t));
     const remotes = inGroup.filter(isRemoteWatchdog);
-    const template = watchdogs[0] ?? plan.borrow.watchdog;
+    const template = watchdogs[0] ?? null;
 
-    plan.watchdogs.before = watchdogs.map((w) => ({
+    report.before = watchdogs.map((w) => ({
       interval: checkInterval(w),
       skus: productsOf(w.id),
     }));
@@ -1481,17 +1434,16 @@ class InstanceBuilder {
       }
     }
     for (const extra of watchdogs.slice(slot)) this.deleteTask(extra.id);
-    plan.watchdogs.after = after;
+    report.after = after;
 
-    const wantRemote =
-      watched.length > 0 || plan.keepsRemote ? Math.max(0, settings.remoteWatchdogs) : 0;
+    // Kept even while nothing is picked: "Target" is set up between drops, not only for one.
+    const wantRemote = Math.max(0, settings.remoteWatchdogs);
     const remote = remotes.slice(0, wantRemote).map((t) => t.id);
     for (let i = remotes.length; i < wantRemote; i++) {
-      const shape = remotes[0] ?? plan.borrow.remote ?? template;
-      remote.push(this.createWatchdog(plan.id, [], null, shape, true));
+      remote.push(this.createWatchdog(plan.id, [], null, remotes[0] ?? template, true));
     }
     for (const extra of remotes.slice(wantRemote)) this.deleteTask(extra.id);
-    plan.watchdogs.remote = { before: remotes.length, after: wantRemote };
+    report.remote = { before: remotes.length, after: wantRemote };
     return [...remote, ...watching];
   }
 
@@ -1525,7 +1477,8 @@ class InstanceBuilder {
       this.db.run("UPDATE task SET imap_account_id = ? WHERE id = ?", [imapId, task.id]);
       other.push("mailbox");
     }
-    if (this.moveBrowser(task.browserId, plan.checkoutProxyGroupId)) other.push("proxy group");
+    if (this.moveBrowser(task.browserId, this.options.tasks.checkoutProxyGroupId))
+      other.push("proxy group");
 
     if (
       products.added.length === 0 &&
@@ -1552,7 +1505,7 @@ class InstanceBuilder {
   ): number {
     const template = this.checkoutTemplate();
     const browserId = this.createBrowser(
-      plan.checkoutProxyGroupId ?? template.proxyGroupId,
+      this.options.tasks.checkoutProxyGroupId ?? template.proxyGroupId,
       this.fingerprintFor("checkout"),
     );
     const imapId = d.mailbox ? (this.imapIdByMailbox.get(lower(d.mailbox.username)) ?? null) : null;
@@ -1575,7 +1528,7 @@ class InstanceBuilder {
   /** The shape a new checkout task copies: the most common one in the Target task group. */
   private checkoutTemplate() {
     const groupId = this.targetTaskGroupId;
-    const all = this.s.tasks.filter((t) => this.isTargetCheckout(t));
+    const all = this.s.tasks.filter((t) => this.isOurCheckout(t));
     const pool = all.filter((t) => t.groupId === groupId);
     const tasks = pool.length > 0 ? pool : all;
     const options = mostCommon(
@@ -1655,7 +1608,6 @@ class InstanceBuilder {
    * Lays a group out the way the operator builds "Target" by hand: the watchdogs at the top
    * -- the remote one, then each product list's in interval order -- and below them every
    * member's checkout tasks together (see byMember). Anything else follows, as it was.
-   * MISC_GROUP is laid out the same way, on its own places.
    *
    * Edited in place alone, a group would keep its old order and gain every new task at the
    * bottom -- a watchdog for a longer product list under all the checkout tasks, a member's
@@ -2107,14 +2059,15 @@ class InstanceBuilder {
    * Takes out the groups the export emptied -- "NO IMAP" once its tasks are moved into
    * "Target", "Target Wipe Account" once its old wipes are gone, the paused group once what
    * was parked there is -- and the groups the operator chose to clear, once they are empty.
-   * Never the export's own -- "Target", MISC_GROUP and "Target - Profile Updates" -- and never
-   * a group that was already empty before it: that one somebody made on purpose.
+   * Never the export's own -- "Target" and "Target - Profile Updates" -- nor MISC_GROUP, which
+   * it leaves alone even when its profiles took every task out of it, and never a group that
+   * was already empty before it: that one somebody made on purpose.
    */
   private dropEmptiedGroups() {
     const report = this.report.groupsRemoved;
     const ownTasks = new Set([
       this.targetTaskGroupId ?? this.groups.tasks?.id,
-      this.miscTaskGroupId ?? findGroup(this.s.taskGroups, MISC_GROUP)?.id,
+      this.miscGroupId ?? undefined,
       findGroup(this.s.taskGroups, UPDATES_GROUP)?.id,
     ]);
     const hadTasks = new Set(this.s.tasks.map((t) => t.groupId));
