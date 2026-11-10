@@ -320,13 +320,14 @@ describe("siteMembership", () => {
 
 describe("siteUsesProfiles", () => {
   /**
-   * Costco is login-only: the bot takes queue spots without signing in and the order is
-   * placed by hand from the member's own account, so the card and the address live at
-   * Costco rather than here. A `vault_profile` row for one would be invented placeholders,
-   * and the AYCD export of it would be a file of them.
+   * Costco was login-only until 2026-11-09: its bot took queue spots without signing in and
+   * the order was placed by hand from the member's own account, so the card and the address
+   * lived at Costco. Its bot places the whole order now, so it needs both from us -- and a
+   * Costco still flagged login-only would refuse every address and card a member typed.
    */
-  it("is false for a login-only retailer", () => {
-    expect(siteUsesProfiles("costco")).toBe(false);
+  it("is true on Costco, now that its bot checks out", () => {
+    expect(siteUsesProfiles("costco")).toBe(true);
+    expect(siteUsesProfiles("https://www.costco.com")).toBe(true);
   });
 
   it("is true for retailers we check out on ourselves", () => {
@@ -336,24 +337,25 @@ describe("siteUsesProfiles", () => {
     expect(siteUsesProfiles("pokemon-center")).toBe(true);
   });
 
+  it("names no retailer login-only today", () => {
+    // Turning one back on is a deliberate edit to sites.ts, and should be one to this too.
+    expect(loginOnlySiteKeys()).toEqual([]);
+  });
+
   it("defaults to true for an unknown retailer", () => {
     // The safe direction: a new site treated as login-only would quietly stop collecting
     // the card its bot cannot run without.
     expect(siteUsesProfiles("some-new-store")).toBe(true);
   });
-
-  it("accepts the raw vendor spelling", () => {
-    expect(siteUsesProfiles("https://www.costco.com")).toBe(false);
-  });
 });
 
 describe("usesEmailCodes", () => {
   /**
-   * Three different reasons to be false, and the flag has to serve all of them: Pokemon
-   * Center sends no code at all, Costco is signed into by hand -- the operator can read a
-   * code with the member, so a stored app password buys nothing and asking for one is a
-   * chore invented for them -- and the Crunchyroll, Premium Bandai and Mattel bots have a
-   * login but never open the inbox.
+   * Two different reasons to be false, and the flag has to serve both: Pokemon Center and
+   * Menards send no code at all, and the Crunchyroll, Premium Bandai, Mattel and Costco bots
+   * have a login but never open the inbox. Costco's reason used to be that it was signed
+   * into by hand; it kept the flag when its bot took over the checkout, because nothing
+   * reads a Costco code yet.
    */
   it("is false where nothing of ours reads the mailbox", () => {
     expect(siteStyle("pokemon-center").usesEmailCodes).toBe(false);
@@ -374,13 +376,15 @@ describe("usesEmailCodes", () => {
 
 describe("siteStoresCardCvv", () => {
   /**
-   * Costco asks for the security code at checkout even on a card already saved to the
-   * account -- and only sometimes, which is what makes a missing one expensive: it
-   * surfaces mid-order, by hand, with a queue pass running down.
+   * For a login-only retailer that asks for the security code at checkout even on a card
+   * already saved to the account. Costco was that retailer until 2026-11-09; its profiles
+   * carry a whole card now, CVV included, so a code on the login as well would be a second
+   * copy nothing reads.
    */
-  it("is true only where the retailer prompts for a code", () => {
-    expect(siteStoresCardCvv("costco")).toBe(true);
+  it("is false everywhere since Costco took full profiles", () => {
     for (const key of [
+      "costco",
+      "https://www.costco.com",
       "target",
       "walmart",
       "pokemon-center",
@@ -413,22 +417,20 @@ describe("siteStoresCardCvv", () => {
       if (siteStoresCardCvv(key)) expect(siteUsesProfiles(key)).toBe(false);
     }
   });
-
-  it("accepts the raw vendor spelling", () => {
-    expect(siteStoresCardCvv("https://www.costco.com")).toBe(true);
-  });
 });
 
 describe("siteChangesApplyImmediately", () => {
   /**
-   * Costco is loaded onto nothing: the operator reads the login at order time, so a saved
-   * edit is in use at once and there is nothing for anyone to confirm. Everywhere else a
-   * change waits for an export, which is what the member's "pending confirmation" chip and
-   * the operator's queue are both about.
+   * For a retailer loaded onto nothing, where the operator reads the login at order time: a
+   * saved edit is in use at once and there is nothing for anyone to confirm. Costco was that
+   * retailer until 2026-11-09. Its bot loads exported profiles now, so a Costco edit waits
+   * for an export like every other -- which is what the member's "pending confirmation" chip
+   * and the runner's queue are both about.
    */
-  it("is true only where no bot has to be loaded", () => {
-    expect(siteChangesApplyImmediately("costco")).toBe(true);
+  it("is false everywhere a bot loads the export, which is everywhere today", () => {
     for (const key of [
+      "costco",
+      "Costco",
       "target",
       "walmart",
       "pokemon-center",
@@ -455,10 +457,6 @@ describe("siteChangesApplyImmediately", () => {
     // The safe direction: claiming a change is live when it is sitting in a queue tells a
     // member their new card is in use when it is not.
     expect(siteChangesApplyImmediately("some-new-store")).toBe(false);
-  });
-
-  it("accepts the raw vendor spelling", () => {
-    expect(siteChangesApplyImmediately("Costco")).toBe(true);
   });
 });
 

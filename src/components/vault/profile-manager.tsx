@@ -2,7 +2,11 @@
 
 import { useActionState, useState } from "react";
 import Image from "next/image";
-import type { VaultProfileDetail, VaultProfileSummary } from "@/db/queries/vault";
+import type {
+  VaultLoginSummary,
+  VaultProfileDetail,
+  VaultProfileSummary,
+} from "@/db/queries/vault";
 import { relativeTime } from "@/lib/format";
 import { siteMembership, siteStyle } from "@/lib/sites";
 import {
@@ -13,6 +17,7 @@ import {
   setProfilesActive,
   type ActionResult,
 } from "@/lib/vault/actions";
+import { RemoveLogin } from "@/components/vault/login-manager";
 import { ProfileArranger } from "@/components/vault/profile-arranger";
 import { ProfileForm } from "@/components/vault/profile-form";
 import { RevealAppPassword } from "@/components/vault/reveal-app-password";
@@ -20,6 +25,10 @@ import { RevealAppPassword } from "@/components/vault/reveal-app-password";
 /**
  * One retailer's profiles, with add / edit / enable / remove, reorder (ProfileArranger), and
  * an AYCD export of the member's own profiles (api/vault/export).
+ *
+ * Above them, any of the member's logins here that have no profile behind them -- every
+ * Costco login saved before Costco took full profiles. Each is finished with "Add address
+ * & card", which opens the profile form on that login, or removed. See UnfinishedLogins.
  *
  * The edit form fetches the full profile on demand rather than the page shipping every
  * field for every profile up front -- a member with 90 profiles would otherwise send a
@@ -433,22 +442,84 @@ function BulkBar({
   );
 }
 
+/**
+ * The member's logins here with no address or card behind them, and the way to finish each.
+ *
+ * Said before the profile list and in the warning colour, because these are rows the member
+ * believes are signed up and are not: an account with no profile is in no export, so it is
+ * never run. Costco members who signed up while Costco took a login only all start here --
+ * nothing about their login changed, and without this they would find out at a drop.
+ */
+function UnfinishedLogins({
+  label,
+  logins,
+  onFinish,
+}: {
+  label: string;
+  logins: VaultLoginSummary[];
+  onFinish: (login: VaultLoginSummary) => void;
+}) {
+  const one = logins.length === 1;
+  // Said only when true: an imported login can arrive with no password, and the form asks
+  // for one there.
+  const credentialsSaved = logins.every((login) => login.hasPassword);
+
+  return (
+    <div className="mb-4 rounded-xl border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-4 py-3">
+      <p className="text-sm text-[var(--color-fg)]">
+        <strong className="font-semibold">
+          Finish your {one ? "" : `${logins.length} `}
+          {label} {one ? "login" : "logins"}.
+        </strong>{" "}
+        {one ? "It's" : "They're"} missing a shipping address and a card, so {one ? "it" : "they"}{" "}
+        can&rsquo;t be checked out with until you add them.
+        {credentialsSaved &&
+          (one
+            ? " The email and password are already saved."
+            : " The emails and passwords are already saved.")}
+      </p>
+      <ul className="mt-2 divide-y divide-[var(--color-warn)]/20">
+        {logins.map((login) => (
+          <li key={login.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5">
+            <span className="min-w-0 flex-1 text-sm font-medium break-all text-white">
+              {login.email}
+            </span>
+            <button
+              type="button"
+              onClick={() => onFinish(login)}
+              className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-[var(--color-brand)] px-3 py-1.5 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] sm:min-h-0"
+            >
+              Add address &amp; card
+            </button>
+            <RemoveLogin login={login} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function ProfileManager({
   siteKey,
   siteLogo,
   profiles,
+  unfinished = [],
   nextName,
   renumbered,
 }: {
   siteKey: string;
   siteLogo: string | null;
   profiles: VaultProfileSummary[];
+  /** Their logins here with no profile behind them. See UnfinishedLogins. */
+  unfinished?: VaultLoginSummary[];
   nextName: string;
   /** The name each position takes when the member reorders. See ProfileArranger. */
   renumbered: string[];
 }) {
   const [editing, setEditing] = useState<VaultProfileDetail | null>(null);
   const [adding, setAdding] = useState(false);
+  // The login being finished into a profile, if any. One form open at a time, like the rest.
+  const [finishing, setFinishing] = useState<VaultLoginSummary | null>(null);
   const [exporting, setExporting] = useState(false);
   const [loading, setLoading] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -479,6 +550,7 @@ export function ProfileManager({
     if (detail) {
       setEditing(detail);
       setAdding(false);
+      setFinishing(null);
     }
   }
 
@@ -541,6 +613,7 @@ export function ProfileManager({
             onClick={() => {
               setAdding((v) => !v);
               setEditing(null);
+              setFinishing(null);
             }}
             className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-edge)] px-3 py-1.5 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 sm:min-h-0"
           >
@@ -581,6 +654,36 @@ export function ProfileManager({
               Cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {unfinished.length > 0 && (
+        <UnfinishedLogins
+          label={style.label}
+          logins={unfinished}
+          onFinish={(login) => {
+            setFinishing(login);
+            setAdding(false);
+            setEditing(null);
+          }}
+        />
+      )}
+
+      {finishing && (
+        <div className="mb-4 rounded-xl border border-[var(--color-brand)]/40 bg-[var(--color-surface)] p-5">
+          <p className="mb-4 text-sm font-semibold break-all text-white">
+            Finishing {finishing.email}
+          </p>
+          {/* Keyed on the login for the reason the edit form below is keyed on the profile:
+              finishing a second login while one is open must remount, not inherit. */}
+          <ProfileForm
+            key={finishing.id}
+            siteKey={siteKey}
+            login={finishing}
+            nextName={nextName}
+            siblings={profiles}
+            onDone={() => setFinishing(null)}
+          />
         </div>
       )}
 

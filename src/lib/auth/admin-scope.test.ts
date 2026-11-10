@@ -10,10 +10,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ALL_SITES,
+  DEFAULT_RUNNERS,
   EVERYONE,
   RUNNER_ROLES,
   adminSitesFor,
   coversSite,
+  defaultRunnerFor,
   fullAdminIds,
   hasAdminArea,
   mayExport,
@@ -75,9 +77,16 @@ describe("runner roles", () => {
       "topps",
       "mattel",
       "menards",
+      "costco",
     ]) {
       expect(runnerRoleFor(site), site).toMatch(/^\d{15,25}$/);
     }
+  });
+
+  it("finds Costco's role, which chess holds", () => {
+    expect(runnerRoleFor("costco")).toBe("1569525617408483459");
+    expect(runnerRoleFor("https://www.costco.com")).toBe(RUNNER_ROLES.costco);
+    expect(runnerSitesFor([RUNNER_ROLES.costco])).toEqual(["costco"]);
   });
 
   it("finds Menards's role under the spellings a member or a bot might use", () => {
@@ -96,8 +105,8 @@ describe("runner roles", () => {
   });
 
   it("names none where only full admins reach", () => {
-    expect(runnerRoleFor("costco")).toBeNull();
     expect(runnerRoleFor("best-buy")).toBeNull();
+    expect(runnerRoleFor("sams-club")).toBeNull();
     expect(runnerRoleFor(null)).toBeNull();
   });
 
@@ -113,6 +122,32 @@ describe("runner roles", () => {
 
   it("maps roles back to retailers in a stable order", () => {
     expect(runnerSitesFor(Object.values(RUNNER_ROLES))).toEqual(Object.keys(RUNNER_ROLES).sort());
+  });
+});
+
+describe("defaultRunnerFor", () => {
+  it("sends Costco's new members to chess, under any spelling", () => {
+    expect(defaultRunnerFor("costco")).toBe(CHESS);
+    expect(defaultRunnerFor("https://www.costco.com")).toBe(CHESS);
+  });
+
+  it("names nobody where a retailer's fees decide, or for no retailer at all", () => {
+    for (const site of ["target", "menards", "topps", "some-new-store", null]) {
+      expect(defaultRunnerFor(site), String(site)).toBeNull();
+    }
+    // Not an inherited key: siteKey can produce "constructor", and a plain object has one.
+    expect(defaultRunnerFor("constructor")).toBeNull();
+  });
+
+  /**
+   * A default runner only ever receives a member while holding the retailer's runner role, so
+   * one named on a retailer with no role could never receive anybody -- the entry would be
+   * dead, and the operator would be getting that retailer's members without anyone noticing.
+   */
+  it("only names a runner where there is a role for them to hold", () => {
+    for (const site of Object.keys(DEFAULT_RUNNERS)) {
+      expect(runnerRoleFor(site), site).toMatch(/^\d{15,25}$/);
+    }
   });
 });
 

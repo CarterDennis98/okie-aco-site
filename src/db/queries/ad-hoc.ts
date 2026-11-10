@@ -12,8 +12,9 @@ import { loginOnlySiteKeys, siteStyle } from "@/lib/sites";
  * picker is "the members whose bot you run", never a way to reach someone else's. Same
  * split as the other query modules: nothing here re-checks.
  *
- * PROFILES ONLY. A login-only retailer has no checkout profile to bill against, and Costco's
- * fees are billed by hand outside the site on purpose.
+ * PROFILES ONLY. A login-only retailer has no checkout profile to bill against. Costco was
+ * one until 2026-11-09, and its fees were billed by hand outside the site; it has profiles
+ * now, so it is offered here like any other retailer a runner holds profiles on.
  */
 
 export type AdHocSite = { siteKey: string; label: string; count: number };

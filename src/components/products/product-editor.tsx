@@ -6,6 +6,7 @@ import { updateDropProduct } from "@/lib/products/admin-actions";
 import {
   PRODUCT_NAME_LIMIT,
   SET_NAME_LIMIT,
+  maxQtyText,
   nameFromTargetUrl,
   parseProductInput,
   targetSku,
@@ -40,6 +41,7 @@ function fieldsOf(product: CatalogProduct): ProductFields {
     price: product.priceCents === null ? "" : (product.priceCents / 100).toFixed(2),
     pasFee: product.pasFeeCents === null ? "" : (product.pasFeeCents / 100).toFixed(2),
     imageUrl: product.imageUrl ?? "",
+    maxQty: maxQtyText(product.maxQty),
   };
 }
 
@@ -203,33 +205,53 @@ export function ProductEditor({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-[9rem_9rem]">
-            <div>
-              <label htmlFor={`product-${id}-price`} className={label}>
-                Price <span className="font-normal">(retail)</span>
-              </label>
-              <input
-                id={`product-${id}-price`}
-                value={fields.price}
-                onChange={(event) => set("price", event.currentTarget.value)}
-                inputMode="decimal"
-                placeholder="$49.99"
-                className={field}
-              />
+          <div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-[9rem_9rem_9rem]">
+              <div>
+                <label htmlFor={`product-${id}-price`} className={label}>
+                  Price <span className="font-normal">(retail)</span>
+                </label>
+                <input
+                  id={`product-${id}-price`}
+                  value={fields.price}
+                  onChange={(event) => set("price", event.currentTarget.value)}
+                  inputMode="decimal"
+                  placeholder="$49.99"
+                  className={field}
+                />
+              </div>
+              <div>
+                <label htmlFor={`product-${id}-pas`} className={label}>
+                  PAS fee <span className="font-normal">(per unit)</span>
+                </label>
+                <input
+                  id={`product-${id}-pas`}
+                  value={fields.pasFee}
+                  onChange={(event) => set("pasFee", event.currentTarget.value)}
+                  inputMode="decimal"
+                  placeholder="$5"
+                  className={field}
+                />
+              </div>
+              <div>
+                <label htmlFor={`product-${id}-limit`} className={label}>
+                  Limit <span className="font-normal">(per checkout)</span>
+                </label>
+                <input
+                  id={`product-${id}-limit`}
+                  value={fields.maxQty}
+                  onChange={(event) => set("maxQty", event.currentTarget.value)}
+                  inputMode="numeric"
+                  placeholder="None"
+                  aria-describedby={`product-${id}-limit-hint`}
+                  className={field}
+                />
+              </div>
             </div>
-            <div>
-              <label htmlFor={`product-${id}-pas`} className={label}>
-                PAS fee <span className="font-normal">(per unit)</span>
-              </label>
-              <input
-                id={`product-${id}-pas`}
-                value={fields.pasFee}
-                onChange={(event) => set("pasFee", event.currentTarget.value)}
-                inputMode="decimal"
-                placeholder="$5"
-                className={field}
-              />
-            </div>
+            <p id={`product-${id}-limit-hint`} className="mt-1 text-xs text-[var(--color-muted)]">
+              Target&rsquo;s limit, if it posts one. Members see it, and are warned if they pick
+              more.
+            </p>
           </div>
 
           <div>

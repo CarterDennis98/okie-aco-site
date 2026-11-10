@@ -152,9 +152,9 @@ export function desiredInstance(
     profiles,
     known,
     products: [
-      { sku: SKU_A, name: "Product A", setName: "Set One", misc: false },
-      { sku: SKU_B, name: "Product B", setName: "Set One", misc: false },
-      { sku: SKU_M, name: "Product M", setName: "Odds and Ends", misc: true },
+      { sku: SKU_A, name: "Product A", setName: "Set One", misc: false, maxQty: null },
+      { sku: SKU_B, name: "Product B", setName: "Set One", misc: false, maxQty: null },
+      { sku: SKU_M, name: "Product M", setName: "Odds and Ends", misc: true, maxQty: null },
     ],
   };
 }

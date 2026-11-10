@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import type { VaultProfileDetail } from "@/db/queries/vault";
+import type { VaultLoginSummary, VaultProfileDetail } from "@/db/queries/vault";
 import { detectBrand, expectedCvvLength } from "@/lib/vault/card";
 import { saveProfile, type ActionResult } from "@/lib/vault/actions";
 import {
@@ -38,6 +38,12 @@ const ZIP_TITLE = "Five digits, or ZIP+4 like 73069-1234.";
  *
  * Client-side validation here is a convenience only. `saveProfile` re-validates
  * everything server-side, since a Server Action is a public POST endpoint.
+ *
+ * Given a `login` instead of a profile, it FINISHES that login: a new profile on the
+ * account already on file, which has the email and usually the password and is missing
+ * only the address and the card. Every Costco login from before Costco took full profiles
+ * is finished this way. The email arrives filled in, and the password is asked for only if
+ * none was saved -- the stored one is kept unless a new one is typed.
  */
 
 /*
@@ -117,8 +123,8 @@ function Field({
    *
    * It used to do only the first, so every "required" field on this form was a red star
    * over an input that submitted happily empty and came back with a server error. Callers
-   * that mean "required only sometimes" already say so -- `required={!isEdit}` on the
-   * account password, `required={phoneRequired}` on the phone -- so passing this straight
+   * that mean "required only sometimes" already say so -- `required={!keepsPassword}` on
+   * the account password, `required={phoneRequired}` on the phone -- so passing this straight
    * through is what those were always describing.
    *
    * NOT used where the rule is conditional on another field: the security code is required
@@ -208,12 +214,15 @@ function Field({
 export function ProfileForm({
   siteKey,
   profile,
+  login,
   nextName,
   siblings = [],
   onDone,
 }: {
   siteKey: string;
   profile?: VaultProfileDetail;
+  /** A login with no profile behind it, to finish into one. Never with `profile`. */
+  login?: VaultLoginSummary;
   /** Preview of the name a new profile will be given. Display only. */
   nextName?: string;
   /**
@@ -224,6 +233,9 @@ export function ProfileForm({
   onDone?: () => void;
 }) {
   const isEdit = Boolean(profile);
+  // Finishing a login whose password is already on file: the field may stay blank, exactly
+  // as on an edit, and `saveProfile` keeps the stored one. See the note on this component.
+  const keepsPassword = isEdit || Boolean(login?.hasPassword);
   // Guest-checkout retailers have no login. The email stays -- it's where the order
   // confirmation goes -- but asking for a password invents a credential that does not
   // exist, and made the profile unsaveable because the field was required.
@@ -276,6 +288,7 @@ export function ProfileForm({
     <form action={formAction} className="flex flex-col gap-5">
       <input type="hidden" name="siteKey" value={siteKey} />
       {profile && <input type="hidden" name="profileId" value={profile.id} />}
+      {login && <input type="hidden" name="loginId" value={login.id} />}
 
       {state && !state.ok && (
         <p
@@ -331,7 +344,7 @@ export function ProfileForm({
             name="email"
             label={usesAccounts ? "Account email" : "Email"}
             type="email"
-            defaultValue={profile?.email}
+            defaultValue={profile?.email ?? login?.email}
             required
             hint={
               !usesAccounts
@@ -346,9 +359,17 @@ export function ProfileForm({
               name="accountPassword"
               label="Account password"
               type="password"
-              placeholder={isEdit ? "•••••••• (unchanged)" : ""}
-              required={!isEdit}
-              hint={isEdit ? "Leave blank to keep the current password." : undefined}
+              placeholder={
+                isEdit ? "•••••••• (unchanged)" : keepsPassword ? "•••••••• (saved)" : ""
+              }
+              required={!keepsPassword}
+              hint={
+                isEdit
+                  ? "Leave blank to keep the current password."
+                  : keepsPassword
+                    ? "Already saved with this login — leave blank to keep it."
+                    : undefined
+              }
             />
           )}
           {/* Where the password would be: it is the other half of what the bot needs to know
@@ -579,7 +600,7 @@ export function ProfileForm({
           disabled={pending}
           className="inline-flex min-h-11 items-center rounded-lg bg-[var(--color-brand)] px-5 py-2.5 text-sm font-semibold text-[var(--color-on-brand)] transition-colors hover:bg-[var(--color-brand-dark)] disabled:opacity-60 sm:min-h-0"
         >
-          {pending ? "Saving…" : isEdit ? "Save changes" : "Add profile"}
+          {pending ? "Saving…" : isEdit ? "Save changes" : login ? "Finish profile" : "Add profile"}
         </button>
         {onDone && (
           <button

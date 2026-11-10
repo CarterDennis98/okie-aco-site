@@ -2,7 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
-import { loginOnlySiteKeys, siteStyle } from "@/lib/sites";
+import { siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
 import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
 import { nextProfileName, profileBaseFor, renumberedNames } from "@/lib/vault/profile-input";
@@ -93,12 +93,17 @@ export type VaultProfileDetail = VaultProfileSummary & {
 };
 
 /**
- * One retailer login, on a site where that is all we hold.
+ * One retailer login with no checkout profile behind it.
  *
- * A `vault_account` with no `vault_profile` behind it -- see `usesProfiles` in sites.ts.
- * There is no name, no card and no address here because none of those exist for Costco:
- * the order is placed by hand from the member's own account, so the credentials are the
- * whole record.
+ * A `vault_account` with no `vault_profile` -- two kinds, told apart by the retailer:
+ *
+ *   - On a LOGIN-ONLY retailer it is the whole record: no name, no card and no address
+ *     exist there, because the order is placed by hand from the member's own account. See
+ *     `usesProfiles` in sites.ts.
+ *   - On a retailer that takes profiles it is a login WAITING TO BE FINISHED. Every Costco
+ *     login saved before Costco took full profiles (2026-11-09) is one: an email and a
+ *     password, and no address or card for the bot to check out with. It is in no export
+ *     until its owner adds them, which turns it into a profile on the same account.
  *
  * Carries the same `mailbox` / `pendingSince` / `confirmedAt` trio a profile does, and for
  * the same reasons -- a member needs to know where a verification code lands and whether
@@ -109,6 +114,13 @@ export type VaultLoginSummary = {
   siteKey: string;
   email: string;
   active: boolean;
+  /**
+   * Whether a password is stored. WHETHER, never what -- the same NULL filter as `hasCvv`.
+   *
+   * Finishing a login into a profile reuses this password, so the form asks for one only
+   * where there is none to reuse: an imported account, or a retailer that keeps none.
+   */
+  hasPassword: boolean;
   /** The mailbox this login's verification codes land in, or null when nothing covers it. */
   mailbox: string | null;
   /**
@@ -390,11 +402,17 @@ export async function getMemberProfile(
 }
 
 /**
- * A member's retailer logins on the sites where a login is all we hold, by retailer.
+ * A member's retailer logins with no checkout profile behind them, by retailer.
  *
- * ONLY login-only retailers. Every other site's accounts are reachable through the
- * profile that owns them, and listing them here as well would show a member the same
- * Target credential twice -- in a list that offers no card and no address to go with it.
+ * Every account of theirs that has no profile, whatever the retailer -- see
+ * VaultLoginSummary for the two kinds that is. An account WITH a profile is reached
+ * through it, and listing it here as well would show a member the same Target credential
+ * twice, in a list that offers no card and no address to go with it.
+ *
+ * Keyed on the missing profile rather than on `loginOnlySiteKeys()`, which is what this
+ * used to read. That list lost Costco the day it took full profiles, and every Costco
+ * login already saved would have dropped off the member's page with it: still on file,
+ * still theirs, in no export, and invisible.
  *
  * `password_enc` is not selected, like every other read in this file. Nothing shows a
  * retailer password back, not even to its owner: unlike an app password there is no
@@ -403,12 +421,11 @@ export async function getMemberProfile(
 export async function getMemberLogins(
   discordUserId: string,
 ): Promise<{ siteKey: string; logins: VaultLoginSummary[] }[]> {
-  const siteKeys = loginOnlySiteKeys();
-  if (siteKeys.length === 0) return [];
+  const profileless = { discordUserId, profile: { is: null } };
 
-  const [rows, withoutCvv, coverage, changes] = await Promise.all([
+  const [rows, withoutCvv, withoutPassword, coverage, changes] = await Promise.all([
     prisma.vaultAccount.findMany({
-      where: { discordUserId, siteKey: { in: siteKeys } },
+      where: profileless,
       orderBy: { email: "asc" },
       select: { id: true, siteKey: true, email: true, active: true, updatedAt: true },
     }),
@@ -416,7 +433,11 @@ export async function getMemberLogins(
     // answered without the ciphertext ever leaving the database. Same trick as
     // `getMemberLoginsForAdmin`'s passwordless set.
     prisma.vaultAccount.findMany({
-      where: { discordUserId, siteKey: { in: siteKeys }, cardCvvEnc: null },
+      where: { ...profileless, cardCvvEnc: null },
+      select: { id: true },
+    }),
+    prisma.vaultAccount.findMany({
+      where: { ...profileless, passwordEnc: null },
       select: { id: true },
     }),
     loadMailboxCoverage(discordUserId),
@@ -424,6 +445,7 @@ export async function getMemberLogins(
   ]);
 
   const missingCvv = new Set(withoutCvv.map((row) => row.id));
+  const missingPassword = new Set(withoutPassword.map((row) => row.id));
 
   const bySite = new Map<string, VaultLoginSummary[]>();
   for (const row of rows) {
@@ -433,6 +455,7 @@ export async function getMemberLogins(
       siteKey: row.siteKey,
       email: row.email,
       active: row.active,
+      hasPassword: !missingPassword.has(row.id),
       mailbox: mailboxFor(coverage, row.email),
       hasCvv: !missingCvv.has(row.id),
       pendingSince: changes.pending.get(row.id) ?? null,

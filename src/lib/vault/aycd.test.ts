@@ -170,8 +170,9 @@ describe("toAycdProfile postcode", () => {
  * The account list, which the bots read for retailer logins.
  *
  * The two-field shape is a CONTRACT with anything that splits on ":" and takes `parts[1]`
- * as the password. A Costco login also carries the security code its checkout prompts for,
- * so those lines gain a third field -- and nothing else may.
+ * as the password. A login-only retailer's login can also carry the security code its
+ * checkout prompts for -- Costco's did, before it took full profiles -- so those lines gain a
+ * third field, and nothing else may.
  */
 describe("toAccountList", () => {
   it("writes email:password, one per line", () => {

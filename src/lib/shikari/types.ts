@@ -61,7 +61,8 @@ export type DesiredProfile = {
   skus: string[];
   /**
    * How many of each TCIN its checkout buys, where its member picked a qty -- by TCIN, and
-   * only TCINs in `skus`. One not listed buys the standard qty, TaskSettings.checkoutQty.
+   * only TCINs in `skus`. One not listed buys the standard qty, TaskSettings.checkoutQty, or
+   * the product's limit where that's lower (CatalogProduct.maxQty).
    */
   qty: Record<string, number>;
   /**
@@ -101,6 +102,11 @@ export type CatalogProduct = {
   setName: string;
   /** In the Miscellaneous product line, so run from a task group of its own: MISC_GROUP. */
   misc: boolean;
+  /**
+   * Target's limit per checkout, where an admin posted one (DropProduct.maxQty); null when
+   * none is. Lowers the qty a profile whose member picked none runs at -- never a pick.
+   */
+  maxQty: number | null;
 };
 
 export type DesiredInstance = {
@@ -137,7 +143,8 @@ export type ProxyEntry = {
 export type TaskSettings = {
   /**
    * The standard qty: units of a product on a checkout task whose member picked none for it
-   * (see DesiredProfile.qty). Starts at the site's own STANDARD_QTY; never past MAX_QTY.
+   * (see DesiredProfile.qty), unless the product's limit is lower -- then its limit. Starts at
+   * the site's own STANDARD_QTY; never past MAX_QTY.
    */
   checkoutQty: number;
   checkoutProxyGroupId: number | null;

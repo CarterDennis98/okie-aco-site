@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/db/client";
 import { requireMember } from "@/lib/auth/guard";
-import { MAX_QTY, STANDARD_QTY } from "@/lib/products/qty";
+import { MAX_QTY, defaultQtyFor } from "@/lib/products/qty";
 
 /**
  * A member picking which drop products they want to be run for, and how many of each.
@@ -99,8 +99,9 @@ export async function saveProductChoice(raw: unknown): Promise<ChoiceResult> {
 const qtyInput = z
   .object({
     productId: z.uuid(),
-    // How many to buy in one checkout. Null: the standard qty -- or, for one profile, the
-    // pick's own.
+    // How many to buy in one checkout. Null: the product's default (the standard qty, or its
+    // posted limit where that is lower) -- or, for one profile, the pick's own. Up to MAX_QTY
+    // whatever the product's limit: past it is warned about on the page, never refused here.
     qty: z.number().int().min(1).max(MAX_QTY).nullable(),
     // One profile's own qty. Absent: the pick's, for every profile it runs on, setting aside
     // any profile's own.
@@ -122,7 +123,11 @@ export async function saveProductQty(raw: unknown): Promise<ChoiceResult> {
 
   const selection = await prisma.productSelection.findUnique({
     where: { productId_discordUserId: { productId, discordUserId: viewer.discordUserId } },
-    select: { id: true, qty: true, product: { select: { siteKey: true, active: true } } },
+    select: {
+      id: true,
+      qty: true,
+      product: { select: { siteKey: true, active: true, maxQty: true } },
+    },
   });
   if (!selection) return { ok: false, error: "Switch it on first, then pick a qty." };
   if (!selection.product.active) {
@@ -139,8 +144,10 @@ export async function saveProductQty(raw: unknown): Promise<ChoiceResult> {
     if (mine !== 1) return { ok: false, error: "That isn't your profile." };
   }
   // A profile's own qty that is the pick's anyway is no qty of its own: it follows the pick.
+  // A pick with no qty of its own runs at the product's default, which its limit can lower.
   const qty =
-    profileId !== undefined && parsed.data.qty === (selection.qty ?? STANDARD_QTY)
+    profileId !== undefined &&
+    parsed.data.qty === (selection.qty ?? defaultQtyFor(selection.product.maxQty))
       ? null
       : parsed.data.qty;
 

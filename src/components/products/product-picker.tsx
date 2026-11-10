@@ -5,7 +5,7 @@ import type { CatalogProduct, ProductLine, SetDetails } from "@/db/queries/produ
 import { money } from "@/lib/money";
 import { saveProductChoice, saveProductQty } from "@/lib/products/actions";
 import { setDropProductActive } from "@/lib/products/admin-actions";
-import { QTY_OPTIONS, STANDARD_QTY, TARGET_LIMIT, runnableQty } from "@/lib/products/qty";
+import { QTY_OPTIONS, defaultQtyFor, overLimit, runnableQty } from "@/lib/products/qty";
 import type { Choice } from "@/lib/products/selection";
 import {
   groupByLine,
@@ -33,8 +33,9 @@ import { SetEditor } from "@/components/products/set-editor";
  * ones they tick, and is only offered to a member with more than one profile to choose from.
  *
  * Each product they're in for also has a qty: how many each checkout buys, the standard one
- * until they pick another. One qty covers every profile it runs on; "By profile" sets one
- * each. More than Target usually allows can be picked, with a warning beside it.
+ * -- or the product's limit, where Target posts a lower one -- until they pick another. One
+ * qty covers every profile it runs on; "By profile" sets one each. A product's limit is shown
+ * on it, and more than that can still be picked, with a warning beside it.
  *
  * Built for hundreds of products: a search across names, SKUs and sets, and every set can be
  * folded away to its heading -- remembered in this browser, so the sets someone is done with
@@ -176,7 +177,10 @@ function useFolded(store: ReturnType<typeof foldedStore>): Set<string> {
 const quiet =
   "inline-flex min-h-11 items-center rounded-lg px-2.5 text-xs font-medium text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] disabled:opacity-40 sm:min-h-0 sm:py-1";
 
-/** A product just switched on: every profile, at the standard qty -- what the server makes. */
+/**
+ * A product just switched on: every profile, at its default qty -- the standard, or its limit
+ * where that's lower -- which is what the server makes.
+ */
 const switchedOn = (): Choice => ({ all: true, profileIds: [], qty: null, profileQty: {} });
 
 export function ProductPicker({
@@ -273,7 +277,8 @@ export function ProductPicker({
 
   /**
    * Saves a product's qty: for every profile (no `profileId`), setting aside any of their own,
-   * or for one. Null is the standard qty, or for one profile, the pick's. Optimistic, like save.
+   * or for one. Null is the product's default qty (defaultQtyFor), or for one profile, the
+   * pick's. Optimistic, like save.
    */
   async function saveQty(productId: string, qty: number | null, profileId?: string) {
     const before = choices[productId];
@@ -755,6 +760,7 @@ function SetSection({
                   {/* One fact a line: run together, they wrap mid-way on a phone. */}
                   <div className="mt-0.5 text-xs text-[var(--color-muted)]">
                     {product.pasFeeCents !== null && <p>PAS: {money(product.pasFeeCents)}/unit</p>}
+                    {product.maxQty !== null && <p>Limit: {product.maxQty} per checkout</p>}
                     <p>
                       SKU <span className="tabular-nums">{product.sku}</span>
                     </p>
@@ -779,6 +785,7 @@ function SetSection({
                   {choice && (
                     <QtyChoice
                       productName={product.name}
+                      maxQty={product.maxQty}
                       choice={choice}
                       profiles={active}
                       disabled={busyHere}
@@ -903,7 +910,7 @@ function ProfileChoice({
   );
 }
 
-/** A qty select, edged in the warning colour while it holds more than Target usually allows. */
+/** A qty select, edged in the warning colour while it holds more than the product's limit. */
 const qtySelect = (over: boolean) =>
   "min-h-11 rounded-lg border bg-[var(--color-ink)] px-2 text-xs text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none disabled:opacity-60 sm:min-h-0 sm:py-1 " +
   (over ? "border-[var(--color-warn)]" : "border-[var(--color-edge)]");
@@ -913,41 +920,52 @@ const qtySelect = (over: boolean) =>
  * profile", offered once it runs on more than one -- one each. While the profiles differ, the
  * qty for all reads "Mixed" and the list stays open; picking one for all sets them all.
  *
- * Up to MAX_QTY can be picked, but past TARGET_LIMIT -- what Target usually allows in one
- * checkout -- each select that holds too many is edged in the warning colour, and a warning
- * under them says why. It is announced as it appears, and read with each of those selects.
+ * Up to MAX_QTY can be picked whatever the product's limit. Past the limit Target posts for
+ * it, each select that holds too many is edged in the warning colour, and a warning under
+ * them says why. It is announced as it appears, and read with each of those selects. A
+ * product with no limit posted is never warned about: there is nothing to go past.
+ *
+ * Until they pick, it runs at the product's default -- the standard qty, or its limit where
+ * that's lower (defaultQtyFor) -- so a limited product never starts out warned.
  */
 function QtyChoice({
   productName,
+  maxQty,
   choice,
   profiles,
   disabled,
   onChange,
 }: {
   productName: string;
+  /** Target's limit per checkout on the product; null when none is posted. */
+  maxQty: number | null;
   choice: Choice;
   /** The member's active profiles. */
   profiles: Profile[];
   disabled: boolean;
-  /** A qty for every profile (no profileId) or for one: null, the standard or the pick's. */
+  /** A qty for every profile (no profileId) or for one: null, the default or the pick's. */
   onChange: (qty: number | null, profileId?: string) => void;
 }) {
   const listId = useId();
   const warningId = useId();
   const [open, setOpen] = useState(false);
   const running = choice.all ? profiles : profiles.filter((p) => choice.profileIds.includes(p.id));
+  // What runs where they picked nothing: the standard, or the product's limit below it.
+  const byDefault = defaultQtyFor(maxQty);
   // As they run: never past the most a member can pick.
-  const pickQty = runnableQty(choice.qty);
+  const pickQty = runnableQty(choice.qty, byDefault);
   const qtyOf = (profileId: string) => runnableQty(choice.profileQty[profileId], pickQty);
   const qtys = [...new Set(running.map((p) => qtyOf(p.id)))];
   // The qty every profile it runs on buys; null while they differ.
   const shared = qtys.length > 1 ? null : (qtys[0] ?? pickQty);
   const byProfile = running.length > 1;
   const listed = byProfile && (open || shared === null);
-  const tooMany = (qty: number | null) => qty !== null && qty > TARGET_LIMIT;
+  const tooMany = (qty: number | null) => overLimit(qty, maxQty);
   const warned = (running.length > 0 ? qtys : [pickQty]).some(tooMany);
 
-  const setAll = (qty: number) => onChange(qty === STANDARD_QTY ? null : qty);
+  // The default is kept as null, so it follows the product: posting a limit later lowers what
+  // an untouched pick runs at. Anything else is kept as picked, past the limit included.
+  const setAll = (qty: number) => onChange(qty === byDefault ? null : qty);
   const setOne = (profileId: string, qty: number) => {
     // Kept open once used, so the list doesn't vanish when the profiles agree again.
     setOpen(true);
@@ -1052,8 +1070,8 @@ function QtyChoice({
               <path d="M10 8v4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
               <circle cx="10" cy="14.4" r="1" fill="currentColor" />
             </svg>
-            Target&rsquo;s limit is usually {TARGET_LIMIT}, so more than {TARGET_LIMIT} may cause
-            problems at checkout.
+            Target&rsquo;s limit on this is {maxQty}, so more than {maxQty} may cause problems at
+            checkout.
           </p>
         )}
       </div>

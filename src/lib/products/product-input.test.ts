@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  PRODUCT_LIMIT_MAX,
+  maxQtyText,
   nameFromTargetUrl,
+  parseMaxQty,
   parsePastedLinks,
   parseProductInput,
   parseLineName,
@@ -20,6 +23,7 @@ const fields = (over: Partial<Parameters<typeof parseProductInput>[0]> = {}) => 
   price: "",
   pasFee: "",
   imageUrl: "",
+  maxQty: "",
   ...over,
 });
 
@@ -61,8 +65,23 @@ describe("parseProductInput", () => {
         priceCents: 4999,
         pasFeeCents: null,
         imageUrl: null,
+        maxQty: null,
       },
     });
+  });
+
+  it("reads Target's limit per checkout, where blank is none", () => {
+    const limit = (maxQty: string) => {
+      const parsed = parseProductInput(fields({ maxQty }));
+      return parsed.ok ? parsed.value.maxQty : parsed.error;
+    };
+    expect(limit("1")).toBe(1);
+    expect(limit(" 2 ")).toBe(2);
+    expect(limit("")).toBeNull();
+    expect(limit("   ")).toBeNull();
+    expect(limit("0")).toBe(
+      `The limit is a whole number from 1 to ${PRODUCT_LIMIT_MAX}, or blank for none.`,
+    );
   });
 
   it("reads the PAS fee per unit, where $0 is a fee and blank is none", () => {
@@ -110,6 +129,30 @@ describe("parseProductInput", () => {
     [{ imageUrl: "http://img.example/x.png" }, "The image needs an https:// link."],
   ])("says what's wrong with %o", (over, error) => {
     expect(parseProductInput(fields(over))).toEqual({ ok: false, error });
+  });
+});
+
+describe("parseMaxQty", () => {
+  it("takes a whole number from 1 to the most, and blank as none", () => {
+    expect(parseMaxQty("1")).toEqual({ ok: true, value: 1 });
+    expect(parseMaxQty("02")).toEqual({ ok: true, value: 2 });
+    expect(parseMaxQty(String(PRODUCT_LIMIT_MAX))).toEqual({ ok: true, value: PRODUCT_LIMIT_MAX });
+    expect(parseMaxQty("")).toEqual({ ok: true, value: null });
+  });
+
+  it.each(["0", "-1", "1.5", "2 per order", "one", String(PRODUCT_LIMIT_MAX + 1), "1e1"])(
+    "refuses %o",
+    (raw) => {
+      expect(parseMaxQty(raw)).toEqual({
+        ok: false,
+        error: `The limit is a whole number from 1 to ${PRODUCT_LIMIT_MAX}, or blank for none.`,
+      });
+    },
+  );
+
+  it("shows a limit back as its field holds it", () => {
+    expect(maxQtyText(1)).toBe("1");
+    expect(maxQtyText(null)).toBe("");
   });
 });
 

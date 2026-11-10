@@ -28,6 +28,11 @@ export type CatalogProduct = {
   /** The PAS fee per unit members are shown. Display only; see DropProduct. */
   pasFeeCents: number | null;
   imageUrl: string | null;
+  /**
+   * Target's limit per checkout, where an admin posted one. Warned past, never enforced, and
+   * the default qty where it's below the standard -- see DropProduct.maxQty.
+   */
+  maxQty: number | null;
   /** Its place in its set on the page; see lib/products/sets.ts. */
   sortOrder: number;
   active: boolean;
@@ -44,6 +49,7 @@ const PRODUCT_SELECT = {
   priceCents: true,
   pasFeeCents: true,
   imageUrl: true,
+  maxQty: true,
   sortOrder: true,
   active: true,
   createdAt: true,

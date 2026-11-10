@@ -14,6 +14,7 @@ import {
   getMembersForSite,
   getPendingChangeCount,
   getPendingChanges,
+  getUnfinishedLoginsForAdmin,
   getVaultSites,
 } from "@/db/queries/admin-vault";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
@@ -34,10 +35,10 @@ const bob: VaultScope = { sites: [SITE], assigneeId: BOB };
 const PREFIX = "scope-test-";
 
 /** One profile and its account, assigned to `runner`. */
-async function profile(owner: string, runner: string, name: string) {
+async function profile(owner: string, runner: string, name: string, site = SITE) {
   const account = await prisma.vaultAccount.create({
     data: {
-      siteKey: SITE,
+      siteKey: site,
       email: `${PREFIX}${name}@example.com`,
       discordUserId: owner,
       assigneeId: runner,
@@ -45,7 +46,7 @@ async function profile(owner: string, runner: string, name: string) {
   });
   return prisma.vaultProfile.create({
     data: {
-      siteKey: SITE,
+      siteKey: site,
       discordUserId: owner,
       name: `${PREFIX}${name}`,
       profileKey: `${PREFIX}${name}`,
@@ -191,6 +192,50 @@ describe.skipIf(!canRun)("vault reads scoped to a runner", () => {
 
   it("counts each retailer tab over the runner's share", async () => {
     expect((await getVaultSites(bob)).find((s) => s.siteKey === SITE)?.count).toBe(2);
+  });
+
+  /**
+   * Every Costco login saved before Costco took full profiles has no profile behind it. It
+   * is in no export and on no roster, so this list is how a runner sees who still has to
+   * finish one -- and it is scoped like every other read here. The retailer's tab counts
+   * them too, or a retailer holding only logins would drop out of the picker altogether.
+   */
+  it("lists the logins still to be finished, in the runner's share only", async () => {
+    const COSTCO = "costco";
+    const login = (owner: string, runner: string, name: string) =>
+      prisma.vaultAccount.create({
+        data: {
+          siteKey: COSTCO,
+          email: `${PREFIX}${name}@example.com`,
+          discordUserId: owner,
+          assigneeId: runner,
+        },
+      });
+    await login(MEMBER, BOB, "costco-m");
+    await login(OTHER, ALICE, "costco-o");
+    // Finished: its profile puts it on the roster instead.
+    await profile(MEMBER, BOB, "costco-done", COSTCO);
+
+    const bobsCostco: VaultScope = { sites: [COSTCO], assigneeId: BOB };
+    const his = await getUnfinishedLoginsForAdmin(COSTCO, bobsCostco);
+    expect(his.map((row) => [row.email, row.assigneeId])).toEqual([
+      [`${PREFIX}costco-m@example.com`, BOB],
+    ]);
+
+    // Everyone's, by member: scope-test-111 before scope-test-112. Filtered to this test's
+    // rows, because the database it runs against may hold real Costco logins of its own.
+    const everyone = (await getUnfinishedLoginsForAdmin(COSTCO, {})).filter((row) =>
+      row.email.startsWith(PREFIX),
+    );
+    expect(everyone.map((row) => [row.member, row.email])).toEqual([
+      ["scope-test-111", `${PREFIX}costco-m@example.com`],
+      ["scope-test-112", `${PREFIX}costco-o@example.com`],
+    ]);
+
+    // Bob's tab: his one profile and his one login to finish.
+    expect((await getVaultSites(bobsCostco)).find((s) => s.siteKey === COSTCO)?.count).toBe(2);
+    // None on Target, where every login here has its profile.
+    expect(await getUnfinishedLoginsForAdmin(SITE, bob)).toEqual([]);
   });
 
   it("keeps each runner's queue to the changes stamped for their bot", async () => {

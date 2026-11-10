@@ -19,10 +19,14 @@ import { ProfileManager } from "@/components/vault/profile-manager";
  * for no benefit. The selection resets on reload, which is fine -- there is no wrong
  * retailer to land on.
  *
- * A LOGIN-ONLY retailer gets LoginManager instead of ProfileManager -- Costco holds an
- * email and a password and no card or address at all, so the profile list would be five
- * empty columns. The chips are the same either way, and their count is whichever kind of
- * row that retailer has; see `usesProfiles` in sites.ts.
+ * A LOGIN-ONLY retailer gets LoginManager instead of ProfileManager -- a login there holds
+ * an email and a password and no card or address at all, so the profile list would be five
+ * empty columns. See `usesProfiles` in sites.ts; no retailer is login-only today.
+ *
+ * Everywhere else a login with no profile behind it is one WAITING TO BE FINISHED -- every
+ * Costco login saved before Costco took full profiles -- and ProfileManager lists those
+ * above the profiles. The chip counts both: a member whose only Costco row is a login to
+ * finish should land on Costco, not on an empty Target tab.
  */
 export function SiteSwitcher({
   siteKeys,
@@ -40,9 +44,11 @@ export function SiteSwitcher({
   renumbered: Record<string, string[]>;
   logos: Record<string, string | null>;
 }) {
-  // What a chip counts, and what "most" means when picking which one opens.
+  // What a chip counts, and what "most" means when picking which one opens. On a login-only
+  // retailer the logins are the rows; elsewhere they are the ones still to be finished.
   const countFor = (key: string) =>
-    (siteUsesProfiles(key) ? profilesBySite[key]?.length : loginsBySite[key]?.length) ?? 0;
+    (siteUsesProfiles(key) ? (profilesBySite[key]?.length ?? 0) : 0) +
+    (loginsBySite[key]?.length ?? 0);
 
   // Open the retailer they actually use, not whichever sorts first. Every self-serve
   // retailer is listed now, including ones they have nothing on, so keying off position
@@ -124,6 +130,7 @@ export function SiteSwitcher({
           siteKey={active}
           siteLogo={logos[active] ?? null}
           profiles={profilesBySite[active] ?? []}
+          unfinished={loginsBySite[active] ?? []}
           nextName={nextNames[active] ?? ""}
           renumbered={renumbered[active] ?? []}
         />

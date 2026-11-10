@@ -2,7 +2,7 @@
 
 import { useId, useState } from "react";
 import type { ShikariMember } from "@/db/queries/shikari";
-import { MAX_QTY, STANDARD_QTY, TARGET_LIMIT, runnableQty } from "@/lib/products/qty";
+import { MAX_QTY, STANDARD_QTY, runnableQty } from "@/lib/products/qty";
 import { scopesOverlap, type GroupChoice, type ShikariInstanceConfig } from "@/lib/shikari/config";
 import type { ParsedProxyList } from "@/lib/shikari/proxies";
 import {
@@ -763,11 +763,11 @@ function TaskSettingsForm({
             }
             className={`${field} mt-1 block w-full`}
           />
-          {settings.checkoutQty > TARGET_LIMIT && (
-            <span className="mt-1 block text-[var(--color-warn)]">
-              Target&rsquo;s limit is usually {TARGET_LIMIT}: more may cause problems at checkout.
-            </span>
-          )}
+          {/* Not a warning: the builder applies it (defaultQtyFor), so a product Target limits
+              to 1 never runs untouched members at this. */}
+          <span className="mt-1 block">
+            A product with a lower limit runs at its limit where a member picked none.
+          </span>
           {settings.checkoutQty !== STANDARD_QTY && (
             <span className="mt-1 block text-[var(--color-warn)]">
               Members are told {STANDARD_QTY} is the standard.

@@ -36,8 +36,10 @@ export default async function ProfilesPage() {
 
   // Show a section for every retailer they have profiles on, plus any open site they
   // don't yet -- otherwise a member with nothing has no way to add their first profile.
-  // A login-only retailer counts the same way: those rows are accounts rather than
-  // profiles, so they arrive from their own query and are grouped separately.
+  // A login with no profile behind it counts the same way -- a login-only retailer's, or
+  // one waiting to be finished, like every Costco login from before Costco took full
+  // profiles. Those rows are accounts rather than profiles, so they arrive from their own
+  // query and are grouped separately.
   const siteKeys = [
     ...new Set([...grouped.map((g) => g.siteKey), ...logins.map((g) => g.siteKey), ...OPEN_SITES]),
   ].sort();

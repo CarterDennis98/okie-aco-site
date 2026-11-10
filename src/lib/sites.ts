@@ -8,7 +8,7 @@
  *     vision — below the 15 floor, i.e. genuinely hard to tell apart.
  *   - Costco #E31837 is a third red: ΔE2000 7.3 from #E30613 and 10.6 from Target's
  *     #CC0000, measured on the raw tints. Below floor against both, so red now marks
- *     the brand, one retailer we ship to, and another we only hold logins for.
+ *     the brand and two of the retailers we ship to.
  *   - Pokémon Center yellow and Best Buy yellow are ΔE 10.6 apart. Also below floor.
  *   - Walmart and Sam's Club are both corporate blue, and deliberately so.
  *   - Target red (2.34:1) and Walmart blue (2.79:1) don't even clear 3:1 as UI shapes
@@ -70,17 +70,18 @@ export type SiteStyle = {
   /**
    * Whether WE need to read an emailed verification code here.
    *
-   * Three different reasons it can be false, and all end in the same place -- no app
+   * Two different reasons it can be false, and both end in the same place -- no app
    * password is wanted, so nothing should nag a member for one:
    *
    *   - Pokémon Center and Menards check out as guests. There is no login, so no code is
    *     ever sent and an app password would do nothing.
-   *   - Costco is signed into BY HAND. If Costco asks for a code, the operator is sitting
-   *     at the login and can read it out of the member's inbox with them -- there is no
-   *     bot mid-drop that has to open the mailbox unattended, which is the only thing a
-   *     stored app password buys.
-   *   - Crunchyroll, Premium Bandai and Mattel have a login and a bot, but the bot never
-   *     reads a code out of the inbox, so a stored app password would sit there unused.
+   *   - Crunchyroll, Premium Bandai, Mattel and Costco have a login and a bot, but the bot
+   *     never reads a code out of the inbox, so a stored app password would sit there unused.
+   *
+   * Costco used to be a third: until 2026-11-09 it was signed into BY HAND, so if it asked
+   * for a code the operator was at the login and could read it out of the member's inbox
+   * with them. Its bot places the whole order now, and is not known to read a code either --
+   * the day it does, Costco loses this flag and its members are asked for app passwords.
    *
    * Defaults to true: a new retailer almost certainly mails a code to something automated,
    * and being nagged about a password you don't need is a smaller failure than silently
@@ -91,12 +92,17 @@ export type SiteStyle = {
   /**
    * Whether a login here carries the card's security code.
    *
-   * Costco prompts for the CVV at checkout even when the card on the account is already
-   * saved -- not every time, which is exactly what makes a missing one expensive: it
-   * surfaces mid-order, by hand, with a queue pass running down. Nothing else about the
-   * card is stored for such a retailer, because nothing else has to be; the member's own
-   * account supplies the number, the expiry and the address, and this is the one field it
-   * cannot fill in for them.
+   * For a LOGIN-ONLY retailer whose checkout prompts for the CVV even when the card on the
+   * account is already saved. That was Costco while its orders were placed by hand (until
+   * 2026-11-09) -- not every time, which is exactly what made a missing one expensive: it
+   * surfaced mid-order, with a queue pass running down. Nothing else about the card is
+   * stored for such a retailer, because nothing else has to be; the member's own account
+   * supplies the number, the expiry and the address, and this is the one field it cannot
+   * fill in for them.
+   *
+   * No retailer sets it today. Costco takes a full checkout profile now, and a profile's
+   * card carries its own security code -- this flag on top of one would be a second CVV for
+   * the same member with nothing keeping the two in step, which a test forbids.
    *
    * The code is 3 digits, or 4 on Amex -- and unlike a profile, there is no card number
    * here to detect the brand from, so both lengths are accepted. See `isPlausibleCvv`.
@@ -112,9 +118,12 @@ export type SiteStyle = {
    *
    * Everywhere else a change has to be exported and loaded onto a bot before it takes
    * effect, which is what `VaultChange.appliedAt` records and what the member's "pending
-   * confirmation" chip is about. Costco has no such step: nothing loads these credentials
-   * anywhere, and the operator reads the login at order time, so an edit is in use as soon
-   * as it is written and there is nothing for anyone to confirm.
+   * confirmation" chip is about. A retailer where nothing loads the credentials -- the
+   * operator reads the login at order time -- has no such step, so an edit is in use as
+   * soon as it is written and there is nothing for anyone to confirm.
+   *
+   * That was Costco until 2026-11-09. Its bot loads exported profiles now, so a Costco edit
+   * waits to be confirmed like any other, and no retailer sets this today.
    *
    * Changes on such a retailer are stamped applied on arrival -- see recordChange. They
    * still notify, because a new signup is worth knowing about; they just never sit in the
@@ -190,17 +199,19 @@ export type SiteStyle = {
   /**
    * Whether we hold a full checkout profile here, or only a login.
    *
-   * Costco is the first retailer where the answer is no, and the reason is how its bot
-   * works: it takes spots in the queue without signing in, and once a queue pass lands the
-   * order is placed BY HAND from the member's own account. The card and the address come
-   * from what the member has saved at Costco, so this site never sees either -- there is
-   * nothing to encrypt, nothing to export as AYCD, and no address for a `vault_profile`
-   * row to carry.
+   * For a retailer whose bot never checks out with stored details. Costco was the one
+   * until 2026-11-09: its bot took spots in the queue without signing in, and once a queue
+   * pass landed the order was placed BY HAND from the member's own account, so the card and
+   * the address came from what the member had saved at Costco and this site never saw
+   * either -- nothing to encrypt, nothing to export as AYCD, and no address for a
+   * `vault_profile` row to carry. Its bot places the whole order now, so Costco takes a full
+   * profile like Target, and no retailer is login-only today.
    *
    * A login-only retailer stores exactly one row per member per login: a `vault_account`
    * with no `vault_profile` behind it. That shape was already legal -- `VaultProfile` is
    * optional on the account, and 11 accounts in the original import have no profile -- so
-   * nothing about the schema had to change to admit one.
+   * nothing about the schema had to change to admit one. The same shape on a retailer that
+   * DOES take profiles is a login waiting to be finished -- see getMemberLogins.
    *
    * Defaults to true, and every other retailer relies on that: a new site that checks out
    * for us needs the whole profile, and a retailer wrongly treated as login-only would
@@ -324,19 +335,21 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // on white -- the counter of the C is opaque white, so a white plate is the one
     // backing that would eat half of it.
     //
-    // Login only. See usesProfiles: the order is placed by hand from the member's own
-    // Costco account, so we hold the credentials and nothing else.
-    usesProfiles: false,
-    // Nothing here reads a mailbox unattended -- the operator is at the login when a code
-    // is needed -- so an app password buys nothing and asking for one is a chore invented
-    // for a member. See usesEmailCodes.
+    // Profiled like Target since 2026-11-09, when Costco's bot started placing the whole
+    // order itself: a login plus a full checkout profile, phone optional, no profileSoftCap.
+    // Until then it was login-only -- the bot took queue spots signed out and the order was
+    // placed by hand from the member's own account -- so it held an email, a password and
+    // the card's security code on the account row, and nothing else. A login saved then has
+    // no profile behind it, and the member is asked to finish it with an address and a card
+    // (see getMemberLogins); it is in no export until they do.
+    //
+    // chess runs it: he holds the Costco runner role, and a new member's Costco profile goes
+    // to him (DEFAULT_RUNNERS, lib/auth/admin-scope.ts). Its fees stay the operator's.
+    //
+    // Still no app password: nothing is known to read a Costco code out of a member's inbox
+    // yet. If the bot starts signing in somewhere Costco emails one, delete this line and
+    // members are asked for one, as on Target. See usesEmailCodes.
     usesEmailCodes: false,
-    // Costco asks for the security code at checkout even on a card it already has saved.
-    // See storesCardCvv.
-    storesCardCvv: true,
-    // No bot loads these, so there is no gap between saving and being in use, and nothing
-    // for the operator to confirm. See changesApplyImmediately.
-    changesApplyImmediately: true,
     selfServe: true,
   },
   crunchyroll: {

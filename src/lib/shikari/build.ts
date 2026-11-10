@@ -1,4 +1,4 @@
-import { runnableQty } from "@/lib/products/qty";
+import { defaultQtyFor, runnableQty } from "@/lib/products/qty";
 import { freshDeviceData } from "@/lib/shikari/device";
 import { jsonObject, pyJson, shikariTime } from "@/lib/shikari/format";
 import { checkShikariSchema } from "@/lib/shikari/schema";
@@ -80,9 +80,10 @@ import type {
  * unless the operator says otherwise (TaskSettings.miscCheckoutProxyGroupId).
  *
  * PER PRODUCT. Each product row on a checkout task carries the qty its member picked for that
- * product on that profile, or the standard qty where they picked none -- past Target's usual
- * limit of 2 if they chose so, never past the most they can pick, 10 -- and Shikari's default
- * price limits, none. The site sets no price limit, so one set by hand comes off.
+ * product on that profile -- past the product's posted limit if they chose so, never past the
+ * most they can pick, 10 -- or where they picked none, the standard qty, or the product's
+ * limit where that's lower. And Shikari's default price limits, none. The site sets no price
+ * limit, so one set by hand comes off.
  *
  * WHAT IS NEVER TOUCHED: anything that isn't Target. One instance runs Walmart from the same
  * database, and 131 of its emails and 141 of its names are also a Target profile's -- so a
@@ -1422,12 +1423,17 @@ class InstanceBuilder {
 
   /**
    * How many of each TCIN a profile's checkout buys: the qty its member picked for it, or the
-   * standard qty -- never past MAX_QTY, the most a member can pick, and never none (see
-   * runnableQty). The site sends neither; this is the last line of defence.
+   * standard qty -- or the product's posted limit, where that's lower (defaultQtyFor). Never
+   * past MAX_QTY, the most a member can pick, and never none (see runnableQty). The site sends
+   * neither; this is the last line of defence.
+   *
+   * A limit lowers only the qty nobody picked. One a member picked past it is theirs, warned
+   * on the page, and runs as picked.
    */
   private qtyFor(d: DesiredProfile): (sku: string) => number {
     const standard = this.options.tasks.checkoutQty;
-    return (sku) => runnableQty(d.qty[sku], standard);
+    const limits = new Map(this.desired.products.map((p) => [p.sku, p.maxQty]));
+    return (sku) => runnableQty(d.qty[sku], defaultQtyFor(limits.get(sku), standard));
   }
 
   /**

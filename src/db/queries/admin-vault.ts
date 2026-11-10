@@ -10,13 +10,7 @@ import { VaultEntity, type VaultAction } from "@/generated/prisma/enums";
 import { isExpired, maskedLabel } from "@/lib/vault/card";
 import { providerForEmail } from "@/lib/vault/email-providers";
 import { normalizePhone } from "@/lib/vault/profile-input";
-import {
-  loginOnlySiteKeys,
-  siteRequiresPhone,
-  siteStoresCardCvv,
-  siteStyle,
-  siteUsesProfiles,
-} from "@/lib/sites";
+import { siteRequiresPhone, siteStoresCardCvv, siteStyle, siteUsesProfiles } from "@/lib/sites";
 import { EMAIL_BUCKET } from "@/lib/vault/pending-filter";
 import {
   isProfileFilterActive,
@@ -101,11 +95,12 @@ export type AdminMemberRow = {
    * Logins with no security code, on a retailer that asks for one at checkout.
    *
    * The login-only counterpart to `missingPhone`, and the same kind of problem: the row
-   * looks healthy and then fails an order by hand, mid-drop, when Costco decides to ask.
-   * Counted over ACTIVE logins only -- a disabled one isn't being used, so it isn't the
-   * thing to chase.
+   * looks healthy and then fails an order by hand, mid-drop, when the retailer decides to
+   * ask. Counted over ACTIVE logins only -- a disabled one isn't being used, so it isn't
+   * the thing to chase.
    *
-   * Always 0 where the retailer stores no CVV, which is everywhere but Costco today.
+   * Always 0 where the retailer stores no CVV, which is everywhere today -- Costco was the
+   * one until it took full profiles. See storesCardCvv.
    */
   missingCvv: number;
   /**
@@ -258,9 +253,9 @@ export async function getMembersForSite(
  * The profile-shaped counts are zero because they cannot apply, not because they are
  * unknown: a login has no card to expire, no phone to be missing, and no soft cap to run
  * past -- nothing about a login belongs to one bot instance. `missingAppPasswords` is the
- * one that still means something, and it means MORE here than elsewhere: the operator
- * signs in to Costco by hand, so an address with nowhere to read a code from is a login
- * somebody has to chase mid-drop.
+ * one that still means something, and it means MORE here than elsewhere: where the
+ * operator signs in by hand, as on Costco while it was login-only, an address with nowhere
+ * to read a code from is a login somebody has to chase mid-drop.
  */
 async function membersWithLogins(
   siteKey: string,
@@ -478,9 +473,9 @@ export type AdminLoginRow = {
    * Whether a security code is on file, on a retailer that asks for one.
    *
    * Same NULL-filter derivation as `hasPassword`, and worth surfacing for the same
-   * reason: Costco prompts for the CVV only sometimes, so a login missing one looks
-   * perfectly healthy right up until the order it fails. Always false where the retailer
-   * stores none -- check `storesCardCvv` before reading it as a gap.
+   * reason: a retailer that prompts for the CVV only sometimes, as Costco did, makes a
+   * login missing one look perfectly healthy right up until the order it fails. Always
+   * false where the retailer stores none -- check `storesCardCvv` before reading it as a gap.
    */
   hasCvv: boolean;
   updatedAt: Date;
@@ -543,6 +538,68 @@ export async function getMemberLoginsForAdmin(
     : rows;
 
   return { rows: shown, total: rows.length };
+}
+
+export type AdminUnfinishedLoginRow = {
+  id: string;
+  discordUserId: string;
+  /** The member's Discord display name, or their id when we have no row for them. */
+  member: string;
+  /** The runner who holds it -- and who will run the profile it becomes. */
+  assigneeId: string;
+  email: string;
+  active: boolean;
+  updatedAt: Date;
+};
+
+/**
+ * Logins on a retailer that takes profiles, with no profile behind them yet.
+ *
+ * Every Costco login saved before Costco took full profiles (2026-11-09) is one: an email
+ * and a password, waiting for its owner to add an address and a card on their Profiles
+ * page. None of them is in any export -- the files are built from profiles -- and neither
+ * the roster nor the profile table shows them, since both are built from profiles too. So
+ * this is the one place a runner can see who still has to finish, and where a full admin
+ * can move one to another runner before it is finished.
+ *
+ * Always empty on a login-only retailer, where every row is a login and its own table
+ * already lists them. Within `scope`, like every read on the profiles page.
+ */
+export async function getUnfinishedLoginsForAdmin(
+  siteKey: string,
+  scope?: VaultScope,
+): Promise<AdminUnfinishedLoginRow[]> {
+  if (!siteUsesProfiles(siteKey)) return [];
+
+  const accounts = await prisma.vaultAccount.findMany({
+    where: { AND: [accountsIn(scope), { siteKey, profile: { is: null } }] },
+    select: {
+      id: true,
+      discordUserId: true,
+      assigneeId: true,
+      email: true,
+      active: true,
+      updatedAt: true,
+    },
+  });
+  if (accounts.length === 0) return [];
+
+  const members = await prisma.discordMember.findMany({
+    where: { discordUserId: { in: [...new Set(accounts.map((a) => a.discordUserId))] } },
+    select: { discordUserId: true, username: true, globalName: true },
+  });
+  const nameById = new Map(
+    members.map((m) => [m.discordUserId, m.globalName ?? m.username] as const),
+  );
+
+  // By member, then by address: the operator chases people, not rows.
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+  return accounts
+    .map((account) => ({
+      ...account,
+      member: nameById.get(account.discordUserId) ?? account.discordUserId,
+    }))
+    .sort((a, b) => collator.compare(a.member, b.member) || collator.compare(a.email, b.email));
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,36 +1117,34 @@ export async function getPendingChanges(
 /**
  * Sites that actually hold something, so the picker only offers real choices.
  *
- * Counts PROFILES on a normal retailer and LOGINS on a login-only one. Reading profiles
- * alone would leave Costco out of the picker entirely -- it has accounts and no profiles
- * by design -- and a retailer with no picker entry has no export button either, which is
- * the operator's only way to get the credentials onto the bot.
+ * Counts PROFILES, plus every LOGIN with no profile behind it: on a login-only retailer
+ * that is all of its rows, and on any other it is a login waiting to be finished. Reading
+ * profiles alone would leave a retailer holding only logins out of the picker entirely --
+ * Costco, the day it took full profiles, when every row it had was a login -- and a
+ * retailer with no picker entry has no export button and no list of who still has to
+ * finish, which are the operator's two reasons to open it.
  *
- * Counted within `scope`, so each tab says how many of THIS runner's profiles are there.
+ * Counted within `scope`, so each tab says how many of THIS runner's rows are there.
  */
 export async function getVaultSites(
   scope?: VaultScope,
 ): Promise<{ siteKey: string; count: number }[]> {
-  const loginOnly = loginOnlySiteKeys().filter((key) => !scope?.sites || scope.sites.includes(key));
   const [profiles, logins] = await Promise.all([
     prisma.vaultProfile.groupBy({
       by: ["siteKey"],
       where: profilesIn(scope),
       _count: { _all: true },
     }),
-    loginOnly.length > 0
-      ? prisma.vaultAccount.groupBy({
-          by: ["siteKey"],
-          where: { AND: [accountsIn(scope), { siteKey: { in: loginOnly } }] },
-          _count: { _all: true },
-        })
-      : Promise.resolve([]),
+    prisma.vaultAccount.groupBy({
+      by: ["siteKey"],
+      where: { AND: [accountsIn(scope), { profile: { is: null } }] },
+      _count: { _all: true },
+    }),
   ]);
 
-  // Summed per retailer rather than concatenated. The two queries cannot both return a
-  // row for the same site today -- a login-only retailer has no profiles -- but a site
-  // flipped to login-only AFTER it had them would, and two entries with one siteKey means
-  // two identical tabs in the picker and a duplicate React key behind them.
+  // Summed per retailer rather than concatenated: a retailer can hold both -- profiles,
+  // and logins still to be finished -- and two entries with one siteKey means two
+  // identical tabs in the picker and a duplicate React key behind them.
   const total = new Map<string, number>();
   for (const group of [...profiles, ...logins]) {
     total.set(group.siteKey, (total.get(group.siteKey) ?? 0) + group._count._all);

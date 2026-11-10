@@ -550,13 +550,17 @@ model VaultAccount {
   // "password unknown" -- a site that needs one and lacks it shows as missing in admin.
   passwordEnc String? @map("password_enc")
 
-  // Write-only, and only on a retailer that asks for it at a saved-card checkout.
+  // Write-only, and only on a LOGIN-ONLY retailer that asks for it at a saved-card checkout.
   //
-  // Costco prompts for the security code even when the card on the account is already
-  // saved -- not every time, which is what makes a missing one expensive: it surfaces
-  // mid-order, by hand, with a queue pass burning. There is no card number and no expiry
-  // here on purpose; those live in the member's own Costco account. This is the one digit
-  // group that account cannot supply for them.
+  // Costco did, while its orders were placed by hand (until 2026-11-09): it prompted for the
+  // security code even when the card on the account was already saved -- not every time,
+  // which is what made a missing one expensive: it surfaced mid-order, with a queue pass
+  // burning. There is no card number and no expiry here on purpose; those lived in the
+  // member's own Costco account, and this was the one digit group it could not supply.
+  //
+  // Costco takes full profiles now, whose card carries its own CVV, so no retailer writes
+  // this today. Finishing an old Costco login into a profile clears it (saveProfile); one
+  // that was never finished keeps it until its owner finishes or removes the login.
   //
   // Nullable because most retailers store nothing here: null means "not applicable or not
   // supplied", and `storesCardCvv` on the retailer is what says which of the two it is.
@@ -897,6 +901,16 @@ model DropProduct {
   pasFeeCents Int?    @map("pas_fee_cents")
   imageUrl    String? @map("image_url")
 
+  // Target's own limit on how many one checkout may buy, as an admin posted it -- 1 on some
+  // products, 2 on others. Null: none posted. Shown to members beside the product, and a qty
+  // picked past it is warned about, never refused: a member may still pick up to MAX_QTY,
+  // because Target's limits move and the risk at checkout is theirs to take.
+  //
+  // The one thing it does change is the DEFAULT. A member who picked no qty runs at the
+  // standard qty, or at this where it is lower (defaultQtyFor, lib/products/qty.ts) -- a
+  // product limited to 1 must not run every member who never touched it at 2.
+  maxQty Int? @map("max_qty")
+
   // Where it sits in its set on the page, lowest first -- the order an admin arranges in the
   // set editor. A product added later goes to the end of its set. Display only: exports
   // watch products in the order they were added (see getCatalog).
@@ -973,8 +987,9 @@ model ProductSelection {
   allProfiles Boolean @default(true) @map("all_profiles")
 
   // How many Shikari buys in one checkout, on every profile it runs on -- and on one added
-  // later -- unless that profile has its own (ProductSelectionQty). Null: the standard qty
-  // (STANDARD_QTY, lib/products/qty.ts). Switching the product off forgets it.
+  // later -- unless that profile has its own (ProductSelectionQty). Null: the product's
+  // default, which is the standard qty (STANDARD_QTY, lib/products/qty.ts) or its posted limit
+  // where that is lower (DropProduct.maxQty). Switching the product off forgets it.
   qty Int?
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)

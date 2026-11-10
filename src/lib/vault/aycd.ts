@@ -301,9 +301,10 @@ export function toAycdProfile(profile: ExportableProfile): AycdProfile {
  * `<username>:<password>` per line, the format the bots take for accounts.
  *
  * A THIRD FIELD IS APPENDED when the account carries a card security code, giving
- * `<username>:<password>:<cvv>`. Only a login-only retailer has one -- Costco, where the
- * order is placed by hand and the site prompts for the code on an already-saved card --
- * and nothing loads that file into a bot, so the extra column costs no compatibility.
+ * `<username>:<password>:<cvv>`. Only a login-only retailer has one -- Costco did, while
+ * its orders were placed by hand and the site prompted for the code on an already-saved
+ * card -- and nothing loads that file into a bot, so the extra column costs no
+ * compatibility.
  *
  * Every other retailer's file keeps exactly two fields. That matters: a bot splitting on
  * ":" and reading `parts[1]` as the password is unaffected, and a trailing empty field

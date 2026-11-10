@@ -268,6 +268,8 @@ export async function buildShikariPayload(
     name: p.name,
     setName: p.setName,
     misc: miscSets.has(p.setName),
+    // The builder's to apply, against the standard qty the operator types in the browser.
+    maxQty: p.maxQty,
   }));
 
   // Why each profile the site holds is or isn't on an instance, in the order the reasons are

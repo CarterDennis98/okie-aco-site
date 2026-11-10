@@ -59,14 +59,22 @@ import { aycdFile, fileResponse } from "@/lib/vault/export-file";
  * this is a deliberate widening rather than a slice. Checked here rather than trusted from
  * the page, because this route is where the secrets are.
  *
- * LOGIN-ONLY RETAILERS (Costco) have accounts and no profiles, so `format=accounts` reads
- * the accounts directly and `format=aycd` is refused rather than answered with `[]`. No
- * bot split applies: a login does not belong to one bot instance. See usesProfiles.
+ * LOGIN-ONLY RETAILERS have accounts and no profiles, so `format=accounts` reads the
+ * accounts directly and `format=aycd` is refused rather than answered with `[]`. No bot
+ * split applies: a login does not belong to one bot instance. See usesProfiles. Costco was
+ * one until 2026-11-09 and exports profiles like Target now; none is login-only today.
  *
  * Their accounts file gains a third field, `email:password:cvv`, where a security code is
- * stored -- Costco prompts for one on an already-saved card. This route is the ONLY way
- * that code comes back out: a CVV is deliberately not revealable on a page, so the file
- * an operator downloads mid-order is the audited door it leaves by. See reveal.ts.
+ * stored -- as Costco's were, since it prompted for one on an already-saved card. This
+ * route is the ONLY way that code comes back out: a CVV is deliberately not revealable on
+ * a page, so the file an operator downloads mid-order is the audited door it leaves by.
+ * See reveal.ts.
+ *
+ * A login with no profile behind it, on a retailer that takes them, is in NO file here --
+ * every Costco login saved before Costco took profiles. The profile formats are built from
+ * profiles and the accounts list from the ones selected, so there is no address or card to
+ * write for it and nothing for its runner to load. The profiles page lists who still has to
+ * finish one.
  *
  * BOT SPLIT: each retailer has a soft cap on how many of a member's profiles the main
  * bot runs. `bot=main` yields the first N active profiles per member, `bot=backup` the
@@ -180,8 +188,8 @@ export async function GET(request: Request) {
   }
   // A login-only retailer holds accounts and no profiles, so its AYCD file would come out
   // as `[]` -- which reads as "nobody has saved anything" rather than "this retailer
-  // stores no cards". `accounts` and `imap` both still work here: on Costco the login IS
-  // the record, and the order is placed by hand from the member's own account.
+  // stores no cards". `accounts` and `imap` both still work here: on such a retailer the
+  // login IS the record, and the order is placed by hand from the member's own account.
   const loginOnly = Boolean(siteKey) && !siteUsesProfiles(siteKey);
   if (loginOnly && format === "aycd") {
     return new Response(

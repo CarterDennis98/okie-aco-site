@@ -6,6 +6,7 @@
  * and never someone who has since lost the role.
  */
 import { describe, expect, it } from "vitest";
+import { defaultRunnerFor } from "@/lib/auth/admin-scope";
 import { payeeForSite } from "@/lib/billing/payees";
 import { pickDefaultAssignee } from "@/lib/vault/assignment";
 
@@ -17,6 +18,7 @@ const pick = (over: Partial<Parameters<typeof pickDefaultAssignee>[0]>) =>
   pickDefaultAssignee({
     existing: [],
     eligible: new Set([OPERATOR, CHESS, ALICE]),
+    siteRunner: null,
     sitePayee: null,
     operator: OPERATOR,
     ...over,
@@ -42,6 +44,30 @@ describe("pickDefaultAssignee", () => {
     expect(sitePayee).toBe(CHESS);
     expect(pick({ sitePayee })).toBe(CHESS);
     expect(pick({ sitePayee, eligible: new Set([OPERATOR]) })).toBe(OPERATOR);
+  });
+
+  /**
+   * chess runs Costco and is not owed its fees, so it is his default-runner entry that sends
+   * a new Costco member to him -- not a payee entry, which would have moved the money too.
+   */
+  it("gives a new Costco member to chess, through his default-runner entry", () => {
+    const siteRunner = defaultRunnerFor("Costco");
+    expect(siteRunner).toBe(CHESS);
+    expect(payeeForSite("costco")).toBeNull();
+    expect(pick({ siteRunner })).toBe(CHESS);
+    // Only while he holds the Costco role.
+    expect(pick({ siteRunner, eligible: new Set([OPERATOR]) })).toBe(OPERATOR);
+    // A member already held by someone stays with them: a login saved before the default
+    // existed keeps its runner, and so does every profile that member adds after it.
+    expect(pick({ existing: [OPERATOR], siteRunner })).toBe(OPERATOR);
+  });
+
+  it("puts a retailer's named runner before whoever is owed its fees", () => {
+    expect(pick({ siteRunner: ALICE, sitePayee: CHESS })).toBe(ALICE);
+    // Without the role, the payee is next in line.
+    expect(
+      pick({ siteRunner: ALICE, sitePayee: CHESS, eligible: new Set([OPERATOR, CHESS]) }),
+    ).toBe(CHESS);
   });
 
   it("gives everything else to the operator", () => {

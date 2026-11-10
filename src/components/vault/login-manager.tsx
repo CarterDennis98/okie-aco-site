@@ -19,11 +19,13 @@ import { RevealAppPassword } from "@/components/vault/reveal-app-password";
  * One retailer's logins, on a site where a login is all we hold.
  *
  * The counterpart to ProfileManager for a login-only retailer -- see `usesProfiles` in
- * sites.ts. Costco is the first: the bot takes queue spots without signing in, and the
- * order is placed by hand from the member's own account once a pass lands, so there is no
- * card and no address for this site to collect.
+ * sites.ts. Costco was the first, until it took full profiles on 2026-11-09: the bot took
+ * queue spots without signing in, and the order was placed by hand from the member's own
+ * account once a pass landed, so there was no card and no address for this site to
+ * collect. No retailer is login-only today, and nothing renders this until one is again --
+ * the copy below is written for a retailer that works the way Costco did.
  *
- * That makes the copy load-bearing rather than decorative. A member whose Costco account
+ * That makes the copy load-bearing rather than decorative. A member whose account there
  * has no card or address saved WILL fail at the one moment nobody can fix it, and this
  * page is the only place they are told so. It is said up front, before the form, not in a
  * hint under a field they may never focus.
@@ -237,8 +239,11 @@ function Toggle({ login }: { login: VaultLoginSummary }) {
  * Inline rather than behind a selection: with no bulk bar there is nowhere else to put it,
  * and a login is one row a member can retype -- unlike a profile, which takes a card and
  * an address with it.
+ *
+ * Exported for ProfileManager, whose list of logins waiting to be finished offers the same
+ * way out for one a member would rather drop than finish.
  */
-function Remove({ login }: { login: VaultLoginSummary }) {
+export function RemoveLogin({ login }: { login: VaultLoginSummary }) {
   const [confirming, setConfirming] = useState(false);
   const [state, formAction, pending] = useActionState(
     async (_previous: ActionResult | null, formData: FormData) => deleteLogin(formData),
@@ -284,8 +289,9 @@ function Remove({ login }: { login: VaultLoginSummary }) {
 
 function LoginRow({ login, onEdit }: { login: VaultLoginSummary; onEdit: () => void }) {
   const style = siteStyle(login.siteKey);
-  // Costco: nothing loads these anywhere, so a saved login is in use and there is no
-  // confirmation step to wait on. See changesApplyImmediately in sites.ts.
+  // Where nothing loads these anywhere -- Costco's logins, before it took profiles -- a saved
+  // login is in use and there is no confirmation step to wait on. See
+  // changesApplyImmediately in sites.ts.
   const immediate = siteChangesApplyImmediately(login.siteKey);
   const status = immediate
     ? "In use — nothing to confirm here."
@@ -341,9 +347,9 @@ function LoginRow({ login, onEdit }: { login: VaultLoginSummary; onEdit: () => v
             </span>
           )}
         </p>
-        {/* Renders nothing at all on a retailer we never read a code for, which is every
-            login-only one today -- the operator is at the login and can read a code with
-            the member if Costco asks for one. See usesEmailCodes. */}
+        {/* Renders nothing at all on a retailer we never read a code for, which Costco was
+            while it was login-only -- the operator was at the login and could read a code
+            with the member if Costco asked for one. See usesEmailCodes. */}
         <RevealAppPassword
           email={login.email}
           mailbox={login.mailbox}
@@ -360,7 +366,7 @@ function LoginRow({ login, onEdit }: { login: VaultLoginSummary; onEdit: () => v
       >
         Edit
       </button>
-      <Remove login={login} />
+      <RemoveLogin login={login} />
     </li>
   );
 }

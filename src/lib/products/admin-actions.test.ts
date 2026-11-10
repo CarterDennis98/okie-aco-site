@@ -42,9 +42,13 @@ type NewOver = Partial<{
   price: string;
   pasFee: string;
   imageUrl: string;
+  maxQty: string;
 }>;
 
-/** A new product as the editor sends one: its link, and whatever was filled in. */
+/**
+ * A new product as the editor sends one: its link, and whatever was filled in. No `maxQty`
+ * unless given, as from an editor opened before products had limits -- which still saves.
+ */
 const added = (sku: string, over: NewOver = {}) => ({
   add: {
     name: `${PREFIX}${sku}`,
@@ -69,6 +73,7 @@ const inSet = (setName: string) =>
       active: true,
       priceCents: true,
       pasFeeCents: true,
+      maxQty: true,
     },
   });
 
@@ -286,6 +291,108 @@ describe.skipIf(!canRun)("the set editor", () => {
     expect(await edit("")).toEqual({ ok: true, id: p1.id });
     expect((await inSet(SET))[0].pasFeeCents).toBeNull();
     expect(await edit("free")).toEqual({ ok: false, error: "That PAS fee isn't a number." });
+  });
+
+  it("sets and clears a product's limit from its own dialog, and audits the change", async () => {
+    const [p1] = await listed(SET, "98000001");
+    const edit = (maxQty: string) => {
+      const form = new FormData();
+      for (const [key, value] of Object.entries({
+        id: p1.id,
+        setName: SET,
+        name: `${PREFIX}98000001`,
+        url: "https://www.target.com/p/x/-/A-98000001",
+        sku: "98000001",
+        price: "",
+        pasFee: "",
+        imageUrl: "",
+        maxQty,
+      }))
+        form.set(key, value);
+      return updateDropProduct(form);
+    };
+
+    expect(await edit("1")).toEqual({ ok: true, id: p1.id });
+    expect((await inSet(SET))[0].maxQty).toBe(1);
+    expect(
+      await prisma.adminAudit.findFirst({
+        where: { actorDiscordId: ADMIN, action: "drop_product.update", entityId: p1.id },
+        select: { before: true, after: true },
+      }),
+    ).toMatchObject({ before: { maxQty: null }, after: { maxQty: 1 } });
+
+    expect(await edit("")).toEqual({ ok: true, id: p1.id });
+    expect((await inSet(SET))[0].maxQty).toBeNull();
+    expect(await edit("0")).toEqual({
+      ok: false,
+      error: "The limit is a whole number from 1 to 99, or blank for none.",
+    });
+    expect((await inSet(SET))[0].maxQty).toBeNull();
+  });
+
+  it("posts limits on new and listed products in one save, auditing only the ones that moved", async () => {
+    const [p1, p2] = await listed(SET, "98000001", "98000002");
+    const save = (items: unknown[]) =>
+      saveDropSet({ setName: SET, previousName: SET, logoUrl: "", lineId: null, items });
+    const updates = () =>
+      prisma.adminAudit.findMany({
+        where: { actorDiscordId: ADMIN, action: "drop_product.update" },
+        select: { entityId: true, before: true, after: true },
+      });
+
+    // p1 gets a limit of 1, p2 is left alone, and a new product comes in limited to 2.
+    expect(
+      await save([{ id: p1.id, maxQty: "1" }, { id: p2.id }, added("98000003", { maxQty: "2" })]),
+    ).toEqual({ ok: true, added: 1 });
+    const [, , p3] = await inSet(SET);
+    expect((await inSet(SET)).map((p) => [p.sku, p.maxQty])).toEqual([
+      ["98000001", 1],
+      ["98000002", null],
+      ["98000003", 2],
+    ]);
+    expect(await updates()).toEqual([
+      { entityId: p1.id, before: { maxQty: null }, after: { maxQty: 1 } },
+    ]);
+    expect(
+      await prisma.adminAudit.findFirst({
+        where: { actorDiscordId: ADMIN, action: "drop_product.create", entityId: p3.id },
+        select: { after: true },
+      }),
+    ).toMatchObject({ after: { maxQty: 2 } });
+
+    // The same limit typed back over itself is no change; clearing one is.
+    expect(
+      await save([{ id: p1.id, maxQty: "01" }, { id: p2.id }, { id: p3.id, maxQty: "" }]),
+    ).toEqual({ ok: true, added: 0 });
+    expect((await inSet(SET)).map((p) => p.maxQty)).toEqual([1, null, null]);
+    expect(await updates()).toHaveLength(2);
+
+    // One that isn't a limit refuses the whole save, by its place.
+    expect(await save([{ id: p1.id }, { id: p2.id, maxQty: "0" }, { id: p3.id }])).toEqual({
+      ok: false,
+      error: "Product 2: The limit is a whole number from 1 to 99, or blank for none.",
+    });
+    expect(
+      await save([{ id: p1.id }, { id: p2.id }, added("98000004", { maxQty: "lots" })]),
+    ).toEqual({
+      ok: false,
+      error: "Product 3: The limit is a whole number from 1 to 99, or blank for none.",
+    });
+    expect((await inSet(SET)).map((p) => p.maxQty)).toEqual([1, null, null]);
+
+    // Opened to ADD, posting a limit on a listed product is a save of its own -- with nothing
+    // new pasted, it used to be refused as an empty add. Nothing at all is still refused.
+    const addTo = (items: unknown[]) =>
+      saveDropSet({ setName: SET, previousName: null, logoUrl: "", lineId: null, items });
+    expect(await addTo([{ id: p1.id }, { id: p2.id, maxQty: "2" }, { id: p3.id }])).toEqual({
+      ok: true,
+      added: 0,
+    });
+    expect((await inSet(SET)).map((p) => p.maxQty)).toEqual([1, 2, null]);
+    expect(await addTo([{ id: p1.id }, { id: p2.id }, { id: p3.id }])).toEqual({
+      ok: false,
+      error: "Paste at least one product link.",
+    });
   });
 
   it("deletes a set with its retired products and members' picks, only as the page showed it", async () => {

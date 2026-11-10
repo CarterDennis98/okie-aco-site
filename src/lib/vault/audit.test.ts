@@ -6,9 +6,21 @@
  * a rejected webhook leaves `notifiedAt` null and reads as an outage rather than a long
  * selection.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { appliedStamp, detailBlock, type ChangeRecord } from "@/lib/vault/audit";
+
+// No retailer applies changes immediately since Costco took full profiles on 2026-11-09, so
+// a stand-in does -- the rule stays pinned for the next retailer nothing loads. Everything
+// else about the registry is the real one.
+vi.mock("@/lib/sites", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/lib/sites")>();
+  return {
+    ...real,
+    siteChangesApplyImmediately: (site: string | null | undefined) =>
+      site === "hand-placed-store" || real.siteChangesApplyImmediately(site),
+  };
+});
 
 function change(siteKey: string, label: string): ChangeRecord {
   return {
@@ -63,13 +75,13 @@ describe("detailBlock", () => {
 
 describe("appliedStamp", () => {
   /**
-   * Costco is signed into by hand and loaded onto nothing, so an edit is in use the moment
-   * it is saved. A change stamped pending there would sit in the operator's queue forever
-   * asking to be loaded somewhere that doesn't exist -- and tell the member their new
-   * password wasn't live yet when it was.
+   * A retailer signed into by hand and loaded onto nothing -- Costco, until 2026-11-09 --
+   * has an edit in use the moment it is saved. A change stamped pending there would sit in
+   * the operator's queue forever asking to be loaded somewhere that doesn't exist, and tell
+   * the member their new password wasn't live yet when it was.
    */
   it("marks a change applied on a retailer nothing loads", () => {
-    const stamp = appliedStamp("costco");
+    const stamp = appliedStamp("hand-placed-store");
     expect(stamp.appliedAt).toBeInstanceOf(Date);
     // A word, not an operator's id: nobody confirmed it, because nothing had to.
     expect(stamp.appliedBy).toBe("auto");
@@ -84,6 +96,9 @@ describe("appliedStamp", () => {
       "sams-club",
       "crunchyroll",
       "premium-bandai",
+      // Its bot loads exported profiles now, so a Costco edit waits for its runner to load
+      // it like any other -- the member's tag stays amber until they confirm.
+      "costco",
     ]) {
       expect(appliedStamp(site), `${site} must wait to be confirmed`).toEqual({
         appliedAt: null,

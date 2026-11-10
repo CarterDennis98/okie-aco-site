@@ -519,9 +519,67 @@ describe("buildInstance", () => {
       ]);
     });
 
-    it("runs a pick past Target's usual 2, but never past 10, or none", async () => {
-      // 4 is past what Target usually allows, which a member may pick, warned; 12 is past the
-      // most they can pick; 0 and 2.5 never could be picked.
+    it("runs a product limited below the standard at its limit, unless a member picked a qty", async () => {
+      /** Builds with A limited to `limitA` and B to `limitB`, at the given standard qty. */
+      const limited = async (
+        list: DesiredProfile[],
+        limitA: number | null,
+        limitB: number | null,
+        checkoutQty = TASKS.checkoutQty,
+      ) => {
+        const { bytes } = await cleanBackup();
+        const open = openBackup(await sqljs(), bytes);
+        const desired = desiredInstance(list);
+        desired.products = desired.products.map((p) => ({
+          ...p,
+          maxQty: p.sku === SKU_A ? limitA : p.sku === SKU_B ? limitB : p.maxQty,
+        }));
+        const report = buildInstance(
+          open.db,
+          desired,
+          options({ tasks: { ...TASKS, checkoutQty } }),
+        );
+        return { report, rows: rowsOf(open.db).map((r) => [r.name, r.sku, r.qty]) };
+      };
+      // A is limited to 1. alice - 1 picked 2 of it anyway, which is hers to risk and runs as
+      // picked; alice - 2 picked nothing, so runs at the limit rather than the standard 2. B
+      // has no limit, so nobody's B moves.
+      const { report, rows } = await limited(
+        profiles((list) => (list[0].qty = { [SKU_A]: 2 })),
+        1,
+        null,
+      );
+      expect(rows).toEqual([
+        ["alice - 1", SKU_A, 2],
+        ["alice - 1", SKU_B, 2],
+        ["alice - 2", SKU_A, 1],
+        ["bob - 1", SKU_B, 2],
+      ]);
+      expect(report.checkout.changed.map((c) => [c.profile, c.qty])).toEqual([
+        ["alice - 2", [{ sku: SKU_A, from: 2, to: 1 }]],
+      ]);
+
+      // A limit at or above the standard changes nothing: no one runs for more than the
+      // standard because a product allows it.
+      expect((await limited(vaultProfiles(), 2, 5)).rows).toEqual([
+        ["alice - 1", SKU_A, 2],
+        ["alice - 1", SKU_B, 2],
+        ["alice - 2", SKU_A, 2],
+        ["bob - 1", SKU_B, 2],
+      ]);
+      // Against a standard of 3 typed into the export, a limit of 2 is what unpicked ones run
+      // at, and B, unlimited, takes the standard.
+      expect((await limited(vaultProfiles(), 2, null, 3)).rows).toEqual([
+        ["alice - 1", SKU_A, 2],
+        ["alice - 1", SKU_B, 3],
+        ["alice - 2", SKU_A, 2],
+        ["bob - 1", SKU_B, 3],
+      ]);
+    });
+
+    it("runs any pick up to 10 as picked, but never past 10, or none", async () => {
+      // 4 is a pick like any other, which a member may make past a product's limit, warned;
+      // 12 is past the most they can pick; 0 and 2.5 never could be picked.
       const odd = profiles((list) => {
         list[0].qty = { [SKU_A]: 12, [SKU_B]: 0 };
         list[1].qty = { [SKU_A]: 2.5 };

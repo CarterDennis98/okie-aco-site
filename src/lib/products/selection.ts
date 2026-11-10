@@ -8,8 +8,9 @@
 
 /**
  * One member's pick of one product: every profile, or the ones listed -- and how many of it
- * each one buys. `qty` is the pick's own (null: the standard qty), and `profileQty` holds a
- * profile's own where the member set one apart.
+ * each one buys. `qty` is the pick's own (null: the product's default -- the standard qty, or
+ * its posted limit where lower), and `profileQty` holds a profile's own where the member set
+ * one apart.
  */
 export type Choice = {
   all: boolean;
@@ -23,7 +24,7 @@ export type SelectionRow = {
   discordUserId: string;
   allProfiles: boolean;
   profileIds: string[];
-  /** The pick's qty; null or absent, the standard qty. Only the export reads it. */
+  /** The pick's qty; null or absent, the product's default qty. Only the export reads it. */
   qty?: number | null;
   /** A profile's own qty, by profile id, where it has one. Only the export reads it. */
   profileQty?: Record<string, number>;
@@ -63,8 +64,9 @@ export function skusByProfile(
 /**
  * The qty each profile buys of each TCIN it runs, by TCIN, where its member picked one: the
  * profile's own, or failing that the pick's. A TCIN it runs that isn't listed runs at the
- * standard qty -- the export's to fill in (TaskSettings.checkoutQty). Exactly the products
- * skusByProfile gives the profile, so a qty can never put a product on a task by itself.
+ * standard qty, or the product's limit where lower -- the export's to fill in
+ * (TaskSettings.checkoutQty, defaultQtyFor). Exactly the products skusByProfile gives the
+ * profile, so a qty can never put a product on a task by itself.
  */
 export function qtysByProfile(
   profiles: { id: string; discordUserId: string }[],

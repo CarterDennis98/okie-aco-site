@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/db/client";
-import { fullAdminIds, operatorId, runnerRoleFor } from "@/lib/auth/admin-scope";
+import { defaultRunnerFor, fullAdminIds, operatorId, runnerRoleFor } from "@/lib/auth/admin-scope";
 import { payeeForSite } from "@/lib/billing/payees";
 import { pickDefaultAssignee } from "@/lib/vault/assignment";
 
@@ -128,6 +128,7 @@ export async function defaultAssignee(siteKey: string, memberId: string): Promis
   const assignee = pickDefaultAssignee({
     existing: existing.map((row) => row.assigneeId),
     eligible: new Set(runners.map((runner) => runner.discordUserId)),
+    siteRunner: defaultRunnerFor(siteKey),
     sitePayee: payeeForSite(siteKey)?.id ?? null,
     operator: operatorId(),
   });

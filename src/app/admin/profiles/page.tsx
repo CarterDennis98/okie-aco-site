@@ -5,12 +5,13 @@ import {
   getMemberVaultForAdmin,
   getMembersForSite,
   getPendingChanges,
+  getUnfinishedLoginsForAdmin,
   getVaultSites,
 } from "@/db/queries/admin-vault";
 import { getAssigneesInUse, getRunnerNames, getRunnersForSite } from "@/db/queries/runners";
 import { AdminMemberPicker } from "@/components/vault/admin-member-picker";
 import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
-import { RunnerSelect } from "@/components/vault/runner-select";
+import { MoveAll, RunnerSelect } from "@/components/vault/runner-select";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { EVERYONE, operatorId, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { chargeScopeOf, requireAnyAdmin } from "@/lib/auth/guard";
@@ -160,20 +161,23 @@ export default async function AdminProfilesPage({
   // the app passwords behind their own profiles here, and nothing to reveal on the page.
   // See mayExport.
   const runnerAppPasswords = style.usesEmailCodes !== false && !viewer.isAdmin;
-  // Costco: an email and a password, and no card or address at all, because the order is
-  // placed by hand from the member's own account. Every column and every export below
-  // that assumes a checkout profile is gated on this. See usesProfiles in sites.ts.
+  // A login-only retailer: an email and a password, and no card or address at all, because
+  // the order is placed by hand from the member's own account -- Costco, until it took full
+  // profiles on 2026-11-09. Every column and every export below that assumes a checkout
+  // profile is gated on this. See usesProfiles in sites.ts.
   const usesProfiles = siteUsesProfiles(siteKey);
   const noun = usesProfiles ? "profile" : "login";
-  // Costco prompts for the security code on a saved card, so a login without one is a
-  // gap worth showing. See storesCardCvv.
+  // Where a login-only retailer prompts for the security code on a saved card, a login
+  // without one is a gap worth showing. See storesCardCvv.
   const storesCardCvv = siteStoresCardCvv(siteKey);
   // The FULL roster in scope, filter or no filter: `?member=` is validated against it, so a
   // search that happens to exclude whoever is open must not close them out from under you.
-  const [members, runners] = await Promise.all([
+  const [members, runners, unfinished] = await Promise.all([
     getMembersForSite(siteKey, filter, scope),
     // Who a full admin can move this retailer's profiles to. Nobody else can move anything.
     viewer.isAdmin ? getRunnersForSite(siteKey) : Promise.resolve([]),
+    // Logins here with no profile behind them yet -- in no export, and on no roster.
+    getUnfinishedLoginsForAdmin(siteKey, scope),
   ]);
   const selected = member && members.some((m) => m.discordUserId === member) ? member : null;
   const profiles =
@@ -198,6 +202,7 @@ export default async function AdminProfilesPage({
     ...runners.map((r) => r.discordUserId),
     ...members.flatMap((m) => m.runners),
     ...held.rows.map((row) => row.assigneeId),
+    ...unfinished.map((row) => row.assigneeId),
     ...changes.rows.flatMap((row) => (row.assigneeId ? [row.assigneeId] : [])),
   ]);
   const runnerOptions = runners.map((r) => ({ id: r.discordUserId, name: r.name }));
@@ -405,6 +410,84 @@ export default async function AdminProfilesPage({
           )}
         </div>
 
+        {/* --- logins still to be finished --- */}
+        {/* Right under the export row, because that is the question it answers: who is NOT
+            in those files. A login with no profile behind it has no address or card for
+            the bot -- every Costco login saved before Costco took full profiles -- and
+            neither the roster nor the table below lists it, both being built from profiles.
+            Its owner finishes it on their own Profiles page; this says who has not yet. */}
+        {unfinished.length > 0 && (
+          <section className="mt-4 rounded-xl border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 p-4">
+            <h2 className="text-sm text-[var(--color-fg)]">
+              <strong className="font-semibold">
+                {count(unfinished.length)} {style.label} {plural(unfinished.length, "login")}{" "}
+                waiting on an address and card.
+              </strong>{" "}
+              <span className="text-[var(--color-muted)]">
+                {unfinished.length === 1 ? "It isn't" : "They aren't"} in any export until{" "}
+                {unfinished.length === 1 ? "its owner finishes it" : "their owners finish them"} on
+                the Profiles page, where they&rsquo;re asked to.
+              </span>
+            </h2>
+            {/* All of them at once, for a full admin: these are on no roster, so the roster's
+                move can't reach them, and a login keeps its runner when it is finished. On the
+                day Costco took profiles every Costco signup was one of these, still with the
+                operator, while new ones went to chess. */}
+            {viewer.isAdmin && unfinished.length > 1 && (
+              <div className="mt-3">
+                <MoveAll
+                  siteKey={siteKey}
+                  accountIds={unfinished.map((u) => u.id)}
+                  runners={runnerOptions}
+                  noun="logins"
+                />
+              </div>
+            )}
+            {/* Scrolls rather than pushing the roster off the page: on the day Costco took
+                profiles, this was every Costco signup there was. */}
+            <div className="mt-3 max-h-72 overflow-auto rounded-lg border border-[var(--color-edge)] bg-[var(--color-surface)]">
+              <table className="w-full min-w-[28rem] text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--color-edge)] text-[11px] tracking-[0.1em] text-[var(--color-muted)] uppercase">
+                    <th className={cell}>Member</th>
+                    <th className={cell}>Login</th>
+                    {viewer.isAdmin && <th className={cell}>Runner</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--color-edge)]">
+                  {unfinished.map((u) => (
+                    <tr key={u.id} className={u.active ? "" : "opacity-50"}>
+                      <td className={cell}>
+                        <span className="font-medium text-white">{u.member}</span>
+                      </td>
+                      <td className={cell}>
+                        <span className="break-all text-[var(--color-fg)]">{u.email}</span>
+                        {!u.active && (
+                          <span className="mt-1 flex">
+                            <Tag>disabled</Tag>
+                          </span>
+                        )}
+                      </td>
+                      {viewer.isAdmin && (
+                        <td className={cell}>
+                          <RunnerSelect
+                            key={u.assigneeId}
+                            siteKey={siteKey}
+                            accountId={u.id}
+                            current={u.assigneeId}
+                            runners={runnerOptions}
+                            names={names}
+                          />
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
         {/* --- search and active/inactive filter --- */}
         {/* A GET form, like the charges page's: the resulting view is a URL, so a search can
             be linked, bookmarked and reloaded. The site and member ride along as hidden
@@ -591,8 +674,9 @@ export default async function AdminProfilesPage({
                         <tr className="border-b border-[var(--color-edge)] text-[11px] tracking-[0.1em] text-[var(--color-muted)] uppercase">
                           <th className={cell}>Login</th>
                           {/* Dropped entirely rather than left empty where no code is ever
-                              read -- on Costco the operator is at the login. A header over
-                              a blank column reads as data that failed to load. */}
+                              read -- as on Costco while it was login-only, when the operator
+                              was at the login. A header over a blank column reads as data
+                              that failed to load. */}
                           {usesEmailCodes && <th className={cell}>Codes land in</th>}
                           {viewer.isAdmin && <th className={cell}>Runner</th>}
                         </tr>

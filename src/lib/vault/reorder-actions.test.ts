@@ -184,7 +184,12 @@ describe.skipIf(!canRun)("reorderProfiles", () => {
   });
 
   it("refuses a retailer it can't reorder", async () => {
-    expect((await reorderProfiles({ siteKey: "costco", order: [] })).ok).toBe(false);
     expect((await reorderProfiles({ siteKey: "nowhere", order: [] })).ok).toBe(false);
+    // Costco was refused here while it was login-only. It takes profiles now, so an empty
+    // order for a member with none there is simply nothing to do.
+    expect(await reorderProfiles({ siteKey: "costco", order: [] })).toEqual({
+      ok: true,
+      renamed: 0,
+    });
   });
 });

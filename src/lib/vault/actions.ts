@@ -163,14 +163,6 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
   const storesPassword = siteStoresPassword(siteKey);
   const password = storesPassword ? text(form, "accountPassword") : "";
 
-  // Checked BEFORE the account is created. This used to sit after the upsert, so a
-  // create with no password left an orphan vault_account holding an encrypted empty
-  // string -- and because the upsert's `update` is empty, retrying with a real password
-  // would never replace it.
-  if (!profileId && storesPassword && !password) {
-    return { ok: false, error: "Enter the retailer account password." };
-  }
-
   // Read only where the retailer has a membership to ask about; everywhere else an account
   // has none, whatever a crafted POST says. See membership in sites.ts.
   const membership = siteMembership(siteKey);
@@ -189,48 +181,78 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
   try {
     if (!profileId) {
       // --- create -----------------------------------------------------------
-      // Which runner's bot it goes on, decided before the row exists. A login the upsert
-      // finds already on file keeps whoever holds it -- its `update` is empty.
-      const assigneeId = await defaultAssignee(siteKey, viewer.discordUserId);
-      const account = await prisma.vaultAccount.upsert({
-        where: { siteKey_email: { siteKey, email } },
-        create: {
-          siteKey,
-          email,
-          discordUserId: viewer.discordUserId,
-          passwordEnc: password
-            ? encrypt(password, { entity: "vault_account", field: "password" })
-            : null,
-          hasMembership,
-          assigneeId,
-        },
-        // An existing account must belong to this member, or the email is taken.
-        update: {},
-        select: {
-          id: true,
-          discordUserId: true,
-          assigneeId: true,
-          hasMembership: true,
-          profile: { select: { id: true, name: true } },
-        },
-      });
+      // The login it signs in with. One of theirs already on file with no profile behind it
+      // is FINISHED rather than duplicated: this address and card are added to it, and it
+      // keeps its password and its runner. That is every Costco login saved before Costco
+      // took full profiles. "Finish" names one by id; typing its email into "Add profile"
+      // finds the same row.
+      //
+      // This used to be an upsert with an empty `update`, which found such a login too --
+      // and then silently kept its old password over the one just typed, and its membership
+      // over the answer on this form.
+      const loginId = text(form, "loginId");
+      const login = loginId
+        ? // Both predicates, as everywhere: someone else's id reads as missing.
+          await prisma.vaultAccount.findFirst({
+            where: { id: loginId, discordUserId: viewer.discordUserId, siteKey },
+            select: LOGIN_TO_FINISH,
+          })
+        : await prisma.vaultAccount.findUnique({
+            where: { siteKey_email: { siteKey, email } },
+            select: LOGIN_TO_FINISH,
+          });
 
-      if (account.discordUserId !== viewer.discordUserId) {
+      if (loginId && !login) return { ok: false, error: "Login not found." };
+      if (login && login.discordUserId !== viewer.discordUserId) {
         return { ok: false, error: "That account email is already in use." };
       }
-      if (account.profile) {
+      if (login?.profile) {
         // One account, one profile -- the rule the schema enforces. Named, so the member
         // can go straight to the profile holding the address instead of hunting for it.
         return {
           ok: false,
-          error: `${account.profile.name} already uses that email on this retailer. Each profile needs its own.`,
+          error: `${login.profile.name} already uses that email on this retailer. Each profile needs its own.`,
         };
       }
-      // A login of theirs the upsert found already on file, with no profile behind it: the
-      // empty `update` left its membership as it was, and the answer on this form is newer.
-      if (account.hasMembership !== hasMembership) {
-        await prisma.vaultAccount.update({ where: { id: account.id }, data: { hasMembership } });
+      // A login being finished under a NEW email: checked before the write, for the reason
+      // the edit branch gives -- the unique index would refuse it anyway, as a generic error
+      // that names neither the address nor the profile already holding it.
+      if (login && email !== login.email) {
+        const taken = await prisma.vaultAccount.findUnique({
+          where: { siteKey_email: { siteKey, email } },
+          select: { discordUserId: true, profile: { select: { name: true } } },
+        });
+        if (taken) {
+          return {
+            ok: false,
+            error:
+              taken.discordUserId === viewer.discordUserId && taken.profile
+                ? `${taken.profile.name} already uses that email on this retailer. Each profile needs its own.`
+                : "That account email is already in use.",
+          };
+        }
       }
+
+      // Required unless there is one to reuse, and checked BEFORE anything is written. This
+      // once sat after the account was created, so a create with no password left an orphan
+      // vault_account holding an encrypted empty string. Whether the login has one is a
+      // NULL filter, like every other "is a secret on file" -- the ciphertext stays put.
+      const reusesPassword =
+        login !== null &&
+        (await prisma.vaultAccount.count({ where: { id: login.id, passwordEnc: { not: null } } })) >
+          0;
+      if (storesPassword && !password && !reusesPassword) {
+        return { ok: false, error: "Enter the retailer account password." };
+      }
+
+      // Which runner's bot it goes on, decided before the row exists. A login being finished
+      // keeps whoever already holds it.
+      const assigneeId =
+        login?.assigneeId ?? (await defaultAssignee(siteKey, viewer.discordUserId));
+      const passwordEnc = password
+        ? encrypt(password, { entity: "vault_account", field: "password" })
+        : null;
+
       // The name is GENERATED, never taken from the form. Members don't get to pick or
       // change it: the name is what ties a checkout back to a profile, and a free-text
       // rename would let history point at the wrong card and address.
@@ -248,20 +270,50 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         siblings.map((s) => s.name),
       );
 
-      const created = await prisma.vaultProfile.create({
-        data: {
-          ...fields,
-          ...(cardSecrets as Required<typeof cardSecrets>),
-          siteKey,
-          discordUserId: viewer.discordUserId,
-          accountId: account.id,
-          name,
-          // The SAME normalizer the checkout pipeline uses, not a lookalike regex --
-          // a key that differs by one character never joins to the member's checkouts.
-          ...profileIdentity(name),
-          updatedBy: viewer.discordUserId,
-        },
-        select: { id: true, name: true },
+      // One transaction, so a profile that fails to save -- a name taken in the meantime --
+      // leaves the login it was finishing exactly as it was.
+      const created = await prisma.$transaction(async (tx) => {
+        const account = login
+          ? await tx.vaultAccount.update({
+              where: { id: login.id },
+              data: {
+                ...(email !== login.email ? { email } : {}),
+                ...(passwordEnc ? { passwordEnc } : {}),
+                hasMembership,
+                // The security code a login-only Costco account carried goes with it: the
+                // card on this profile has its own, and a second copy that nothing reads any
+                // more is a stored CVV with no reason to exist. See storesCardCvv.
+                cardCvvEnc: null,
+              },
+              select: { id: true },
+            })
+          : await tx.vaultAccount.create({
+              data: {
+                siteKey,
+                email,
+                discordUserId: viewer.discordUserId,
+                passwordEnc,
+                hasMembership,
+                assigneeId,
+              },
+              select: { id: true },
+            });
+
+        return tx.vaultProfile.create({
+          data: {
+            ...fields,
+            ...(cardSecrets as Required<typeof cardSecrets>),
+            siteKey,
+            discordUserId: viewer.discordUserId,
+            accountId: account.id,
+            name,
+            // The SAME normalizer the checkout pipeline uses, not a lookalike regex --
+            // a key that differs by one character never joins to the member's checkouts.
+            ...profileIdentity(name),
+            updatedBy: viewer.discordUserId,
+          },
+          select: { id: true, name: true },
+        });
       });
 
       await recordChange(
@@ -272,8 +324,10 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
           entityId: created.id,
           action: VaultAction.CREATE,
           siteKey,
-          assigneeId: account.assigneeId,
-          label: created.name,
+          assigneeId,
+          // A finished login says so: its runner already holds the email and password, and
+          // what they are loading is the address and card that turned it into a profile.
+          label: login ? `${created.name} (finished ${login.email})` : created.name,
         },
         viewer.displayName,
       );
@@ -368,6 +422,18 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
   revalidatePath("/dashboard/profiles");
   return { ok: true };
 }
+
+/**
+ * What `saveProfile` reads of a login it might finish into a profile. No ciphertext: whether
+ * one has a password is asked of the database separately, with a NULL filter.
+ */
+const LOGIN_TO_FINISH = {
+  id: true,
+  email: true,
+  discordUserId: true,
+  assigneeId: true,
+  profile: { select: { name: true } },
+} as const;
 
 /** The plain columns compared for the audit diff. Secrets are excluded by construction. */
 const ALL_PLAIN = {
@@ -679,29 +745,43 @@ type ExistingLogin = { id: string; email: string; active: boolean; assigneeId: s
  * Returns the row itself rather than just its id, so the callers work from what is
  * actually stored: whether the email changed, and whether the toggle would be a no-op,
  * are both questions about the row they just loaded.
+ *
+ * `unfinished` lets one action through on a retailer that takes profiles: removing a login
+ * there that has no profile behind it -- a Costco login from before Costco took full
+ * profiles, which its owner may rather delete than finish. Nothing else is: adding or
+ * editing one there would write half a profile, and a toggle would park a row no bot runs.
  */
 async function loginTarget(
   form: FormData,
   discordUserId: string,
+  { unfinished = false }: { unfinished?: boolean } = {},
 ): Promise<
   { ok: true; siteKey: string; login: ExistingLogin | null } | { ok: false; error: string }
 > {
   const siteKey = text(form, "siteKey");
   if (!isKnownSite(siteKey)) return { ok: false, error: "Unknown retailer." };
+  const loginId = text(form, "loginId");
   // The mirror of the refusal in `saveProfile`: a retailer we hold full profiles for has
   // a card and an address that a login-only form would leave behind, so an account saved
   // through here would be half a profile with no way to finish it.
-  if (siteUsesProfiles(siteKey)) {
+  const takesProfiles = siteUsesProfiles(siteKey);
+  if (takesProfiles && !(unfinished && loginId)) {
     return { ok: false, error: `${siteStyle(siteKey).label} needs a full checkout profile.` };
   }
 
-  const loginId = text(form, "loginId");
   if (!loginId) return { ok: true, siteKey, login: null };
 
   // Both predicates, as everywhere else: an id belonging to somebody else reads as
-  // missing rather than as a refusal that would confirm it exists.
+  // missing rather than as a refusal that would confirm it exists. Where the retailer takes
+  // profiles, only a login with none behind it -- the one with a profile goes with that
+  // profile, through deleteProfiles.
   const login = await prisma.vaultAccount.findFirst({
-    where: { id: loginId, discordUserId, siteKey },
+    where: {
+      id: loginId,
+      discordUserId,
+      siteKey,
+      ...(takesProfiles ? { profile: { is: null } } : {}),
+    },
     select: { id: true, email: true, active: true, assigneeId: true },
   });
   if (!login) return { ok: false, error: "Login not found." };
@@ -893,11 +973,14 @@ export async function setLoginActive(form: FormData): Promise<ActionResult> {
  * One at a time, unlike `deleteProfiles`: a member has a handful of logins on a
  * login-only retailer rather than the ninety profiles that made a bulk selection worth
  * building, and the row's own two-step confirm is the whole safeguard.
+ *
+ * Also how a login waiting to be finished is dropped instead, on a retailer that takes
+ * profiles -- see `unfinished` on loginTarget.
  */
 export async function deleteLogin(form: FormData): Promise<ActionResult> {
   const viewer = await requireMember();
 
-  const target = await loginTarget(form, viewer.discordUserId);
+  const target = await loginTarget(form, viewer.discordUserId, { unfinished: true });
   if (!target.ok) return target;
   const login = target.login;
   if (!login) return { ok: false, error: "Login not found." };

@@ -45,6 +45,12 @@ export function nameFromTargetUrl(url: string): string {
 export const SET_NAME_LIMIT = 80;
 export const LINE_NAME_LIMIT = 40;
 export const PRODUCT_NAME_LIMIT = 120;
+/**
+ * The highest per-checkout limit a product can be given. Far past anything Target posts on
+ * the products run here (1 or 2), and past MAX_QTY too: a limit nobody can pick past still
+ * says something true about the product, it just never warns.
+ */
+export const PRODUCT_LIMIT_MAX = 99;
 
 export type ProductInput = {
   setName: string;
@@ -54,6 +60,8 @@ export type ProductInput = {
   priceCents: number | null;
   pasFeeCents: number | null;
   imageUrl: string | null;
+  /** Target's per-checkout limit; null when none is posted. See DropProduct.maxQty. */
+  maxQty: number | null;
 };
 
 export type ProductFields = {
@@ -65,7 +73,36 @@ export type ProductFields = {
   /** The PAS fee per unit. */
   pasFee: string;
   imageUrl: string;
+  /** Target's limit per checkout, as typed. Blank for none. */
+  maxQty: string;
 };
+
+/** A product's limit as its field shows it: the number, or blank for none. */
+export function maxQtyText(maxQty: number | null): string {
+  return maxQty === null ? "" : String(maxQty);
+}
+
+/**
+ * A product's per-checkout limit as stored: a whole number from 1 to PRODUCT_LIMIT_MAX, or
+ * null for none -- blank, which is what every product has until an admin posts one.
+ *
+ * Its own function, beside parseProductInput, because the set editor also takes a limit on
+ * a product that is already listed, where nothing else about it is being typed.
+ */
+export function parseMaxQty(
+  raw: string,
+): { ok: true; value: number | null } | { ok: false; error: string } {
+  const typed = raw.trim();
+  if (!typed) return { ok: true, value: null };
+  const value = /^\d{1,3}$/.test(typed) ? Number(typed) : NaN;
+  if (!(value >= 1 && value <= PRODUCT_LIMIT_MAX)) {
+    return {
+      ok: false,
+      error: `The limit is a whole number from 1 to ${PRODUCT_LIMIT_MAX}, or blank for none.`,
+    };
+  }
+  return { ok: true, value };
+}
 
 function httpsUrl(raw: string): URL | null {
   try {
@@ -210,6 +247,10 @@ export function parseProductInput(
     imageUrl = image.href;
   }
 
+  const limit = parseMaxQty(fields.maxQty);
+  if (!limit.ok) return limit;
+  const maxQty = limit.value;
+
   // Tracking params and fragments trimmed: the link is shown to members, and the copy they
   // click should be the product page, not someone's campaign. `preselect` stays -- it is
   // which variant the page opens on.
@@ -217,6 +258,6 @@ export function parseProductInput(
   url.search = preselect ? `?preselect=${encodeURIComponent(preselect)}` : "";
   return {
     ok: true,
-    value: { setName, name, url: url.href, sku, priceCents, pasFeeCents, imageUrl },
+    value: { setName, name, url: url.href, sku, priceCents, pasFeeCents, imageUrl, maxQty },
   };
 }

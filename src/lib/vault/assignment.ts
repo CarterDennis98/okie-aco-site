@@ -8,11 +8,13 @@
  *   1. THE RUNNER WHO ALREADY HAS THIS MEMBER on the retailer, when all their existing rows
  *      there sit with one runner. A member's profiles on one site travel together: their
  *      fifth Target profile belongs on the same bot as the first four.
- *   2. THE RETAILER'S PAYEE, when it has one -- chess for Crunchyroll, Mattel and Menards,
+ *   2. THE RETAILER'S DEFAULT RUNNER, where one is named -- chess on Costco. For a retailer
+ *      whose bot somebody runs without being owed its fees; see DEFAULT_RUNNERS.
+ *   3. THE RETAILER'S PAYEE, when it has one -- chess for Crunchyroll, Mattel and Menards,
  *      peacemaker for Premium Bandai, CrispHeinz for Topps. Whoever is owed a retailer's
  *      fees is the person running its bot, so a new member there is theirs from the start
  *      rather than waiting on a full admin to hand them over.
- *   3. THE OPERATOR, for everything else. On a retailer shared between runners, a new
+ *   4. THE OPERATOR, for everything else. On a retailer shared between runners, a new
  *      member lands with the full admin who decides how to split them.
  *
  * Each candidate must still be a runner there -- `eligible` -- so a runner who has lost the
@@ -27,6 +29,8 @@ export function pickDefaultAssignee(input: {
   existing: readonly string[];
   /** Everyone who may hold profiles on this retailer right now. */
   eligible: ReadonlySet<string>;
+  /** Who this retailer's new members go to by name, where anyone is. See DEFAULT_RUNNERS. */
+  siteRunner: string | null;
   /** Who this retailer's fees are owed to, when it isn't the operator. */
   sitePayee: string | null;
   /** The first full admin, or null when none is configured. */
@@ -37,6 +41,7 @@ export function pickDefaultAssignee(input: {
     const [only] = holders;
     if (input.eligible.has(only)) return only;
   }
+  if (input.siteRunner && input.eligible.has(input.siteRunner)) return input.siteRunner;
   if (input.sitePayee && input.eligible.has(input.sitePayee)) return input.sitePayee;
   return input.operator;
 }

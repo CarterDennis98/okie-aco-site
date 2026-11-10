@@ -129,8 +129,8 @@ describe("isValidCvv", () => {
 describe("isPlausibleCvv", () => {
   /**
    * A login-only retailer stores no card number, so nothing can say which brand the code
-   * belongs to. Costco prompts for it on an already-saved card; the member's own account
-   * holds everything else. Both lengths have to pass, or an Amex member cannot save the
+   * belongs to. Costco prompted for it on an already-saved card while it was one; the
+   * member's own account held everything else. Both lengths have to pass, or an Amex member cannot save the
    * real code their card carries.
    */
   it("accepts both lengths, because the brand is unknowable here", () => {

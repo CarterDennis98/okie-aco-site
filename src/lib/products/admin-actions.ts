@@ -8,6 +8,7 @@ import { requireAdmin } from "@/lib/auth/guard";
 import {
   parseLineName,
   parseLogo,
+  parseMaxQty,
   parseProductInput,
   parseSetName,
   type ProductInput,
@@ -69,6 +70,7 @@ export async function updateDropProduct(form: FormData): Promise<ProductResult> 
     price: text(form, "price"),
     pasFee: text(form, "pasFee"),
     imageUrl: text(form, "imageUrl"),
+    maxQty: text(form, "maxQty"),
   });
   if (!parsed.ok) return parsed;
   const value = parsed.value;
@@ -84,6 +86,7 @@ export async function updateDropProduct(form: FormData): Promise<ProductResult> 
         priceCents: true,
         pasFeeCents: true,
         imageUrl: true,
+        maxQty: true,
       },
     });
     if (!before) return { ok: false, error: "That product is gone. Reload the page." };
@@ -177,6 +180,19 @@ const newProduct = z
     price: z.string().max(40),
     pasFee: z.string().max(40),
     imageUrl: z.string().max(2000),
+    // Defaulted rather than required, so an editor opened before limits existed still saves.
+    maxQty: z.string().max(40).default(""),
+  })
+  .strict();
+
+const listedProduct = z
+  .object({
+    id: z.uuid(),
+    /**
+     * Its limit per checkout, as typed into its row -- sent only when the admin changed it, so
+     * an editor left open can't put back a limit someone else has since changed.
+     */
+    maxQty: z.string().max(40).optional(),
   })
   .strict();
 
@@ -190,9 +206,7 @@ const setRequest = z
     /** The product line it's listed under. Null for none: under "Other". */
     lineId: z.uuid().nullable(),
     /** The set's products in their new order: ones already listed by id, new ones in full. */
-    items: z
-      .array(z.union([z.object({ id: z.uuid() }).strict(), z.object({ add: newProduct }).strict()]))
-      .max(MAX_SET),
+    items: z.array(z.union([listedProduct, z.object({ add: newProduct }).strict()])).max(MAX_SET),
   })
   .strict();
 
@@ -207,6 +221,7 @@ class Refused extends Error {}
  *     form checks one, and refused as a batch if any is wrong or already listed;
  *   - every product is given its place, in the order the editor sent. One somebody else
  *     added while the editor was open isn't lost: it keeps its place at the end;
+ *   - a product already listed takes the limit typed into its row, where one was changed;
  *   - editing a set can rename it, retired products and all -- but not onto another set's
  *     name, which would quietly merge the two;
  *   - the set's logo and product line are set, changed or cleared, under its new name if
@@ -225,6 +240,15 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
   if (!logo.ok) return logo;
   const logoUrl = logo.value;
 
+  // Limits changed on products already listed, by id.
+  const limits = new Map<string, number | null>();
+  for (const [index, item] of items.entries()) {
+    if (!("id" in item) || item.maxQty === undefined) continue;
+    const checked = parseMaxQty(item.maxQty);
+    if (!checked.ok) return { ok: false, error: `Product ${index + 1}: ${checked.error}` };
+    limits.set(item.id, checked.value);
+  }
+
   const added: { index: number; value: ProductInput }[] = [];
   const firstAt = new Map<string, number>();
   for (const [index, item] of items.entries()) {
@@ -242,7 +266,9 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
     added.push({ index, value: checked.value });
   }
   const listedIds = items.flatMap((item) => ("id" in item ? [item.id] : []));
-  if (previousName === null && added.length === 0) {
+  // Adding with nothing to add is a mistake -- unless limits were posted on the products the
+  // editor listed, which "Add products" offers too: that save is the whole point of opening it.
+  if (previousName === null && added.length === 0 && limits.size === 0) {
     return { ok: false, error: "Paste at least one product link." };
   }
 
@@ -256,7 +282,7 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
       const current = await tx.dropProduct.findMany({
         where: { siteKey: SITE, setName: home, active: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-        select: { id: true, sortOrder: true },
+        select: { id: true, sortOrder: true, maxQty: true },
       });
       const place = new Map(current.map((p) => [p.id, p.sortOrder]));
       const kept = await tx.dropSet.findUnique({
@@ -325,6 +351,23 @@ export async function saveDropSet(raw: unknown): Promise<SetResult> {
         ...current.filter((p) => !listed.has(p.id)).map((p) => ({ id: p.id })),
       ];
       const audits: Prisma.AdminAuditCreateManyInput[] = [];
+
+      // Limits first, each audited like an edit from the product's own dialog. Only where it
+      // moved: the same number typed back over itself is no change to record.
+      for (const product of current) {
+        const maxQty = limits.get(product.id);
+        if (maxQty === undefined || maxQty === product.maxQty) continue;
+        await tx.dropProduct.update({ where: { id: product.id }, data: { maxQty } });
+        audits.push({
+          actorDiscordId: viewer.discordUserId,
+          action: "drop_product.update",
+          entity: "drop_product",
+          entityId: product.id,
+          before: { maxQty: product.maxQty },
+          after: { maxQty },
+        });
+      }
+
       const finalIds: string[] = [];
       let moved = false;
       for (const [position, entry] of order.entries()) {

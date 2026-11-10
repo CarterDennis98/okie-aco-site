@@ -242,8 +242,7 @@ describe.skipIf(!canRun)("member product picks", () => {
     };
     const choice = async () => (await getMemberChoices(ALICE, SITE))[id];
 
-    // 1 on every profile, but a2 buys 4: past what Target usually allows, which is theirs to
-    // risk, warned.
+    // 1 on every profile, but a2 buys 4: a qty of its own, kept as picked.
     expect(await saveProductQty({ productId: id, qty: 1 })).toEqual({ ok: true });
     expect(await saveProductQty({ productId: id, qty: 4, profileId: profileIds.a2 })).toEqual({
       ok: true,
@@ -275,6 +274,57 @@ describe.skipIf(!canRun)("member product picks", () => {
     await saveProductChoice({ productIds: [id], mode: "off" });
     await saveProductChoice({ productIds: [id], mode: "all" });
     expect(await choice()).toMatchObject({ qty: null, profileQty: {} });
+  });
+
+  it("runs a product limited to 1 at 1 until a qty is picked, and keeps a pick past it", async () => {
+    as(ALICE);
+    // Its own product, so the limit can't move what the other tests read.
+    const limited = await prisma.dropProduct.create({
+      data: {
+        siteKey: SITE,
+        setName: `${PREFIX}set`,
+        name: `${PREFIX}limited`,
+        url: "https://www.target.com/p/x/-/A-99000003",
+        sku: "99000003",
+        createdBy: ALICE,
+        maxQty: 1,
+      },
+      select: { id: true },
+    });
+    const id = limited.id;
+    const qtyOf = async () => {
+      const { qty, catalog } = await getSkusForProfiles(SITE, [
+        { id: profileIds.a1, discordUserId: ALICE },
+        { id: profileIds.a2, discordUserId: ALICE },
+      ]);
+      // The export's to apply: the limit travels with the product, never into a pick.
+      expect(catalog.find((p) => p.id === id)?.maxQty).toBe(1);
+      return [qty.get(profileIds.a1)?.["99000003"], qty.get(profileIds.a2)?.["99000003"]];
+    };
+    const choice = async () => (await getMemberChoices(ALICE, SITE))[id];
+
+    // Switched on and left alone: no qty of its own, so it runs at the product's default --
+    // its limit of 1, which the export fills in.
+    await saveProductChoice({ productIds: [id], mode: "all" });
+    expect(await choice()).toMatchObject({ qty: null, profileQty: {} });
+    expect(await qtyOf()).toEqual([undefined, undefined]);
+
+    // 2 on every profile is past the limit, and kept: warned on the page, never lowered.
+    expect(await saveProductQty({ productId: id, qty: 2 })).toEqual({ ok: true });
+    expect(await choice()).toMatchObject({ qty: 2, profileQty: {} });
+    expect(await qtyOf()).toEqual([2, 2]);
+
+    // Back to every profile at the default; then a2 at 1 is the default anyway, so it
+    // follows the pick, while a2 at 2 is a qty of its own.
+    await saveProductQty({ productId: id, qty: null });
+    await saveProductQty({ productId: id, qty: 1, profileId: profileIds.a2 });
+    expect((await choice())?.profileQty).toEqual({});
+    await saveProductQty({ productId: id, qty: 2, profileId: profileIds.a2 });
+    expect((await choice())?.profileQty).toEqual({ [profileIds.a2]: 2 });
+    expect(await qtyOf()).toEqual([undefined, 2]);
+
+    await saveProductChoice({ productIds: [id], mode: "off" });
+    await prisma.dropProduct.delete({ where: { id } });
   });
 
   it("refuses a qty for a product that's off, somebody else's profile, or out of range", async () => {

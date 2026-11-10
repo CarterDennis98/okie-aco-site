@@ -31,7 +31,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import initSqlJs from "sql.js";
-import { MAX_QTY, runnableQty } from "../src/lib/products/qty";
+import { MAX_QTY, defaultQtyFor, runnableQty } from "../src/lib/products/qty";
 import { buildInstance } from "../src/lib/shikari/build";
 import { diffTables, forbiddenChanges, tableHashes, type TableDiff } from "../src/lib/shikari/diff";
 import {
@@ -191,7 +191,14 @@ function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInst
         email: p.email,
         why: wanted.has(`backup-${p.id}`) ? null : ("inactive" as const),
       })),
-    products: skus.map((sku) => ({ sku, name: sku, setName: "", misc: miscSkus.has(sku) })),
+    // A backup records no limits: every product reads as having none, so its standard holds.
+    products: skus.map((sku) => ({
+      sku,
+      name: sku,
+      setName: "",
+      misc: miscSkus.has(sku),
+      maxQty: null,
+    })),
   };
 }
 
@@ -319,10 +326,13 @@ function checkFile(
     [MISC_GROUP, readSnapshot(db).targetWebsiteId],
   );
   const byEmail = new Map(desired.profiles.map((d) => [lower(d.email), d]));
+  const limits = new Map(desired.products.map((p) => [p.sku, p.maxQty]));
   const products = ourRows.filter((r) => byEmail.has(lower(r.email)));
   const wrongQty = products.filter((r) => {
     const d = byEmail.get(lower(r.email))!;
-    return r.qty !== runnableQty(d.qty[r.sku], settings.checkoutQty);
+    return (
+      r.qty !== runnableQty(d.qty[r.sku], defaultQtyFor(limits.get(r.sku), settings.checkoutQty))
+    );
   });
   const picked = products.filter((r) => byEmail.get(lower(r.email))!.qty[r.sku] !== undefined);
   check(
@@ -627,14 +637,14 @@ async function main() {
   if (second) second.skus = []; // switched everything off
   const extra = Array.from({ length: 35 }, (_, i) => String(96000000 + i));
   edited.products.push(
-    ...extra.map((sku) => ({ sku, name: sku, setName: "Synthetic", misc: false })),
+    ...extra.map((sku) => ({ sku, name: sku, setName: "Synthetic", misc: false, maxQty: null })),
   );
   for (const p of edited.profiles.slice(2, 12)) p.skus = [...p.skus, ...extra];
   // Three from the Miscellaneous line: picked beside the rest by a few, and alone by one,
   // whose task moves into the line's group.
   const odd = Array.from({ length: 3 }, (_, i) => String(97000000 + i));
   edited.products.push(
-    ...odd.map((sku) => ({ sku, name: sku, setName: "Synthetic odds", misc: true })),
+    ...odd.map((sku) => ({ sku, name: sku, setName: "Synthetic odds", misc: true, maxQty: null })),
   );
   for (const p of edited.profiles.slice(4, 8)) p.skus = [...p.skus, ...odd];
   const loner = edited.profiles[8];
@@ -645,9 +655,9 @@ async function main() {
     const entry = edited.known.find((k) => k.name === moved.name);
     if (entry) Object.assign(entry, { why: "member", instance: 2 });
   }
-  // Qty picks: one product at 1 on one profile; everything at 4 on another -- past Target's
-  // usual 2, which a member may pick -- the Miscellaneous line's picks among it; and a 12, past
-  // the most a member can pick, on a third.
+  // Qty picks: one product at 1 on one profile; everything at 4 on another -- which a member
+  // may pick past any product's limit -- the Miscellaneous line's picks among it; and a 12,
+  // past the most a member can pick, on a third.
   const qtyOne = edited.profiles[2];
   const qtyAll = edited.profiles[4];
   const qtyOver = edited.profiles[6];

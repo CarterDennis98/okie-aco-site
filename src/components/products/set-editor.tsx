@@ -7,6 +7,8 @@ import { deleteDropSet, saveDropSet } from "@/lib/products/admin-actions";
 import {
   PRODUCT_NAME_LIMIT,
   SET_NAME_LIMIT,
+  maxQtyText,
+  parseMaxQty,
   parsePastedLinks,
   parseProductInput,
   parseLogo,
@@ -29,6 +31,10 @@ import { useReorder } from "@/components/products/use-reorder";
  *     "Delete set" takes every product in it, retired ones too, and the picks members made.
  *   - LOGO and PRODUCT LINE: both optional. The logo shows left of the set's name; the line
  *     is the one the set is listed under, picked from those made in "Product lines".
+ *   - LIMITS: Target's most per checkout, on any row -- a new product's or one already
+ *     listed, so a whole set's limits can be posted in one go. Members see a product's limit
+ *     and are warned if they pick past it. Everything else about a listed product is its own
+ *     "Edit".
  *
  * Opened to add, the set field picks the set: an existing set's products are listed, so new
  * ones can go in among them, and its logo and line are filled in; a new name starts a new set.
@@ -45,9 +51,11 @@ type NewFields = {
   price: string;
   pasFee: string;
   imageUrl: string;
+  maxQty: string;
 };
 type Row =
-  | { key: string; kind: "listed"; product: CatalogProduct }
+  /** `maxQty` is its limit as typed into the row, which starts as the product's own. */
+  | { key: string; kind: "listed"; product: CatalogProduct; maxQty: string }
   | { key: string; kind: "new"; fields: NewFields };
 
 let nextKey = 0;
@@ -67,6 +75,9 @@ const secondary =
   "rounded-lg border border-[var(--color-edge)] px-4 py-2 text-sm font-medium text-[var(--color-fg)] transition-colors hover:border-[var(--color-brand)]/50 disabled:opacity-60";
 const iconButton =
   "inline-flex size-11 items-center justify-center rounded-lg text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] disabled:opacity-30 sm:size-7";
+/** A listed row's limit: small enough to sit inside the row's own facts, even on a phone. */
+const limitField =
+  "w-16 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-base text-[var(--color-fg)] placeholder:text-[var(--color-muted)]/60 focus:border-[var(--color-brand)] focus:outline-none sm:w-14 sm:py-0.5 sm:text-sm";
 
 /** Rows are checked before the set has a name; the name is checked on its own, at Save. */
 const ANY_SET = "set";
@@ -76,6 +87,16 @@ const skuOf = (row: Row) =>
   row.kind === "listed"
     ? row.product.sku
     : row.fields.sku.trim() || targetSku(row.fields.url) || "";
+
+/**
+ * Whether a listed row's limit was changed from the product's own. Read as Save would read
+ * it, so "02" over a limit of 2 is no change -- and one that can't be read is a change, for
+ * Save to refuse.
+ */
+const limitChanged = (row: Extract<Row, { kind: "listed" }>) => {
+  const typed = parseMaxQty(row.maxQty);
+  return !typed.ok || typed.value !== row.product.maxQty;
+};
 
 function Thumb({ src }: { src: string | null }) {
   if (!src || !src.startsWith("https://")) {
@@ -145,7 +166,12 @@ export function SetEditor({
     return products
       .filter((p) => p.setName === wanted.value)
       .sort(bySetOrder)
-      .map((product) => ({ key: product.id, kind: "listed" as const, product }));
+      .map((product) => ({
+        key: product.id,
+        kind: "listed" as const,
+        product,
+        maxQty: maxQtyText(product.maxQty),
+      }));
   };
 
   /** What's kept about a set as stored, by its name as typed. */
@@ -190,7 +216,11 @@ export function SetEditor({
         continue;
       }
       if (product.sku) inList.add(product.sku);
-      fresh.push({ key: newKey(), kind: "new", fields: { ...product, pasFee: "", imageUrl: "" } });
+      fresh.push({
+        key: newKey(),
+        kind: "new",
+        fields: { ...product, pasFee: "", imageUrl: "", maxQty: "" },
+      });
     }
     setRows((current) => [...current, ...fresh]);
     setPaste("");
@@ -213,6 +243,13 @@ export function SetEditor({
     );
   }
 
+  /** A listed product's limit, as typed into its row. */
+  function editLimit(key: string, maxQty: string) {
+    setRows((current) =>
+      current.map((row) => (row.key === key && row.kind === "listed" ? { ...row, maxQty } : row)),
+    );
+  }
+
   // Every SKU listed anywhere, for telling a new row it's a repeat before Save does.
   const known = useMemo(() => {
     const map = new Map<string, CatalogProduct>();
@@ -230,7 +267,11 @@ export function SetEditor({
     }
     const here = new Set(rows.flatMap((r) => (r.kind === "listed" ? [r.product.id] : [])));
     for (const row of rows) {
-      if (row.kind !== "new") continue;
+      if (row.kind === "listed") {
+        const limit = parseMaxQty(row.maxQty);
+        if (!limit.ok) found.set(row.key, limit.error);
+        continue;
+      }
       const checked = parseProductInput({ ...row.fields, setName: ANY_SET });
       if (!checked.ok) {
         found.set(row.key, checked.error);
@@ -257,7 +298,8 @@ export function SetEditor({
     (editing && name.trim().replace(/\s+/g, " ") !== setName) ||
     logo.trim() !== ownLogo ||
     line !== ownLine ||
-    rows.map((r) => r.key).join() !== original.join();
+    rows.map((r) => r.key).join() !== original.join() ||
+    rows.some((r) => r.kind === "listed" && limitChanged(r));
 
   function save() {
     setError(null);
@@ -266,7 +308,11 @@ export function SetEditor({
     const checkedLogo = parseLogo(logo, "set");
     if (!checkedLogo.ok) return setError(checkedLogo.error);
     if (problems.size > 0) return setError("Fix the marked products first.");
-    if (!editing && fresh === 0) return setError("Paste at least one product link.");
+    // Limits posted on the listed products are a save of their own, even with nothing new.
+    const limitsPosted = rows.some((r) => r.kind === "listed" && limitChanged(r));
+    if (!editing && fresh === 0 && !limitsPosted) {
+      return setError("Paste at least one product link.");
+    }
     if (!changed) return dialog.current?.close();
     startSaving(async () => {
       const result = await saveDropSet({
@@ -276,7 +322,8 @@ export function SetEditor({
         lineId: line,
         items: rows.map((row) =>
           row.kind === "listed"
-            ? { id: row.product.id }
+            ? // Its limit only when changed here, so one changed elsewhere since isn't undone.
+              { id: row.product.id, ...(limitChanged(row) ? { maxQty: row.maxQty } : {}) }
             : {
                 add: {
                   name: row.fields.name,
@@ -285,6 +332,7 @@ export function SetEditor({
                   price: row.fields.price,
                   pasFee: row.fields.pasFee,
                   imageUrl: row.fields.imageUrl,
+                  maxQty: row.fields.maxQty,
                 },
               },
         ),
@@ -340,7 +388,8 @@ export function SetEditor({
               </h2>
               <p className="mt-1 text-xs text-[var(--color-muted)]">
                 Members see a set&rsquo;s products in the order below. Exports watch every SKU
-                listed.
+                listed. A limit is Target&rsquo;s most per checkout: members see it, and are warned
+                if they pick more.
               </p>
             </div>
             <button
@@ -540,6 +589,19 @@ export function SetEditor({
                                 <p>
                                   SKU <span className="tabular-nums">{row.product.sku}</span>
                                 </p>
+                                <label className="mt-1 inline-flex items-center gap-1.5">
+                                  Limit
+                                  <input
+                                    value={row.maxQty}
+                                    onChange={(event) =>
+                                      editLimit(row.key, event.currentTarget.value)
+                                    }
+                                    inputMode="numeric"
+                                    placeholder="None"
+                                    aria-label={`Limit per checkout of ${row.product.name}`}
+                                    className={limitField}
+                                  />
+                                </label>
                               </div>
                             </div>
                           ) : (
@@ -589,7 +651,7 @@ export function SetEditor({
                         </div>
 
                         {row.kind === "new" && (
-                          <div className="mt-2 grid grid-cols-2 gap-2 sm:ml-[4.75rem] sm:grid-cols-[1fr_8rem_6.5rem_6.5rem]">
+                          <div className="mt-2 grid grid-cols-2 gap-2 sm:ml-[4.75rem] sm:grid-cols-[1fr_7rem_6rem_6rem_5rem]">
                             <input
                               aria-label={`Name of product ${index + 1}`}
                               value={row.fields.name}
@@ -631,6 +693,16 @@ export function SetEditor({
                               className={field}
                             />
                             <input
+                              aria-label={`Limit per checkout of product ${index + 1}`}
+                              value={row.fields.maxQty}
+                              onChange={(event) =>
+                                edit(row.key, { maxQty: event.currentTarget.value })
+                              }
+                              inputMode="numeric"
+                              placeholder="Limit"
+                              className={field}
+                            />
+                            <input
                               aria-label={`Image link of product ${index + 1}`}
                               value={row.fields.imageUrl}
                               onChange={(event) =>
@@ -638,7 +710,7 @@ export function SetEditor({
                               }
                               inputMode="url"
                               placeholder="Image link (optional)"
-                              className={`${field} sm:col-span-4`}
+                              className={`${field} col-span-2 sm:col-span-5`}
                             />
                           </div>
                         )}

@@ -13,7 +13,7 @@ import {
   getSetOrder,
 } from "@/db/queries/products";
 import { requireMember } from "@/lib/auth/guard";
-import { MAX_QTY, STANDARD_QTY, TARGET_LIMIT } from "@/lib/products/qty";
+import { MAX_QTY, STANDARD_QTY } from "@/lib/products/qty";
 
 /**
  * Target Products ("SKUs" in the dashboard's links): which Target products a member wants to
@@ -51,9 +51,12 @@ export default async function ProductsPage() {
   const retired = catalog.filter((p) => !p.active);
   const sets = [...new Set(catalog.map((p) => p.setName))].sort();
   const running = profiles.filter((p) => p.active).length;
+  // Where Target posts a limit, the product shows it and runs at it when that's below the
+  // standard (defaultQtyFor); picking past it is warned about there, beside the qty.
   const qtyNote =
-    `Each checkout buys ${STANDARD_QTY} unless you pick another qty under it, up to ${MAX_QTY}. ` +
-    `Target's limit is usually ${TARGET_LIMIT}, so more than ${TARGET_LIMIT} may cause problems at checkout.`;
+    `Each checkout buys ${STANDARD_QTY}, or a product's limit where that's lower, unless you ` +
+    `pick another qty under it, up to ${MAX_QTY}. More than a product's limit may cause ` +
+    `problems at checkout.`;
 
   return (
     <>

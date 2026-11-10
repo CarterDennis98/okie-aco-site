@@ -9,9 +9,9 @@ import { siteKey, siteStyle } from "@/lib/sites";
  *                retailer, every mailbox, every charge -- and the only people who can move a
  *                profile from one runner to another.
  *   RUNNERS      anyone holding one of the Discord roles in RUNNER_ROLES: somebody who runs
- *                a retailer's bot. Chess on Crunchyroll, Mattel and Menards, peacemaker on
- *                Premium Bandai, CrispHeinz on Topps, and whoever else is given the Target
- *                role to share that one.
+ *                a retailer's bot. Chess on Crunchyroll, Mattel, Menards and Costco,
+ *                peacemaker on Premium Bandai, CrispHeinz on Topps, and whoever else is given
+ *                the Target role to share that one.
  *
  * A runner's reach is TWO facts, and it takes both. The role says which retailers they MAY
  * be given; a full admin's assignment (VaultAccount.assigneeId) says which profiles they
@@ -55,7 +55,39 @@ export const RUNNER_ROLES: Readonly<Record<string, string>> = {
   topps: "1554199946633158881",
   mattel: "1554259902925373471",
   menards: "1567931613340368937",
+  // Given to chess on 2026-11-09, when Costco's bot started placing whole orders and Costco
+  // profiles started carrying a card and an address for it to export.
+  costco: "1569525617408483459",
 };
+
+/**
+ * Who a retailer's NEW members go to, where the retailer's fees don't already say.
+ *
+ * A brand-new member's first profile on a retailer lands with whoever that retailer's fees
+ * are owed to (payees.ts), and otherwise with the operator -- see pickDefaultAssignee. That
+ * ties running a retailer's bot to being paid for it, which holds for chess on Menards and
+ * not on Costco: chess runs Costco, and Costco's fees are still the operator's. An entry here
+ * sends the new members to the runner and moves no money.
+ *
+ * Checked after the runner who already holds the member there -- a member's profiles on one
+ * retailer travel together -- and only while this runner still holds the retailer's role in
+ * RUNNER_ROLES. Without the role the profile goes on down the list, so taking the role away
+ * stops new members reaching them at once.
+ *
+ * Keyed by site key, a plain Discord id, for the reason RUNNER_ROLES is in code: who is handed
+ * members' cards belongs in the history, next to the change that did it.
+ */
+export const DEFAULT_RUNNERS: Readonly<Record<string, string>> = {
+  // chess, since 2026-11-09: he runs Costco's bot, and its fees stay the operator's.
+  costco: "397045810996576266",
+};
+
+/** The runner this retailer's new members go to, or null where its fees decide. */
+export function defaultRunnerFor(site: string | null | undefined): string | null {
+  const key = siteKey(site);
+  // Own keys only: "constructor" is a key siteKey can produce, and a plain object inherits one.
+  return Object.hasOwn(DEFAULT_RUNNERS, key) ? DEFAULT_RUNNERS[key] : null;
+}
 
 /** `process.env`, or a stand-in for it in a test. Only ADMIN_DISCORD_IDS is read. */
 type Env = Record<string, string | undefined>;

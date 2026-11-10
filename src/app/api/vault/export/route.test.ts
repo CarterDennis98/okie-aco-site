@@ -115,6 +115,17 @@ describe.skipIf(!canRun)("a member's own export", () => {
     await profile(MEMBER, "topps", "a");
     await profile(MEMBER, "target", "a-target");
     await profile(OTHER, "topps", "b");
+    // Costco takes full profiles since 2026-11-09. One finished, and one login saved before
+    // then that still has no address or card behind it.
+    await profile(MEMBER, "costco", "a-costco");
+    await prisma.vaultAccount.create({
+      data: {
+        siteKey: "costco",
+        email: `${PREFIX}unfinished@example.com`,
+        discordUserId: MEMBER,
+        assigneeId: RUNNER,
+      },
+    });
   });
 
   afterAll(async () => {
@@ -161,10 +172,19 @@ describe.skipIf(!canRun)("a member's own export", () => {
     expect((JSON.parse(body) as AycdRow[]).map((row) => row.name)).toHaveLength(3);
   });
 
+  /**
+   * Costco was login-only and refused here with a 400. It exports like Target now -- and a
+   * login nobody has finished stays out, because there is no card or address to write.
+   */
+  it("exports Costco's profiles, and leaves out a login still to be finished", async () => {
+    const { status, body } = await exportSite("site=costco");
+    expect(status).toBe(200);
+    expect((JSON.parse(body) as AycdRow[]).map((row) => row.name)).toEqual([`${PREFIX}a-costco`]);
+  });
+
   it("refuses what has no profiles to export, and records nothing", async () => {
     await prisma.vaultExport.deleteMany({ where: { actorDiscordId: MEMBER } });
 
-    expect((await exportSite("site=costco")).status).toBe(400);
     expect((await exportSite("site=nowhere")).status).toBe(400);
     expect((await exportSite("")).status).toBe(400);
 
