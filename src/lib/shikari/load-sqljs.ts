@@ -11,7 +11,7 @@ import type { SqlJsStatic } from "sql.js";
  * Imported dynamically, so the engine is fetched only when the operator opens a backup --
  * nobody else ever downloads it.
  */
-export const SQLJS_WASM_PATH = "/vendor/sql-wasm-1.14.2.wasm";
+export const SQLJS_WASM_PATH = "/vendor/sql-wasm-1.16.0.wasm";
 
 let loading: Promise<SqlJsStatic> | null = null;
 
