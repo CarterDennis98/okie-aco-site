@@ -1,11 +1,14 @@
 import { normalizeProfile, productLabel } from "@/lib/normalize";
+import { siteFlaggedCancellations } from "@/lib/sites";
 
 /**
  * Flags on profiles whose checkouts failed.
  *
  * Every failure the mirror posts -- a decline, an order the retailer cancelled, a checkout
  * error -- is matched to the profile it ran on (api/bot/failures), on every retailer. What
- * counts against a profile is the failures since its owner last CHANGED it:
+ * counts against a profile is the failures since its owner last CHANGED it, less the
+ * cancellations its retailer doesn't count (`flaggedCancellations` in sites.ts: on Target, only
+ * Item Demand and Reseller do -- a Quantity Limit cancel just means the member hit their limit):
  *
  *   FLAGGED    one or more. Orange: worth a look -- a card, an address, a login.
  *   HIGH RISK  three or more without a change in between. Red: the same details keep failing,
@@ -47,18 +50,51 @@ export function riskFor(count: number): FailureRisk | null {
   return null;
 }
 
-/** One failure still counting against a profile, as the flag summary reads it. */
+/** One uncleared failure against a profile, as the flag summary reads it. */
 export type CountingFailure = {
   vaultProfileId: string;
+  /** The retailer it was on, which decides whether a cancellation counts. */
+  siteKey: string | null;
   occurredAt: Date;
   reason: string | null;
   productRaw: string | null;
 };
 
+/**
+ * The policy a retailer gave for cancelling an order after checkout, lowercase -- "item
+ * demand", "quantity limit" -- or "" for a cancellation that gave none. Null for a failure that
+ * isn't a cancellation at all: a decline, a checkout error.
+ *
+ * Read the same however the vendor words the rest: Shikari's "Order Canceled: Item Demand",
+ * Sniped's "Cancelled Checkout (Policy - Item Demand)", Refract's and Swft's "Policy - Item
+ * Demand".
+ */
+export function cancellationReason(reason: string | null | undefined): string | null {
+  const text = tidyReason(reason);
+  if (!text) return null;
+  const policy = text.match(/\bpolicy\s*[-–—:]\s*([^()]+?)\s*\)?$/i);
+  if (policy) return policy[1].trim().toLowerCase();
+  const cancelled = text.match(/\bcancel+ed\b\s*(?:checkout|order)?\s*[:\-–—]?\s*(.*)$/i);
+  if (cancelled) return cancelled[1].replace(/[()]/g, "").trim().toLowerCase();
+  return null;
+}
+
+/**
+ * Whether this failure counts toward a flag. Every failure does, except a cancellation whose
+ * policy its retailer doesn't flag -- see `flaggedCancellations` in sites.ts.
+ */
+export function countsTowardFlag(siteKey: string | null, reason: string | null): boolean {
+  const flagged = siteFlaggedCancellations(siteKey);
+  if (!flagged) return true;
+  const policy = cancellationReason(reason);
+  return policy === null || flagged.includes(policy);
+}
+
 /** Profile id -> its flag, for every profile with at least one failure counting. */
 export function flagsByProfile(failures: readonly CountingFailure[]): Map<string, FailureFlag> {
   const grouped = new Map<string, CountingFailure[]>();
   for (const failure of failures) {
+    if (!countsTowardFlag(failure.siteKey, failure.reason)) continue;
     grouped.set(failure.vaultProfileId, [...(grouped.get(failure.vaultProfileId) ?? []), failure]);
   }
 

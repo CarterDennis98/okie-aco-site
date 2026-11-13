@@ -21,6 +21,7 @@ import {
   selfServeSiteKeys,
   supportedSites,
   siteBotGeneratesPhone,
+  siteFlaggedCancellations,
   siteImportsValor,
   siteMembership,
   siteRequiresPhone,
@@ -598,5 +599,30 @@ describe("siteImportsValor", () => {
 
   it("accepts the raw vendor spelling", () => {
     expect(siteImportsValor("Pokemon Center US")).toBe(true);
+  });
+});
+
+describe("siteFlaggedCancellations", () => {
+  it("flags only Target's Item Demand and Reseller cancels, never Quantity Limit", () => {
+    expect(siteFlaggedCancellations("target")).toEqual(["item demand", "reseller"]);
+    expect(siteFlaggedCancellations("Target")).toEqual(["item demand", "reseller"]);
+    expect(siteFlaggedCancellations("target")).not.toContain("quantity limit");
+  });
+
+  it("leaves every other retailer flagging on every failure, a new one included", () => {
+    for (const key of ["walmart", "pokemon-center", "topps", "costco", "crunchyroll"]) {
+      expect(siteFlaggedCancellations(key)).toBeNull();
+    }
+    expect(siteFlaggedCancellations("Some New Store")).toBeNull();
+  });
+
+  it("is never an empty list, and every policy in one is lowercase", () => {
+    // Empty would stop every cancellation on the retailer flagging -- unset is how to say "all".
+    for (const site of supportedSites()) {
+      const policies = site.flaggedCancellations;
+      if (policies === undefined) continue;
+      expect(policies.length, site.key).toBeGreaterThan(0);
+      for (const policy of policies) expect(policy).toBe(policy.toLowerCase().trim());
+    }
   });
 });

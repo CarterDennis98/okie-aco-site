@@ -283,6 +283,10 @@ model Checkout {
 //
 // The bot sends no raw embed with these. A failure's embed carries the same logins and
 // proxies a success's does, and nothing here needs more than the fields below.
+//
+// Stored whether or not it flags anything: a retailer can count only some of its
+// cancellations (Target: Item Demand and Reseller, not Quantity Limit -- flaggedCancellations
+// in sites.ts), and that is decided when flags are counted, not here.
 
 model CheckoutFailure {
   id String @id @default(uuid())
@@ -719,7 +723,8 @@ model VaultProfile {
   // checkouts from before then stop counting against it (CheckoutFailure.clearedAt), and one
   // that turns up later but happened before then never starts. Null: never changed since it
   // was created, which is the line instead. Not `updatedAt`: a reorder or a toggle moves that,
-  // and neither is the member fixing anything.
+  // and neither is the member fixing anything. Edits from before failures were recorded were
+  // copied in from vault_changes when they shipped (migration 20261113200000).
   failuresClearedAt DateTime? @map("failures_cleared_at") @db.Timestamptz(3)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)

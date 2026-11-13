@@ -219,4 +219,28 @@ describe.skipIf(!canRun)("POST /api/bot/failures", () => {
     });
     expect(kept).toEqual({ vaultProfileId: null, profileRaw: "failspec - 8" });
   });
+
+  it("stores Target's Quantity Limit cancels without flagging for them, and a Reseller one flags", async () => {
+    // A member who hit their own checkout limit: nothing wrong with the profile.
+    const limited = await profile(MEMBER, "target", "failspec - 9", minutesAgo(60));
+    const quantity = await post([
+      failure({ profileRaw: "failspec - 9", reason: "Order Canceled: Quantity Limit" }),
+      failure({
+        sourceBot: "sniped",
+        profileRaw: "failspec - 9",
+        reason: "Cancelled Checkout (Policy - Quantity Limit)",
+      }),
+    ]);
+    expect(await quantity.json()).toMatchObject({ inserted: 2, matched: 2, flagging: 0 });
+    expect((await loadFailureFlags(MEMBER)).has(limited.id)).toBe(false);
+
+    const reseller = await post([
+      failure({ profileRaw: "failspec - 9", reason: "Order Canceled: Reseller" }),
+    ]);
+    expect(await reseller.json()).toMatchObject({ inserted: 1, flagging: 1 });
+    expect((await loadFailureFlags(MEMBER)).get(limited.id)).toMatchObject({
+      count: 1,
+      lastReason: "Order Canceled: Reseller",
+    });
+  });
 });

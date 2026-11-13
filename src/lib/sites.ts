@@ -267,6 +267,28 @@ export type SiteStyle = {
    * Defaults to false. Only meaningful where there are profiles to import, which a test pins.
    */
   importsValor?: boolean;
+
+  /**
+   * Which of this retailer's CANCELLATIONS flag a profile, by the policy it gave -- set where
+   * only some should. Lowercase.
+   *
+   * A failed checkout flags the profile it ran on (lib/vault/failure-flags.ts), and on most
+   * retailers every one should. Target is the exception: it cancels orders after checkout under
+   * a policy, and only some of those say anything about the profile. "Item Demand" and
+   * "Reseller" are Target judging the account or the address; "Quantity Limit" only means the
+   * member has checked out as many as Target allows them, which is nothing wrong with the
+   * profile (the operator, 2026-11-13). So Target lists the two that flag, and the rest of its
+   * cancellations -- Quantity Limit, Other, one with no reason, any policy it adds later --
+   * don't.
+   *
+   * Only cancellations are filtered: a failure that isn't one -- a declined card, a checkout
+   * error -- flags here like anywhere. Every failure is still stored either way; this decides
+   * only what counts toward a flag, when flags are counted, so changing it needs no data fix.
+   * The policy is read the same however a vendor words the rest -- see cancellationReason.
+   *
+   * Unset: every failure flags.
+   */
+  flaggedCancellations?: readonly string[];
 };
 
 const SITES: Record<string, Omit<SiteStyle, "key">> = {
@@ -278,6 +300,9 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     height: 5400,
     profileSoftCap: 5,
     selfServe: true,
+    // Only these of its after-checkout cancels flag a profile; a Quantity Limit one just means
+    // the member hit their own checkout limit. See flaggedCancellations.
+    flaggedCancellations: ["item demand", "reseller"],
   },
   walmart: {
     label: "Walmart",
@@ -597,6 +622,17 @@ export function siteBotGeneratesPhone(site: string | null | undefined): boolean 
  */
 export function siteImportsValor(site: string | null | undefined): boolean {
   return siteStyle(site).importsValor === true;
+}
+
+/**
+ * The cancellation policies that flag a profile on this retailer, or null where every failure
+ * does. Read when flags are counted, and by the failure ingest's report -- see
+ * `flaggedCancellations`.
+ */
+export function siteFlaggedCancellations(
+  site: string | null | undefined,
+): readonly string[] | null {
+  return siteStyle(site).flaggedCancellations ?? null;
 }
 
 /**

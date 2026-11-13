@@ -21,7 +21,13 @@ export async function loadFailureFlags(
       clearedAt: null,
       vaultProfile: { discordUserId, ...(profileId ? { id: profileId } : {}) },
     },
-    select: { vaultProfileId: true, occurredAt: true, reason: true, productRaw: true },
+    select: {
+      vaultProfileId: true,
+      siteKey: true,
+      occurredAt: true,
+      reason: true,
+      productRaw: true,
+    },
   });
   return flagsByProfile(
     rows.flatMap((row) =>

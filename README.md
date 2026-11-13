@@ -203,7 +203,10 @@ mutation-checked: removing `discordUserId` from the `where` clause makes it fail
   **Flagged** tab across retailers, a dashboard nudge); three without a change in between turn
   it red. A saved change to the profile, or an import over it, clears them; saving it
   unchanged does not. Their own table, because every read of `checkouts` means "this went
-  through". See `src/lib/vault/failure-flags.ts`.
+  through". A retailer can count only some of its cancellations — `flaggedCancellations` in
+  `src/lib/sites.ts`: on Target only Item Demand and Reseller, never Quantity Limit, which only
+  means a member hit their checkout limit. Every failure is stored regardless, and the rule is
+  applied when flags are counted. See `src/lib/vault/failure-flags.ts`.
 - **The address book is the member's alone.** `saved_addresses` and `saved_cards` fill a new
   profile and do nothing else: in no export, on no admin page, in no runner's queue. A saved
   card is re-encrypted into the profile's own columns on the server

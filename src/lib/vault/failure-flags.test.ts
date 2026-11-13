@@ -5,7 +5,9 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  cancellationReason,
   cleanSince,
+  countsTowardFlag,
   flagLabel,
   flagsByProfile,
   HIGH_RISK_AT,
@@ -15,6 +17,77 @@ import {
 } from "@/lib/vault/failure-flags";
 
 const at = (iso: string) => new Date(iso);
+
+describe("cancellationReason", () => {
+  it("reads the policy out of every vendor's wording", () => {
+    // Shikari
+    expect(cancellationReason("Order Canceled: Item Demand")).toBe("item demand");
+    expect(cancellationReason("Order Canceled: Quantity Limit")).toBe("quantity limit");
+    expect(cancellationReason("Order Canceled: Reseller")).toBe("reseller");
+    expect(cancellationReason("Order Canceled: Other")).toBe("other");
+    // Sniped
+    expect(cancellationReason("Cancelled Checkout (Policy - Item Demand)")).toBe("item demand");
+    expect(cancellationReason("Cancelled Checkout (Policy - Quantity Limit)")).toBe(
+      "quantity limit",
+    );
+    // Refract and Swft
+    expect(cancellationReason("Policy - Item Demand")).toBe("item demand");
+    expect(cancellationReason("**Policy  -  Reseller**")).toBe("reseller");
+  });
+
+  it("knows a cancellation that gave no policy from a failure that was never one", () => {
+    expect(cancellationReason("Cancelled Checkout")).toBe("");
+    expect(cancellationReason("Payment Declined")).toBeNull();
+    expect(cancellationReason("Checkout Failed")).toBeNull();
+    expect(cancellationReason(null)).toBeNull();
+  });
+});
+
+describe("countsTowardFlag", () => {
+  it("counts only Item Demand and Reseller among Target's cancellations", () => {
+    expect(countsTowardFlag("target", "Order Canceled: Item Demand")).toBe(true);
+    expect(countsTowardFlag("target", "Order Canceled: Reseller")).toBe(true);
+    expect(countsTowardFlag("target", "Cancelled Checkout (Policy - Item Demand)")).toBe(true);
+    // The member hit their own checkout limit: nothing wrong with the profile.
+    expect(countsTowardFlag("target", "Order Canceled: Quantity Limit")).toBe(false);
+    expect(countsTowardFlag("target", "Cancelled Checkout (Policy - Quantity Limit)")).toBe(false);
+    expect(countsTowardFlag("target", "Order Canceled: Other")).toBe(false);
+    expect(countsTowardFlag("target", "Cancelled Checkout")).toBe(false);
+  });
+
+  it("still counts a Target failure that isn't a cancellation", () => {
+    expect(countsTowardFlag("target", "Payment Declined")).toBe(true);
+    expect(countsTowardFlag("target", null)).toBe(true);
+  });
+
+  it("counts every failure on a retailer that names no policies, an unknown one included", () => {
+    expect(countsTowardFlag("walmart", "Order Canceled: Quantity Limit")).toBe(true);
+    expect(countsTowardFlag("topps", "Checkout Failed")).toBe(true);
+    expect(countsTowardFlag(null, "Order Canceled: Quantity Limit")).toBe(true);
+  });
+
+  it("leaves a Target profile's Quantity Limit cancels out of its count and its last reason", () => {
+    const failure = (day: number, reason: string) => ({
+      vaultProfileId: "t",
+      siteKey: "target",
+      occurredAt: at(`2026-11-0${day}T01:00:00Z`),
+      reason,
+      productRaw: null,
+    });
+    const flags = flagsByProfile([
+      failure(2, "Order Canceled: Item Demand"),
+      failure(3, "Order Canceled: Quantity Limit"),
+      failure(4, "Order Canceled: Quantity Limit"),
+    ]);
+    expect(flags.get("t")).toMatchObject({
+      count: 1,
+      risk: "flagged",
+      lastReason: "Order Canceled: Item Demand",
+    });
+    // Nothing but Quantity Limit cancels: no flag at all.
+    expect(flagsByProfile([failure(3, "Order Canceled: Quantity Limit")]).size).toBe(0);
+  });
+});
 
 describe("riskFor", () => {
   it("flags one failure, and turns red at three", () => {
@@ -32,12 +105,14 @@ describe("flagsByProfile", () => {
     const flags = flagsByProfile([
       {
         vaultProfileId: "a",
+        siteKey: "pokemon-center",
         occurredAt: at("2026-11-10T01:00:00Z"),
         reason: "Payment Declined",
         productRaw: null,
       },
       {
         vaultProfileId: "a",
+        siteKey: "pokemon-center",
         occurredAt: at("2026-11-12T01:00:00Z"),
         reason: "**Policy - Item Demand**",
         productRaw:
@@ -45,12 +120,14 @@ describe("flagsByProfile", () => {
       },
       {
         vaultProfileId: "a",
+        siteKey: "pokemon-center",
         occurredAt: at("2026-11-11T01:00:00Z"),
         reason: null,
         productRaw: null,
       },
       {
         vaultProfileId: "b",
+        siteKey: "target",
         occurredAt: at("2026-11-12T05:00:00Z"),
         reason: null,
         productRaw: "95120834",

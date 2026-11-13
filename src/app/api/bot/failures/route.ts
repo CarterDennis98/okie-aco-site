@@ -2,7 +2,7 @@ import { prisma } from "@/db/client";
 import { authorizeBot } from "@/lib/bot-auth";
 import { normalizeProfile } from "@/lib/normalize";
 import { siteKey } from "@/lib/sites";
-import { cleanSince, matchFailureProfile } from "@/lib/vault/failure-flags";
+import { cleanSince, countsTowardFlag, matchFailureProfile } from "@/lib/vault/failure-flags";
 import { failureBatch } from "@/types/ingest";
 
 /**
@@ -24,6 +24,11 @@ import { failureBatch } from "@/types/ingest";
  * A failure that matches nothing is not an error, and nothing here fails a batch over one: an
  * operator's house profile kept off the site, a retailer no member has profiles on yet
  * (Hayha's "Demandware" posts), or a profile deleted since.
+ *
+ * EVERY FAILURE IS STORED, including the cancellations its retailer doesn't flag (Target's
+ * Quantity Limit -- `flaggedCancellations` in sites.ts). Which ones count is decided when flags
+ * are counted, so the rule can change without a data fix; the response's `flagging` says how
+ * many of this batch count against a profile now.
  */
 export const dynamic = "force-dynamic";
 
@@ -120,10 +125,16 @@ export async function POST(request: Request) {
 
   const result = await prisma.checkoutFailure.createMany({ data, skipDuplicates: true });
 
+  // Matched, still counting, and of a kind its retailer flags: what this batch adds to flags.
+  const flagging = data.filter(
+    (row) => row.vaultProfileId && !row.clearedAt && countsTowardFlag(row.siteKey, row.reason),
+  ).length;
+
   return Response.json({
     inserted: result.count,
     duplicates: data.length - result.count,
     matched,
+    flagging,
     received: parsed.data.failures.length,
   });
 }
