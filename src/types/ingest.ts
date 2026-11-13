@@ -16,26 +16,28 @@ import { z } from "zod";
 /** Discord snowflakes are 64-bit and exceed 2^53; they are strings everywhere. */
 const snowflake = z.string().regex(/^\d{15,25}$/, "not a Discord snowflake");
 
+/**
+ * A new vendor lands HERE FIRST, deployed before the bot starts sending it. The bot's
+ * outbox refuses to deliver a line the server rejects, so a checkout from a vendor this list
+ * doesn't know never reaches the site until it is added here. ingest.test.ts checks this
+ * list against the mirror's fixtures. Failures (below) take the same list.
+ */
+const sourceBot = z.enum([
+  "valor",
+  "shikari",
+  "refract",
+  "swft",
+  "hidden",
+  "stellar",
+  "alpine",
+  "sniped",
+  "makebot",
+  "hayha",
+]);
+
 export const checkoutInput = z
   .object({
-    /**
-     * A new vendor lands HERE FIRST, deployed before the bot starts sending it. The bot's
-     * outbox holds a batch the server rejects and stops flushing until it is accepted, so
-     * one checkout from a vendor this list doesn't know stalls every checkout behind it --
-     * every vendor, mid-drop. ingest.test.ts checks this list against the mirror's fixtures.
-     */
-    sourceBot: z.enum([
-      "valor",
-      "shikari",
-      "refract",
-      "swft",
-      "hidden",
-      "stellar",
-      "alpine",
-      "sniped",
-      "makebot",
-      "hayha",
-    ]),
+    sourceBot,
     discordMessageId: snowflake,
     discordChannelId: snowflake,
     /** Null for vendors that omit it, and for declines that never got one. */
@@ -71,3 +73,36 @@ export const checkoutBatch = z
 
 export type CheckoutInput = z.infer<typeof checkoutInput>;
 export type CheckoutBatch = z.infer<typeof checkoutBatch>;
+
+/**
+ * The bot's contract for posting FAILED checkouts: declines, cancelled orders, checkout errors
+ * (POST /api/bot/failures). They flag the profile they ran on; they are never billed.
+ *
+ * Raw values, like a checkout's, so the profile is keyed and the retailer read by the same
+ * functions the rest of the site uses. NO raw embed: a failure's carries the same logins and
+ * proxies a success's does, and the flag needs none of it. Strict for the same reason the
+ * checkout contract is.
+ */
+export const failureInput = z
+  .object({
+    sourceBot,
+    discordMessageId: snowflake,
+    discordChannelId: snowflake,
+    /** Set on a cancelled order, which was placed first; null on a decline. */
+    orderId: z.string().min(1).max(120).nullable().optional(),
+    occurredAt: z.iso.datetime({ offset: true }),
+    site: z.string().min(1).max(120).nullable().optional(),
+    productRaw: z.string().max(500).nullable().optional(),
+    profileRaw: z.string().max(200).nullable().optional(),
+    /** The vendor's own words -- "Payment Declined", "Policy - Item Demand". */
+    reason: z.string().max(300).nullable().optional(),
+  })
+  .strict();
+
+export const failureBatch = z
+  .object({
+    failures: z.array(failureInput).min(1).max(500),
+  })
+  .strict();
+
+export type FailureInput = z.infer<typeof failureInput>;

@@ -166,6 +166,16 @@ crafted header skipping middleware outright.
   assignments, since an export is what gets loaded onto a bot and someone else's profiles on
   yours would run a member twice. A move writes a pair of queue entries — "take these off"
   for the old runner, "load these" for the new one — so neither bot is left guessing.
+- **A member locked out of their Discord account can sign in with another one** that stands
+  in for it — `STAND_INS` in `src/lib/auth/stand-ins.ts`, new account → old. Signed in with
+  the stand-in, every page and action gets the OLD id: their profiles, charges, runner
+  assignments and the fees owed to them, exactly as before, with nothing in the database
+  moved. Only membership and roles come from the account actually signed in, so give the
+  stand-in their roles in Discord (the bot syncs runner roles in seconds), and take them off
+  the old account if it may be in someone else's hands — or kick it, which locks it out of the
+  site too. Never for a full admin, on either side; `ADMIN_DISCORD_IDS` stays the only way to
+  make one. When they get the account back, delete the line and redeploy. CrispHeinz's alt,
+  Hulk Logan, has stood in for him since 2026-11-13.
 - **ACO credit is the operator's alone** — not every full admin's. Credit only ever comes off
   the operator's own fees, so only they see **ACO credit** on the Charges page, and
   `changeAcoCredit` (`src/lib/billing/credit-actions.ts`) checks it again where the write is.
@@ -186,6 +196,19 @@ mutation-checked: removing `discordUserId` from the `where` clause makes it fail
 - **Money is integer cents everywhere**, matching the bot.
 - **Discord snowflake IDs are strings**, never numbers — they exceed 2^53.
 - **Sent bills are immutable.** Fee edits apply to future billing runs only.
+- **Failed checkouts flag profiles, and are never checkouts.** The bot posts every decline,
+  cancelled order and checkout error to `POST /api/bot/failures` (`checkout_failures`), where
+  each is matched to the profile it ran on by retailer and name — on every retailer. One
+  failure counting against a profile flags it orange on its owner's page (row chip, a
+  **Flagged** tab across retailers, a dashboard nudge); three without a change in between turn
+  it red. A saved change to the profile, or an import over it, clears them; saving it
+  unchanged does not. Their own table, because every read of `checkouts` means "this went
+  through". See `src/lib/vault/failure-flags.ts`.
+- **The address book is the member's alone.** `saved_addresses` and `saved_cards` fill a new
+  profile and do nothing else: in no export, on no admin page, in no runner's queue. A saved
+  card is re-encrypted into the profile's own columns on the server
+  (`src/lib/vault/card-secrets.ts`) — every envelope is bound to its column, so a plain copy of
+  the ciphertext would never decrypt there.
 - **ACO credit is a ledger, never a stored balance.** `aco_credits` holds each give (+) and
   take-back (−), and each bill records what it spent in `pas_bills.credit_cents`; a balance is
   the one less the other, on real runs only (`src/db/queries/aco-credit.ts`). The bot reads

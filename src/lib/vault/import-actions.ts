@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
+import { clearFailures } from "@/db/queries/failures";
 import { defaultAssignee } from "@/db/queries/runners";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { requireMember } from "@/lib/auth/guard";
@@ -196,12 +197,18 @@ export async function importProfileFile(form: FormData): Promise<ImportResult> {
     ? await defaultAssignee(siteKey, viewer.discordUserId)
     : null;
 
+  // An import over a profile rewrites its details from the file, which is the member changing
+  // it: its failed checkouts stop counting, as they do for an edit (lib/vault/failure-flags.ts).
+  const importedAt = new Date();
   for (const update of plan.updates) {
-    const row = await prisma.vaultProfile.update({
-      where: { id: update.profileId },
-      data: profileFields(update.parsed),
-      select: { id: true, name: true },
-    });
+    const [row] = await prisma.$transaction([
+      prisma.vaultProfile.update({
+        where: { id: update.profileId },
+        data: { ...profileFields(update.parsed), failuresClearedAt: importedAt },
+        select: { id: true, name: true },
+      }),
+      clearFailures([update.profileId], importedAt),
+    ]);
     if (update.password) {
       await prisma.vaultAccount.update({
         where: { id: update.accountId },

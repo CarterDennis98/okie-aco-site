@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkoutBatch, checkoutInput } from "@/types/ingest";
+import { checkoutBatch, checkoutInput, failureBatch, failureInput } from "@/types/ingest";
 
 /**
  * The bot's checkout contract.
@@ -204,5 +204,69 @@ describe("checkoutInput", () => {
     for (const vendor of vendors) {
       expect(known.safeParse(vendor).success, `the site would reject "${vendor}"`).toBe(true);
     }
+  });
+});
+
+describe("failureInput", () => {
+  // Shapes toFailurePayload (okie-aco-mirror/src/mirror/ingest.js) builds from real failures.
+  const base = {
+    discordMessageId: "1555378204364111974",
+    discordChannelId: "1555363461192482856",
+    occurredAt: "2026-10-02T00:37:41.335Z",
+  };
+
+  it("accepts a cancellation, a bare decline, and a decline that names no product", () => {
+    const result = failureBatch.safeParse({
+      failures: [
+        // Sniped: Target cancelled a placed order, so it has a number and Target's reason.
+        {
+          ...base,
+          sourceBot: "sniped",
+          orderId: "912004567890",
+          site: "Target",
+          productRaw: "2026 Topps NFL Flagship Football Trading Card Value Box",
+          profileRaw: "Target 46",
+          reason: "Cancelled Checkout (Policy - Item Demand)",
+        },
+        // Valor: "Declined" and nothing else -- no order, no reason.
+        {
+          ...base,
+          discordMessageId: "1493319989627846858",
+          sourceBot: "valor",
+          orderId: null,
+          site: "Pokemon Center US",
+          productRaw:
+            "[(10-10403-109) Pokémon TCG: Booster Bundle](https://www.pokemoncenter.com/product/10-10403-109)",
+          profileRaw: " devin24_ - 2 ",
+          reason: null,
+        },
+        // Hayha: no product at all.
+        {
+          ...base,
+          discordMessageId: "1568018721614602351",
+          sourceBot: "hayha",
+          orderId: null,
+          site: "Menards",
+          productRaw: "",
+          profileRaw: "carter - 3",
+          reason: "Payment Declined",
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("takes no raw embed: a failure's carries logins the flag has no use for", () => {
+    const result = failureInput.safeParse({
+      ...base,
+      sourceBot: "valor",
+      rawEmbed: { title: "Checkout Declined" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("takes only the vendors a checkout may come from", () => {
+    expect(failureInput.shape.sourceBot.options).toEqual(checkoutInput.shape.sourceBot.options);
+    expect(failureInput.safeParse({ ...base, sourceBot: "someone-new" }).success).toBe(false);
   });
 });

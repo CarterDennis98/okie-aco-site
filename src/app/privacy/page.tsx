@@ -13,7 +13,12 @@ export const metadata: Metadata = {
  *   "no email"            src/lib/auth/index.ts requests `identify guilds.members.read`
  *   "no OAuth tokens"     src/lib/auth/adapter.ts linkAccount, covered by adapter.test.ts
  *   "secrets encrypted"   src/lib/vault/crypto.ts, AES-256-GCM per field
- *   "cards never shown"   no read path for card_number_enc / card_cvv_enc outside the exports
+ *   "cards never shown"   card_number_enc / card_cvv_enc are decrypted only by the exports, and
+ *                         by moveCard (src/lib/vault/card-secrets.ts), which re-encrypts a card
+ *                         between a profile and the address book and returns nothing
+ *   "address book"        saved_addresses / saved_cards: read only by the owner's own pages
+ *                         (db/queries/address-book.ts), in no export, never sent to a bot
+ *   "failed checkouts"    checkout_failures, posted by the bot (api/bot/failures)
  *   "your own export"     src/app/api/vault/export/route.ts, the signed-in member's rows only
  *   "reveals are logged"  vault_reveals table, written before the decrypt
  *   "exports are logged"  vault_exports table
@@ -26,7 +31,7 @@ export const metadata: Metadata = {
  */
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy" lastUpdated="15 October 2026">
+    <LegalPage title="Privacy" lastUpdated="13 November 2026">
       <p>
         Okie ACO is a small, Oklahoma-run Discord community. This page describes exactly what the
         website and the Discord bot store about you, how it is protected, and what they deliberately
@@ -72,6 +77,12 @@ export default function PrivacyPage() {
         details in plain text, so keep it somewhere safe.
       </p>
       <p>
+        <strong>Your address book</strong> — addresses and cards you save to fill new profiles from
+        — is stored the same way: card numbers and security codes encrypted, and never shown again.
+        Only you can see it. It is in no export and never goes to a checkout bot; a card in it is
+        copied into a profile, on our server, only when you choose it for one.
+      </p>
+      <p>
         <strong>Email app passwords are the one exception.</strong> You can reveal your own, and
         staff can reveal yours, because an app password is issued by your email provider for a
         single application and you can revoke it at any time from your provider&rsquo;s account
@@ -105,6 +116,12 @@ export default function PrivacyPage() {
         When a bot checks out on your behalf we record the product, quantity, retailer, time, and
         the checkout profile the order was placed under. Those records are linked to your Discord
         account so your dashboard can show them.
+      </p>
+      <p>
+        When a checkout fails or an order is cancelled, we record the retailer, the time, the
+        profile, the product, and the reason the bot gave — and nothing about the card or account it
+        used. It is how a profile gets flagged on your profiles page, so you know to check its
+        details.
       </p>
 
       <h2>Billing records</h2>

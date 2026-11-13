@@ -120,6 +120,8 @@ model DiscordMember {
   emailAliases      EmailAlias[]
   acoCredits        AcoCredit[]
   productSelections ProductSelection[]
+  savedAddresses    SavedAddress[]
+  savedCards        SavedCard[]
 
   @@index([leftAt])
   @@map("discord_members")
@@ -265,6 +267,58 @@ model Checkout {
   @@index([profileKey])
   @@index([itemId])
   @@map("checkouts")
+}
+
+// ---------------------------------------------------------------------------
+// Failed checkouts
+// ---------------------------------------------------------------------------
+// Every checkout a vendor bot reports as failed -- a decline, an order the retailer cancelled,
+// a checkout error -- as the mirror posts it into the failures channel (from 2026-11-13).
+// Kept for one job: flagging the profile it ran on, so its owner knows to look at it. See
+// lib/vault/failure-flags.ts for the levels.
+//
+// NEVER A CHECKOUT, AND NEVER BILLED. A table of its own rather than a status on `checkouts`,
+// because every read of that one -- billing above all -- means "this went through", and a
+// failure leaking into any of them would be a fee for an order that never happened.
+//
+// The bot sends no raw embed with these. A failure's embed carries the same logins and
+// proxies a success's does, and nothing here needs more than the fields below.
+
+model CheckoutFailure {
+  id String @id @default(uuid())
+
+  sourceBot        String @map("source_bot")
+  // Idempotency, as on a checkout: a retry, a restart or a replay lands on the same row.
+  discordMessageId String @unique @map("discord_message_id")
+  discordChannelId String @map("discord_channel_id")
+
+  occurredAt DateTime @map("occurred_at") @db.Timestamptz(3)
+  site       String?
+  // siteKey(site): the retailer its profile is looked up on.
+  siteKey    String? @map("site_key")
+  orderId    String? @map("order_id")
+  productRaw String? @map("product_raw")
+  profileRaw String? @map("profile_raw")
+  // The vendor's reason as the mirror read it -- "Payment Declined", "Policy - Item Demand".
+  // Null where the vendor gives none (Valor's "Declined" says only that).
+  reason     String?
+
+  // The profile it ran on, matched when it arrived, by retailer and name. Kept on the row, so a
+  // later rename -- a reorder renumbers names -- can't move it onto another profile. Null when
+  // nothing here went by that name; nulled if the profile is deleted.
+  vaultProfileId String? @map("vault_profile_id")
+  // When it stopped counting against that profile: its owner changed the profile after it, or
+  // had already when it arrived. Null: it still counts. See VaultProfile.failuresClearedAt.
+  clearedAt      DateTime? @map("cleared_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vaultProfile VaultProfile? @relation(fields: [vaultProfileId], references: [id], onDelete: SetNull)
+
+  // What still counts against a profile -- every flag on a member's page.
+  @@index([vaultProfileId, clearedAt])
+  @@index([occurredAt(sort: Desc)])
+  @@map("checkout_failures")
 }
 
 // ---------------------------------------------------------------------------
@@ -661,12 +715,21 @@ model VaultProfile {
   onlyCheckoutOnce          Boolean @default(false) @map("only_checkout_once")
   matchNameOnCardAndAddress Boolean @default(true) @map("match_name_on_card_and_address")
 
+  // When its owner last CHANGED its details -- the card, the address, the login. Its failed
+  // checkouts from before then stop counting against it (CheckoutFailure.clearedAt), and one
+  // that turns up later but happened before then never starts. Null: never changed since it
+  // was created, which is the line instead. Not `updatedAt`: a reorder or a toggle moves that,
+  // and neither is the member fixing anything.
+  failuresClearedAt DateTime? @map("failures_cleared_at") @db.Timestamptz(3)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
   updatedBy String?  @map("updated_by")
 
   account VaultAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
   member  DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+  // The failed checkouts it ran -- what flags it on its owner's page. See CheckoutFailure.
+  failures CheckoutFailure[]
 
   // The products this profile was picked for by name, when its owner chose "only some
   // profiles" rather than all of them. See ProductSelection.
@@ -679,6 +742,89 @@ model VaultProfile {
   @@index([profileKey])
   @@index([siteKey, active])
   @@map("vault_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Address book
+// ---------------------------------------------------------------------------
+// A member's own addresses and cards, kept once so a new profile on any retailer can be
+// filled from them instead of typed again. Members asked for this on 2026-11-13: the same
+// person and card, on Target, Walmart and Pokémon Center, was three rounds of typing.
+//
+// A CONVENIENCE STORE, NOTHING MORE. No bot reads it, no export includes it, no runner or admin
+// page shows it, and editing an entry changes no profile: a profile filled from one is copied,
+// and from then on is a profile like any other. That is also why changes here are not recorded
+// in vault_changes -- there is nothing for a runner to load.
+//
+// The card follows the profile's rules exactly: number and security code are write-only
+// AES-GCM envelopes, bound to THESE columns (entity "saved_card"), so the ciphertext cannot be
+// moved into a profile's columns and decrypt. Filling a profile from a card decrypts and
+// re-encrypts server-side; the number never reaches a browser.
+
+model SavedAddress {
+  id            String @id @default(uuid())
+  discordUserId String @map("discord_user_id")
+
+  // The member's own name for it -- "Home", "Mom's" -- or null, when the list shows the
+  // name and street instead.
+  label String?
+
+  firstName String  @map("first_name")
+  lastName  String  @map("last_name")
+  phone     String?
+
+  shipLine1      String  @map("ship_line1")
+  shipLine2      String? @map("ship_line2")
+  shipCity       String  @map("ship_city")
+  shipState      String  @map("ship_state")
+  shipPostalCode String  @map("ship_postal_code")
+  shipCountry    String  @default("US") @map("ship_country")
+
+  sameBillingAndShipping Boolean @default(true) @map("same_billing_and_shipping")
+
+  billFirstName  String? @map("bill_first_name")
+  billLastName   String? @map("bill_last_name")
+  billLine1      String? @map("bill_line1")
+  billLine2      String? @map("bill_line2")
+  billCity       String? @map("bill_city")
+  billState      String? @map("bill_state")
+  billPostalCode String? @map("bill_postal_code")
+  billCountry    String? @map("bill_country")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  member DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+
+  @@index([discordUserId])
+  @@map("saved_addresses")
+}
+
+model SavedCard {
+  id            String @id @default(uuid())
+  discordUserId String @map("discord_user_id")
+
+  // "Chase Sapphire", "Mom's Amex" -- or null, when the list shows brand and last four.
+  label String?
+
+  // Clear: enough to render "Visa ···· 3384, exp 11/30" and to tell which profiles already use
+  // it (cardSignature), without decrypting anything.
+  cardBrand    String @map("card_brand")
+  cardLast4    String @map("card_last4")
+  cardExpMonth String @map("card_exp_month")
+  cardExpYear  String @map("card_exp_year")
+
+  // Write-only. See the section header.
+  cardNumberEnc String @map("card_number_enc")
+  cardCvvEnc    String @map("card_cvv_enc")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  member DiscordMember @relation(fields: [discordUserId], references: [discordUserId])
+
+  @@index([discordUserId])
+  @@map("saved_cards")
 }
 
 // App passwords for IMAP, so 2FA codes can be read without asking the member.

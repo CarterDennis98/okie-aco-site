@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/db/client";
+import { clearFailures } from "@/db/queries/failures";
 import { defaultAssignee } from "@/db/queries/runners";
 import { getMemberProfile, type VaultProfileDetail } from "@/db/queries/vault";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
@@ -16,6 +17,7 @@ import {
 } from "@/lib/sites";
 import { changedFields, recordBulkChange, recordChange } from "@/lib/vault/audit";
 import { detectBrand, isPlausibleCvv, last4, normalizePan } from "@/lib/vault/card";
+import { moveCard, sealCard } from "@/lib/vault/card-secrets";
 import { encrypt } from "@/lib/vault/crypto";
 import { domainOf, unsupportedMessage } from "@/lib/vault/email-providers";
 import { resolveMailProvider } from "@/lib/vault/email-mx";
@@ -52,6 +54,14 @@ import {
  */
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
+
+/** A profile's card, as written: the clear columns and the two write-only envelopes. */
+type CardColumns = {
+  cardBrand: string;
+  cardLast4: string;
+  cardNumberEnc: string;
+  cardCvvEnc: string;
+};
 
 // Not a full RFC 5322 grammar on purpose: this rejects typos, and the address is proved
 // real by whether a verification code ever arrives.
@@ -144,17 +154,50 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
     return { ok: false, error: `${siteStyle(siteKey).label} stores a login only.` };
   }
 
+  const pan = normalizePan(text(form, "cardNumber"));
+  const cvv = text(form, "cardCvv");
+  // A card from the member's address book, used only when no number was typed: a typed card
+  // always wins, so a picker left set under a typed number can't swap the card out from
+  // under it.
+  const savedCardId = pan ? "" : text(form, "savedCardId");
+
   // siteKey is passed only after the check above: the phone rule is per-retailer, and an
   // unknown key would silently mean "no rule".
-  const problem = validateProfileForm(form, !profileId, siteKey);
+  const problem = validateProfileForm(form, !profileId, siteKey, {
+    savedCard: Boolean(savedCardId),
+  });
   if (problem) return { ok: false, error: problem };
 
   const email = text(form, "email").toLowerCase();
   if (!EMAIL_RE.test(email)) return { ok: false, error: "Enter a valid account email." };
 
-  const pan = normalizePan(text(form, "cardNumber"));
-  const cvv = text(form, "cardCvv");
+  // Both predicates, like every lookup by id: another member's card reads as missing.
+  const savedCard = savedCardId
+    ? await prisma.savedCard.findFirst({
+        where: { id: savedCardId, discordUserId: viewer.discordUserId },
+        select: {
+          cardBrand: true,
+          cardLast4: true,
+          cardExpMonth: true,
+          cardExpYear: true,
+          cardNumberEnc: true,
+          cardCvvEnc: true,
+        },
+      })
+    : null;
+  if (savedCardId && !savedCard) {
+    return {
+      ok: false,
+      error: "That card isn't in your address book anymore. Pick another, or type the card in.",
+    };
+  }
+
   const fields = profileFieldsFromForm(form);
+  // The saved card's own expiry, whatever the form says: it belongs with that number.
+  if (savedCard) {
+    fields.cardExpMonth = savedCard.cardExpMonth;
+    fields.cardExpYear = savedCard.cardExpYear;
+  }
 
   // Guest-checkout retailers have no login, and on Mattel only the login's email is needed
   // -- so on both a password is not just optional, it is meaningless, and anything
@@ -168,17 +211,23 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
   const membership = siteMembership(siteKey);
   const hasMembership = membership ? bool(form, "hasMembership") : false;
 
-  // Secrets are only ever written when supplied. Absent means unchanged.
-  const cardSecrets = pan
-    ? {
-        cardBrand: detectBrand(pan),
-        cardLast4: last4(pan),
-        cardNumberEnc: encrypt(pan, { entity: "vault_profile", field: "card_number" }),
-        cardCvvEnc: encrypt(cvv, { entity: "vault_profile", field: "card_cvv" }),
-      }
-    : {};
-
   try {
+    // Secrets are only ever written when supplied. Absent means unchanged. A saved card is
+    // re-sealed for this profile's columns, here on the server -- see card-secrets.ts.
+    const cardSecrets: CardColumns | null = pan
+      ? {
+          cardBrand: detectBrand(pan),
+          cardLast4: last4(pan),
+          ...sealCard(pan, cvv, "vault_profile"),
+        }
+      : savedCard
+        ? {
+            cardBrand: savedCard.cardBrand,
+            cardLast4: savedCard.cardLast4,
+            ...moveCard(savedCard, "saved_card", "vault_profile"),
+          }
+        : null;
+
     if (!profileId) {
       // --- create -----------------------------------------------------------
       // The login it signs in with. One of theirs already on file with no profile behind it
@@ -302,7 +351,9 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
         return tx.vaultProfile.create({
           data: {
             ...fields,
-            ...(cardSecrets as Required<typeof cardSecrets>),
+            // Always present on a create: validateProfileForm demands a typed card unless a
+            // saved one was picked, and a picked one that's gone was refused above.
+            ...cardSecrets!,
             siteKey,
             discordUserId: viewer.discordUserId,
             accountId: account.id,
@@ -371,17 +422,30 @@ export async function saveProfile(form: FormData): Promise<ActionResult> {
       const membershipChanged = hasMembership !== existing.account.hasMembership;
 
       const changed = changedFields(existing as Record<string, unknown>, fields);
-      if (pan) changed.push("card");
+      if (pan || savedCard) changed.push("card");
       if (password) changed.push("account password");
       if (email !== existing.account.email) changed.push("account email");
       if (membership && membershipChanged) changed.push(`${membership.short} membership`);
 
+      // A real change is the member acting on whatever failed: its failed checkouts stop
+      // counting from here, and the flag on it goes (lib/vault/failure-flags.ts). Saving it
+      // unchanged clears nothing -- that is the case three failures in a row are red for.
+      const changedAt = changed.length ? new Date() : null;
+
       // `fields` carries no name, so the existing one -- and its key -- are untouched.
       // Renaming is not offered at all; see the create branch for why.
-      await prisma.vaultProfile.update({
-        where: { id: existing.id },
-        data: { ...fields, ...cardSecrets, updatedBy: viewer.discordUserId },
-      });
+      await prisma.$transaction([
+        prisma.vaultProfile.update({
+          where: { id: existing.id },
+          data: {
+            ...fields,
+            ...(cardSecrets ?? {}),
+            updatedBy: viewer.discordUserId,
+            ...(changedAt ? { failuresClearedAt: changedAt } : {}),
+          },
+        }),
+        ...(changedAt ? [clearFailures([existing.id], changedAt)] : []),
+      ]);
 
       if (password || email !== existing.account.email || membershipChanged) {
         await prisma.vaultAccount.update({

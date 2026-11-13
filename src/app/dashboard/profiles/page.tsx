@@ -1,8 +1,10 @@
 import Link from "next/link";
+import { AddressBook } from "@/components/vault/address-book";
 import { EmailCredentials } from "@/components/vault/email-credentials";
 import { ImportProfiles } from "@/components/vault/import-profiles";
 import { SiteSwitcher } from "@/components/vault/site-switcher";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
+import { getAddressBook } from "@/db/queries/address-book";
 import {
   getEmailsNeedingAppPassword,
   getMemberEmailCredentials,
@@ -27,11 +29,12 @@ const OPEN_SITES = selfServeSiteKeys();
 export default async function ProfilesPage() {
   const viewer = await requireMember();
 
-  const [grouped, logins, credentials, needingPassword] = await Promise.all([
+  const [grouped, logins, credentials, needingPassword, addressBook] = await Promise.all([
     getMemberProfiles(viewer.discordUserId),
     getMemberLogins(viewer.discordUserId),
     getMemberEmailCredentials(viewer.discordUserId),
     getEmailsNeedingAppPassword(viewer.discordUserId),
+    getAddressBook(viewer.discordUserId),
   ]);
 
   // Show a section for every retailer they have profiles on, plus any open site they
@@ -110,6 +113,14 @@ export default async function ProfilesPage() {
           nextNames={Object.fromEntries(siteKeys.map((k) => [k, naming.get(k)?.next ?? ""]))}
           renumbered={Object.fromEntries(siteKeys.map((k) => [k, naming.get(k)?.renumbered ?? []]))}
           logos={Object.fromEntries(siteKeys.map((k) => [k, resolveSiteLogo(k)]))}
+          addressBook={addressBook}
+        />
+
+        <AddressBook
+          book={addressBook}
+          profiles={grouped.flatMap((g) =>
+            g.profiles.map((p) => ({ id: p.id, name: p.name, siteKey: p.siteKey })),
+          )}
         />
 
         <EmailCredentials credentials={credentials} needingPassword={needingPassword} />

@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/db/client";
 import { auth } from "@/lib/auth";
 import { ALL_SITES, adminSitesFor, hasAdminArea, type AdminSites } from "@/lib/auth/admin-scope";
+import { standingInFor } from "@/lib/auth/stand-ins";
 
 /**
  * The authorization boundary.
@@ -47,7 +48,23 @@ export type Viewer = {
    * to them on these -- see vaultScopeFor.
    */
   adminSites: AdminSites;
+  /**
+   * Who is actually signed in, when it is a stand-in for this member's own account (see
+   * lib/auth/stand-ins.ts); null otherwise. For SAYING so, and nothing else: every read and
+   * write goes on using `discordUserId`, which is the member's own id either way.
+   */
+  signedInAs: { discordUserId: string; displayName: string } | null;
 };
+
+const MEMBER_SELECT = {
+  discordUserId: true,
+  username: true,
+  globalName: true,
+  avatarHash: true,
+  isOg: true,
+  roles: true,
+  leftAt: true,
+} as const;
 
 function avatarUrl(discordUserId: string, hash: string | null): string | null {
   if (!hash) return null;
@@ -64,38 +81,51 @@ function avatarUrl(discordUserId: string, hash: string | null): string | null {
  */
 export async function currentViewer(): Promise<Viewer | null> {
   const session = await auth();
-  const discordUserId = session?.user?.discordUserId;
-  if (!discordUserId) return null;
+  const signedIn = session?.user?.discordUserId;
+  if (!signedIn) return null;
 
-  const member = await prisma.discordMember.findUnique({
-    where: { discordUserId },
-    select: {
-      discordUserId: true,
-      username: true,
-      globalName: true,
-      avatarHash: true,
-      isOg: true,
-      roles: true,
-      leftAt: true,
-    },
+  // A stand-in account is the member it stands in for (lib/auth/stand-ins.ts). Both rows in
+  // one read; there is only ever the one when it is nobody's stand-in.
+  const original = standingInFor(signedIn);
+  const rows = await prisma.discordMember.findMany({
+    where: { discordUserId: { in: original ? [signedIn, original] : [signedIn] } },
+    select: MEMBER_SELECT,
   });
-  if (!member || member.leftAt) return null;
+  const account = rows.find((row) => row.discordUserId === signedIn);
+  if (!account || account.leftAt) return null;
+
+  // The member whose dashboard, profiles and charges these are. A stand-in for someone with
+  // no row at all has nothing to stand in for, and signs in as itself.
+  const member = (original && rows.find((row) => row.discordUserId === original)) || account;
+  const standIn = member !== account;
 
   // Full admin is an environment allowlist, never a database column or a Discord role: a
   // write to Postgres, or a role handed out by mistake, must never be enough to grant
   // control over what members are billed. RUNNERS come from Discord roles -- read from the
   // row just fetched, which the bot keeps current -- and reach only what a full admin has
   // assigned them. See lib/auth/admin-scope.ts.
-  const adminSites = adminSitesFor(member.discordUserId, member.roles);
+  //
+  // The ROLES are always the signed-in account's own, stand-in or not: membership and
+  // authority belong to the account somebody actually holds, so taking a role off a
+  // stand-in cuts it off as fast as anyone. Only the id the roles are applied to -- whose
+  // assignments, whose fees -- is the member's.
+  const adminSites = adminSitesFor(member.discordUserId, account.roles);
 
   return {
     discordUserId: member.discordUserId,
     username: member.username,
     displayName: member.globalName ?? member.username,
     avatarUrl: avatarUrl(member.discordUserId, member.avatarHash),
-    isOg: member.isOg,
+    // Read off the roles, so off the same account as them.
+    isOg: account.isOg,
     isAdmin: adminSites === ALL_SITES,
     adminSites,
+    signedInAs: standIn
+      ? {
+          discordUserId: account.discordUserId,
+          displayName: account.globalName ?? account.username,
+        }
+      : null,
   };
 }
 

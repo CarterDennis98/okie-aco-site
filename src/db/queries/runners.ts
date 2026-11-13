@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/db/client";
 import { defaultRunnerFor, fullAdminIds, operatorId, runnerRoleFor } from "@/lib/auth/admin-scope";
+import { standInsFor, standingInFor } from "@/lib/auth/stand-ins";
 import { payeeForSite } from "@/lib/billing/payees";
 import { pickDefaultAssignee } from "@/lib/vault/assignment";
 
@@ -33,12 +34,17 @@ const collator = new Intl.Collator("en", { sensitivity: "base" });
  * Full admins are listed even with no member row, under their id: a full admin who has
  * never signed in can still be handed profiles, and leaving them out of the picker would
  * make that impossible to do by any means.
+ *
+ * A STAND-IN holding the role is listed as the member it stands in for (lib/auth/stand-ins.ts),
+ * never under its own id. Signed in, it sees that member's assignments -- so profiles handed
+ * to its own id would be in nobody's view at all, and a retailer's new members would stop
+ * reaching a runner whose own account has lost the role along with the account.
  */
 export async function getRunnersForSite(siteKey: string): Promise<Runner[]> {
   const admins = fullAdminIds();
   const role = runnerRoleFor(siteKey);
 
-  const rows = await prisma.discordMember.findMany({
+  const holders = await prisma.discordMember.findMany({
     where: {
       OR: [
         { discordUserId: { in: admins } },
@@ -47,29 +53,48 @@ export async function getRunnersForSite(siteKey: string): Promise<Runner[]> {
     },
     select: { discordUserId: true, username: true, globalName: true },
   });
+  const ids = [
+    ...new Set(holders.map((row) => standingInFor(row.discordUserId) ?? row.discordUserId)),
+  ];
+  // The names of the members stood in for, whose rows the read above didn't ask for.
+  const missing = ids.filter((id) => !holders.some((row) => row.discordUserId === id));
+  const rows = missing.length
+    ? [
+        ...holders,
+        ...(await prisma.discordMember.findMany({
+          where: { discordUserId: { in: missing } },
+          select: { discordUserId: true, username: true, globalName: true },
+        })),
+      ]
+    : holders;
   const byId = new Map(rows.map((row) => [row.discordUserId, row]));
   const nameOf = (id: string) => byId.get(id)?.globalName ?? byId.get(id)?.username ?? id;
 
   const fullAdmins = admins.map((id) => ({ discordUserId: id, name: nameOf(id), fullAdmin: true }));
-  const others = rows
-    .filter((row) => !admins.includes(row.discordUserId))
-    .map((row) => ({
-      discordUserId: row.discordUserId,
-      name: nameOf(row.discordUserId),
-      fullAdmin: false,
-    }))
+  const others = ids
+    .filter((id) => !admins.includes(id))
+    .map((id) => ({ discordUserId: id, name: nameOf(id), fullAdmin: false }))
     .sort((a, b) => collator.compare(a.name, b.name));
 
   return [...fullAdmins, ...others];
 }
 
-/** Whether this person may hold profiles on this retailer right now. */
+/**
+ * Whether this person may hold profiles on this retailer right now -- through their own
+ * role, or one held by an account standing in for them.
+ */
 export async function isRunnerFor(siteKey: string, discordUserId: string): Promise<boolean> {
   if (fullAdminIds().includes(discordUserId)) return true;
+  // A stand-in's own id never holds profiles; see getRunnersForSite.
+  if (standingInFor(discordUserId)) return false;
   const role = runnerRoleFor(siteKey);
   if (!role) return false;
   const row = await prisma.discordMember.findFirst({
-    where: { discordUserId, roles: { has: role }, leftAt: null },
+    where: {
+      discordUserId: { in: [discordUserId, ...standInsFor(discordUserId)] },
+      roles: { has: role },
+      leftAt: null,
+    },
     select: { discordUserId: true },
   });
   return row !== null;

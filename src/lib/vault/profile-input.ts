@@ -96,12 +96,48 @@ export function isValidPostalCode(raw: string | null | undefined): boolean {
  * `siteKey` is a parameter rather than something read from the form here because the
  * caller has already checked it against the known retailers -- see saveProfile. It only
  * affects the phone rule.
+ *
+ * `savedCard` says the card comes from the member's address book rather than the form
+ * (saveProfile sets it only when no number was typed): the number is then not required, and
+ * the expiry is the saved card's own, so the form's is not checked either.
  */
 export function validateProfileForm(
   form: FormData,
   isCreate: boolean,
   siteKey?: string,
+  { savedCard = false }: { savedCard?: boolean } = {},
 ): string | null {
+  return (
+    identityProblem(form, siteKey) ??
+    shippingProblem(form) ??
+    cardProblem(form, isCreate && !savedCard) ??
+    (savedCard ? null : expiryProblem(form)) ??
+    billingProblem(form)
+  );
+}
+
+/**
+ * An address book entry: the name, phone and addresses of a profile, and nothing else.
+ *
+ * The same rules a profile's address is held to, from the same functions, so an entry that
+ * saves here fills a profile that saves. The phone is checked only as far as a profile on a
+ * retailer that needs none would check it -- whether a retailer needs a real one is the
+ * profile's question, asked when the entry is used.
+ */
+export function validateAddressForm(form: FormData): string | null {
+  return identityProblem(form) ?? shippingProblem(form) ?? billingProblem(form);
+}
+
+/**
+ * An address book card: number and security code, required to create one and optional to
+ * edit one (blank keeps the card on file), and the expiry, always.
+ */
+export function validateCardForm(form: FormData, isCreate: boolean): string | null {
+  return cardProblem(form, isCreate) ?? expiryProblem(form);
+}
+
+/** Names, and the phone where the retailer needs one. */
+function identityProblem(form: FormData, siteKey?: string): string | null {
   // No name check: profile names are generated, never submitted. See nextProfileName.
   if (!text(form, "firstName") || !text(form, "lastName")) {
     return "First and last name are required.";
@@ -125,16 +161,23 @@ export function validateProfileForm(
     }
     if (!normalizePhone(phone)) return "Enter a 10-digit US phone number.";
   }
+  return null;
+}
+
+function shippingProblem(form: FormData): string | null {
   if (!text(form, "shipLine1") || !text(form, "shipCity")) return "A shipping address is required.";
   if (text(form, "shipState").length !== 2) return "Use the two-letter state code.";
   if (!isValidPostalCode(text(form, "shipPostalCode"))) {
     return "Enter a valid ZIP code — five digits, or ZIP+4 like 73069-1234.";
   }
+  return null;
+}
 
+function cardProblem(form: FormData, required: boolean): string | null {
   const pan = normalizePan(text(form, "cardNumber"));
   // On edit a blank card number means "keep the existing card", so it is only required
   // when creating. Anything typed is validated either way.
-  if (isCreate && !pan) return "A card number is required.";
+  if (required && !pan) return "A card number is required.";
   if (pan) {
     if (!isLuhnValid(pan)) return "That card number doesn't look right — check for a typo.";
     const cvv = text(form, "cardCvv");
@@ -143,11 +186,17 @@ export function validateProfileForm(
       return "That security code doesn't match the card type.";
     }
   }
+  return null;
+}
 
+function expiryProblem(form: FormData): string | null {
   const { month, year } = normalizeExpiry(text(form, "cardExpMonth"), text(form, "cardExpYear"));
   if (!/^(0[1-9]|1[0-2])$/.test(month)) return "Expiry month must be 01–12.";
   if (!/^20\d{2}$/.test(year)) return "Enter a four-digit expiry year.";
+  return null;
+}
 
+function billingProblem(form: FormData): string | null {
   if (!bool(form, "sameBillingAndShipping")) {
     if (!text(form, "billLine1") || !text(form, "billCity")) {
       return "A billing address is required.";
@@ -170,8 +219,23 @@ export function validateProfileForm(
  * address can't linger in the row and reappear in an export.
  */
 export function profileFieldsFromForm(form: FormData) {
-  const same = bool(form, "sameBillingAndShipping");
   const { month, year } = normalizeExpiry(text(form, "cardExpMonth"), text(form, "cardExpYear"));
+
+  return {
+    ...addressFieldsFromForm(form),
+    cardExpMonth: month,
+    cardExpYear: year,
+    matchNameOnCardAndAddress: bool(form, "matchNameOnCardAndAddress"),
+  };
+}
+
+/**
+ * The name, phone and address columns -- everything a profile and an address book entry
+ * share. One definition for both, so an address saved in the book reads back into a profile
+ * exactly as typing it there would have.
+ */
+export function addressFieldsFromForm(form: FormData) {
+  const same = bool(form, "sameBillingAndShipping");
 
   return {
     firstName: text(form, "firstName"),
@@ -194,9 +258,6 @@ export function profileFieldsFromForm(form: FormData) {
     billState: same ? null : text(form, "billState").toUpperCase() || null,
     billPostalCode: same ? null : text(form, "billPostalCode") || null,
     billCountry: same ? null : "US",
-    cardExpMonth: month,
-    cardExpYear: year,
-    matchNameOnCardAndAddress: bool(form, "matchNameOnCardAndAddress"),
   };
 }
 

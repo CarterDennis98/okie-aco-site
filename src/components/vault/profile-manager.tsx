@@ -9,6 +9,7 @@ import type {
 } from "@/db/queries/vault";
 import { relativeTime } from "@/lib/format";
 import { siteMembership, siteStyle } from "@/lib/sites";
+import { EMPTY_ADDRESS_BOOK, type AddressBook } from "@/lib/vault/address-book";
 import {
   deleteProfiles,
   loadProfileForEdit,
@@ -17,6 +18,8 @@ import {
   setProfilesActive,
   type ActionResult,
 } from "@/lib/vault/actions";
+import { FailureChip } from "@/components/vault/failure-flag";
+import { FAILURE_ROW_ACCENT } from "@/components/vault/failure-styles";
 import { RemoveLogin } from "@/components/vault/login-manager";
 import { ProfileArranger } from "@/components/vault/profile-arranger";
 import { ProfileForm } from "@/components/vault/profile-form";
@@ -170,7 +173,8 @@ function ProfileRow({
     <li
       className={
         "flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3.5 sm:px-5 " +
-        (selected ? "bg-[var(--color-brand)]/5" : "")
+        (selected ? "bg-[var(--color-brand)]/5 " : "") +
+        (profile.failures ? FAILURE_ROW_ACCENT[profile.failures.risk] : "")
       }
     >
       {/* Both controls sit in one fixed-height box so the checkbox and the toggle share a
@@ -202,6 +206,9 @@ function ProfileRow({
               Card expired
             </span>
           )}
+          {/* Failed checkouts since it was last changed: orange, red at three. Beside the
+              expired card because both say the same thing -- this profile needs its owner. */}
+          {profile.failures && <FailureChip flag={profile.failures} />}
           {/* The answer to "did my change take effect". Saving here writes to the vault;
               it is in use once the operator has confirmed it, and until then this profile
               still checks out with its previous details.
@@ -506,6 +513,7 @@ export function ProfileManager({
   unfinished = [],
   nextName,
   renumbered,
+  addressBook = EMPTY_ADDRESS_BOOK,
 }: {
   siteKey: string;
   siteLogo: string | null;
@@ -515,6 +523,8 @@ export function ProfileManager({
   nextName: string;
   /** The name each position takes when the member reorders. See ProfileArranger. */
   renumbered: string[];
+  /** Their saved addresses and cards, which every profile form here can fill from. */
+  addressBook?: AddressBook;
 }) {
   const [editing, setEditing] = useState<VaultProfileDetail | null>(null);
   const [adding, setAdding] = useState(false);
@@ -527,6 +537,8 @@ export function ProfileManager({
   const activeCount = profiles.filter((p) => p.active).length;
   const sharedCardCount = profiles.filter((p) => p.sharesCardWith.length > 0).length;
   const pendingCount = profiles.filter((p) => p.pendingSince !== null).length;
+  const flaggedCount = profiles.filter((p) => p.failures).length;
+  const highRiskCount = profiles.filter((p) => p.failures?.risk === "high").length;
 
   // Soft cap: the first N ACTIVE profiles run on the main bot, the rest on a backup.
   // Disabled profiles aren't running, so they don't hold a slot -- which means toggling
@@ -682,6 +694,7 @@ export function ProfileManager({
             login={finishing}
             nextName={nextName}
             siblings={profiles}
+            addressBook={addressBook}
             onDone={() => setFinishing(null)}
           />
         </div>
@@ -693,6 +706,7 @@ export function ProfileManager({
             siteKey={siteKey}
             nextName={nextName}
             siblings={profiles}
+            addressBook={addressBook}
             onDone={() => setAdding(false)}
           />
         </div>
@@ -714,6 +728,7 @@ export function ProfileManager({
             profile={editing}
             // Everything but the one being edited: its own name is not a collision.
             siblings={profiles.filter((p) => p.id !== editing.id)}
+            addressBook={addressBook}
             onDone={() => setEditing(null)}
           />
         </div>
@@ -747,6 +762,26 @@ export function ProfileManager({
               with the previous details — the tag becomes a{" "}
               <span className="font-bold text-[var(--color-good)]">✓</span> once we&rsquo;ve
               confirmed the change.
+            </p>
+          )}
+          {/* Said once for the retailer, like the two notes either side of it: the chips mark
+              which profiles, and this says what to do -- the part a member acts on. */}
+          {flaggedCount > 0 && (
+            <p className="mb-2 px-1 text-xs text-[var(--color-muted)]">
+              <span aria-hidden className="text-[var(--color-risk)]">
+                ⚠{" "}
+              </span>
+              <span className="font-medium text-[var(--color-risk)]">{flaggedCount}</span> of these
+              profiles {flaggedCount === 1 ? "has" : "have"} had checkouts fail since{" "}
+              {flaggedCount === 1 ? "it was" : "they were"} last changed
+              {highRiskCount > 0 &&
+                (flaggedCount === 1
+                  ? " — three times or more"
+                  : highRiskCount === flaggedCount
+                    ? " — all of them three times or more"
+                    : ` — ${highRiskCount} of them three times or more`)}
+              . Check the card, billing address and login on each, and save: a saved change clears
+              the flag. Tap a chip for what failed.
             </p>
           )}
           {/* Said once for the retailer, not once per row. The chips mark which profiles;

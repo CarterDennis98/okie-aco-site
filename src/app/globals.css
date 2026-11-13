@@ -20,6 +20,12 @@
  * Good is the same green the bot's mirrored embeds use for a successful checkout, so
  * "settled" reads the same on the site as it does in Discord.
  *   good #2AF598 on surface #1F1F1F = 11.5:1
+ *
+ * Risk is orange: a profile whose checkouts failed (lib/vault/failure-flags.ts). Deliberately
+ * NOT warn's amber, which already means "pending confirmation" on the same rows, and not red,
+ * which a profile only turns once it has failed three times -- as a solid red chip with white
+ * text, since red text itself is too dark to read small.
+ *   risk #F97316 on surface #1F1F1F = 5.9:1, and 4.7:1 on its own 15% tint
  */
 @theme {
   --color-ink: #121212;
@@ -33,6 +39,7 @@
   --color-on-brand: #ffffff;
   --color-warn: #fbbf24;
   --color-good: #2af598;
+  --color-risk: #f97316;
 }
 
 html {

@@ -2,6 +2,15 @@
 
 import { useActionState, useState } from "react";
 import type { VaultLoginSummary, VaultProfileDetail } from "@/db/queries/vault";
+import {
+  addressLine,
+  addressTitle,
+  cardTitle,
+  EMPTY_ADDRESS_BOOK,
+  profilesUsingCard,
+  type AddressBook,
+  type SavedAddressSummary,
+} from "@/lib/vault/address-book";
 import { detectBrand, expectedCvvLength } from "@/lib/vault/card";
 import { saveProfile, type ActionResult } from "@/lib/vault/actions";
 import {
@@ -44,6 +53,12 @@ const ZIP_TITLE = "Five digits, or ZIP+4 like 73069-1234.";
  * only the address and the card. Every Costco login from before Costco took full profiles
  * is finished this way. The email arrives filled in, and the password is asked for only if
  * none was saved -- the stored one is kept unless a new one is typed.
+ *
+ * Given the member's ADDRESS BOOK, it offers to fill itself from it. An address is copied into
+ * the fields, where the member can still change anything -- addresses are shown on this form
+ * anyway. A card is not: it is named by id in `savedCardId`, and `saveProfile` copies its
+ * number and code across on the server, so the browser never holds them. A number typed into
+ * the card field wins over a picked card.
  */
 
 /*
@@ -211,12 +226,23 @@ function Field({
   );
 }
 
+/** The member's other profiles on this retailer, as far as this form reads them. */
+type Sibling = {
+  firstName: string;
+  lastName: string;
+  cardBrand?: string;
+  cardLast4?: string;
+  cardExpMonth?: string;
+  cardExpYear?: string;
+};
+
 export function ProfileForm({
   siteKey,
   profile,
   login,
   nextName,
   siblings = [],
+  addressBook = EMPTY_ADDRESS_BOOK,
   onDone,
 }: {
   siteKey: string;
@@ -226,10 +252,13 @@ export function ProfileForm({
   /** Preview of the name a new profile will be given. Display only. */
   nextName?: string;
   /**
-   * The member's other profiles on this retailer, so a randomized name doesn't come back
-   * as one they already use. Names only -- nothing here reads anything else off them.
+   * The member's other profiles on this retailer: so a randomized name doesn't come back as
+   * one they already use, and so the card picker can say which saved card is already on some
+   * of them. Names and the card's clear columns -- nothing here reads anything else off them.
    */
-  siblings?: { firstName: string; lastName: string }[];
+  siblings?: Sibling[];
+  /** Their saved addresses and cards, to fill this form from. See lib/vault/address-book.ts. */
+  addressBook?: AddressBook;
   onDone?: () => void;
 }) {
   const isEdit = Boolean(profile);
@@ -252,11 +281,37 @@ export function ProfileForm({
   const [sameBilling, setSameBilling] = useState(profile?.sameBillingAndShipping ?? true);
   const [cardBrand, setCardBrand] = useState(profile?.cardBrand ?? "Unknown");
 
-  // Controlled, because the randomize buttons write to them.
+  // Controlled, because the randomize buttons -- and the address book -- write to them.
   const [firstName, setFirstName] = useState(profile?.firstName ?? "");
   const [lastName, setLastName] = useState(profile?.lastName ?? "");
   const [phone, setPhone] = useState(profile?.phone ?? "");
   const [shipState, setShipState] = useState(profile?.shipState ?? "");
+
+  // The address book entry last filled in, and how many times one has been. The rest of the
+  // address fields are uncontrolled, and an uncontrolled input reads its defaultValue only
+  // when it mounts -- so filling bumps the count, which is the key those fields sit under,
+  // and they remount holding the entry's values. Anything typed into them is replaced, which
+  // is what picking an address means.
+  const [filled, setFilled] = useState<SavedAddressSummary | null>(null);
+  const [fills, setFills] = useState(0);
+  const address = filled ?? profile;
+
+  // A saved card picked to pay with, by id. Its number never comes to the browser.
+  const [savedCardId, setSavedCardId] = useState("");
+  const savedCard = addressBook.cards.find((card) => card.id === savedCardId) ?? null;
+
+  function fillAddress(id: string) {
+    const entry = addressBook.addresses.find((a) => a.id === id);
+    if (!entry) return;
+    setFirstName(entry.firstName);
+    setLastName(entry.lastName);
+    // A phone already on the form beats none: an entry may simply not have one.
+    if (entry.phone) setPhone(entry.phone);
+    setShipState(entry.shipState);
+    setSameBilling(entry.sameBillingAndShipping);
+    setFilled(entry);
+    setFills((n) => n + 1);
+  }
 
   const [state, formAction, pending] = useActionState(
     async (_previous: ActionResult | null, formData: FormData) => {
@@ -289,6 +344,7 @@ export function ProfileForm({
       <input type="hidden" name="siteKey" value={siteKey} />
       {profile && <input type="hidden" name="profileId" value={profile.id} />}
       {login && <input type="hidden" name="loginId" value={login.id} />}
+      {savedCard && <input type="hidden" name="savedCardId" value={savedCard.id} />}
 
       {state && !state.ok && (
         <p
@@ -298,6 +354,17 @@ export function ProfileForm({
           {state.error}
         </p>
       )}
+
+      <AddressBookPicker
+        book={addressBook}
+        isEdit={isEdit}
+        retailer={retailer}
+        siblings={siblings}
+        filledId={filled?.id ?? ""}
+        onAddress={fillAddress}
+        savedCardId={savedCardId}
+        onCard={setSavedCardId}
+      />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
@@ -397,7 +464,8 @@ export function ProfileForm({
         <legend className="px-1 text-xs font-semibold tracking-wide text-[var(--color-muted)] uppercase">
           Shipping
         </legend>
-        <div className="grid gap-3 sm:grid-cols-2">
+        {/* Keyed on the fill count -- see `fills`. */}
+        <div key={fills} className="grid gap-3 sm:grid-cols-2">
           <Field
             name="firstName"
             label="First name"
@@ -417,17 +485,17 @@ export function ProfileForm({
           <Field
             name="shipLine1"
             label="Address"
-            defaultValue={profile?.shipLine1}
+            defaultValue={address?.shipLine1}
             required
             className="sm:col-span-2"
           />
           <Field
             name="shipLine2"
             label="Apt / suite"
-            defaultValue={profile?.shipLine2}
+            defaultValue={address?.shipLine2}
             className="sm:col-span-2"
           />
-          <Field name="shipCity" label="City" defaultValue={profile?.shipCity} required />
+          <Field name="shipCity" label="City" defaultValue={address?.shipCity} required />
           <div className="grid grid-cols-2 gap-3">
             {/* Controlled only so `randomize` can read it: the generated phone takes its
                 area code from the state, so a member who fills the address first gets a
@@ -444,7 +512,7 @@ export function ProfileForm({
             <Field
               name="shipPostalCode"
               label="ZIP"
-              defaultValue={profile?.shipPostalCode}
+              defaultValue={address?.shipPostalCode}
               maxLength={10}
               pattern={ZIP_PATTERN}
               patternTitle={ZIP_TITLE}
@@ -470,35 +538,35 @@ export function ProfileForm({
           <legend className="px-1 text-xs font-semibold tracking-wide text-[var(--color-muted)] uppercase">
             Billing
           </legend>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field name="billFirstName" label="First name" defaultValue={profile?.billFirstName} />
-            <Field name="billLastName" label="Last name" defaultValue={profile?.billLastName} />
+          <div key={fills} className="grid gap-3 sm:grid-cols-2">
+            <Field name="billFirstName" label="First name" defaultValue={address?.billFirstName} />
+            <Field name="billLastName" label="Last name" defaultValue={address?.billLastName} />
             <Field
               name="billLine1"
               label="Address"
-              defaultValue={profile?.billLine1}
+              defaultValue={address?.billLine1}
               required
               className="sm:col-span-2"
             />
             <Field
               name="billLine2"
               label="Apt / suite"
-              defaultValue={profile?.billLine2}
+              defaultValue={address?.billLine2}
               className="sm:col-span-2"
             />
-            <Field name="billCity" label="City" defaultValue={profile?.billCity} required />
+            <Field name="billCity" label="City" defaultValue={address?.billCity} required />
             <div className="grid grid-cols-2 gap-3">
               <Field
                 name="billState"
                 label="State"
-                defaultValue={profile?.billState}
+                defaultValue={address?.billState}
                 maxLength={2}
                 required
               />
               <Field
                 name="billPostalCode"
                 label="ZIP"
-                defaultValue={profile?.billPostalCode}
+                defaultValue={address?.billPostalCode}
                 maxLength={10}
                 pattern={ZIP_PATTERN}
                 patternTitle={ZIP_TITLE}
@@ -514,69 +582,95 @@ export function ProfileForm({
           Card
         </legend>
 
-        {isEdit && (
+        {isEdit && !savedCard && (
           <p className="mb-3 text-xs text-[var(--color-muted)]">
             Currently <span className="text-[var(--color-fg)]">{profile!.cardLabel}</span>. Leave
             the number blank to keep it — we can&rsquo;t show it back to you.
           </p>
         )}
 
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="sm:col-span-2">
-            <label htmlFor="cardNumber" className={label}>
-              Card number
-              {!isEdit && <span className="ml-0.5 text-[var(--color-brand)]">*</span>}
-            </label>
-            <input
-              id="cardNumber"
-              name="cardNumber"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder={isEdit ? "•••• (unchanged)" : ""}
-              // Its own input rather than a Field, for the brand detection -- so it needs
-              // the rule spelled out here. Matches the asterisk above it and the server:
-              // required to create a profile, blank on edit means "keep the current card".
-              required={!isEdit}
-              onChange={(e) => setCardBrand(detectBrand(e.target.value))}
-              className={field}
-            />
-            {cardBrand !== "Unknown" && (
-              <p className="mt-1 text-[11px] text-[var(--color-muted)]">Detected: {cardBrand}</p>
-            )}
+        {/* A picked card stands in for the whole number-code-expiry block: those come from the
+            address book on the server (saveProfile), so there is nothing to type, and a field
+            left showing would invite typing a number that then silently wins. */}
+        {savedCard ? (
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-[var(--color-brand)]/40 bg-[var(--color-brand)]/5 px-3 py-2.5">
+            <p className="text-sm text-[var(--color-fg)]">
+              {isEdit ? "Switching to " : "Paying with "}
+              <span className="font-semibold text-white">{cardTitle(savedCard)}</span>, exp{" "}
+              {savedCard.cardExpMonth}/{savedCard.cardExpYear.slice(-2)}
+              {savedCard.cardExpired && (
+                <span className="ml-1.5 text-[var(--color-warn)]">— expired</span>
+              )}
+              <span className="block text-[11px] text-[var(--color-muted)]">
+                From your address book. Its number and security code are copied in when you save.
+              </span>
+            </p>
+            <button
+              type="button"
+              onClick={() => setSavedCardId("")}
+              className="inline-flex min-h-11 items-center text-sm text-[var(--color-muted)] transition-colors hover:text-[var(--color-fg)] sm:min-h-0 sm:text-xs"
+            >
+              {isEdit ? "Keep the current card" : "Type a card instead"}
+            </button>
           </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label htmlFor="cardNumber" className={label}>
+                Card number
+                {!isEdit && <span className="ml-0.5 text-[var(--color-brand)]">*</span>}
+              </label>
+              <input
+                id="cardNumber"
+                name="cardNumber"
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder={isEdit ? "•••• (unchanged)" : ""}
+                // Its own input rather than a Field, for the brand detection -- so it needs
+                // the rule spelled out here. Matches the asterisk above it and the server:
+                // required to create a profile, blank on edit means "keep the current card".
+                required={!isEdit}
+                onChange={(e) => setCardBrand(detectBrand(e.target.value))}
+                className={field}
+              />
+              {cardBrand !== "Unknown" && (
+                <p className="mt-1 text-[11px] text-[var(--color-muted)]">Detected: {cardBrand}</p>
+              )}
+            </div>
 
-          <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field
+                name="cardExpMonth"
+                label="Exp. month"
+                defaultValue={profile?.cardExpMonth}
+                maxLength={2}
+                placeholder="09"
+                required
+              />
+              <Field
+                name="cardExpYear"
+                label="Exp. year"
+                defaultValue={profile?.cardExpYear}
+                maxLength={4}
+                placeholder="2030"
+                required
+              />
+            </div>
+
             <Field
-              name="cardExpMonth"
-              label="Exp. month"
-              defaultValue={profile?.cardExpMonth}
-              maxLength={2}
-              placeholder="09"
-              required
-            />
-            <Field
-              name="cardExpYear"
-              label="Exp. year"
-              defaultValue={profile?.cardExpYear}
+              name="cardCvv"
+              label="Security code"
+              type="password"
               maxLength={4}
-              placeholder="2030"
-              required
+              placeholder={isEdit ? "•••" : ""}
+              hint={
+                isEdit
+                  ? "Only needed when changing the card."
+                  : `${expectedCvvLength(detectBrand(""))} digits on the back — 4 for Amex.`
+              }
             />
           </div>
-
-          <Field
-            name="cardCvv"
-            label="Security code"
-            type="password"
-            maxLength={4}
-            placeholder={isEdit ? "•••" : ""}
-            hint={
-              isEdit
-                ? "Only needed when changing the card."
-                : `${expectedCvvLength(detectBrand(""))} digits on the back — 4 for Amex.`
-            }
-          />
-        </div>
+        )}
 
         {/* `onlyCheckoutOnce` is deliberately not offered here. The column stays, because
             the AYCD export and import round-trip it and imported profiles carry a real
@@ -613,5 +707,119 @@ export function ProfileForm({
         )}
       </div>
     </form>
+  );
+}
+
+/**
+ * "From your address book": an address to fill the form with, and a card to pay with.
+ *
+ * With an empty book it is one line saying the book exists -- on the add form, where it would
+ * have saved the typing, and not on an edit, where there is nothing left to type.
+ *
+ * The card list says which saved card is already on some of this retailer's profiles, the same
+ * advice the profile list's "Shared card" chip gives: one card across many profiles on one
+ * retailer is what makes its orders likelier to fail. Said, never refused.
+ */
+function AddressBookPicker({
+  book,
+  isEdit,
+  retailer,
+  siblings,
+  filledId,
+  onAddress,
+  savedCardId,
+  onCard,
+}: {
+  book: AddressBook;
+  isEdit: boolean;
+  retailer: string;
+  siblings: Sibling[];
+  filledId: string;
+  onAddress: (id: string) => void;
+  savedCardId: string;
+  onCard: (id: string) => void;
+}) {
+  if (book.addresses.length === 0 && book.cards.length === 0) {
+    if (isEdit) return null;
+    return (
+      <p className="-mb-2 text-[11px] text-[var(--color-muted)]">
+        Tip: keep the addresses and cards you use in your{" "}
+        <a
+          href="#address-book"
+          className="underline underline-offset-2 hover:text-[var(--color-fg)]"
+        >
+          address book
+        </a>{" "}
+        and fill this form from them in one click, on any retailer.
+      </p>
+    );
+  }
+
+  const picked = book.cards.find((card) => card.id === savedCardId);
+  const pickedUses = picked ? profilesUsingCard(siblings, picked) : 0;
+
+  return (
+    <fieldset className="rounded-lg border border-dashed border-[var(--color-edge)] p-4">
+      <legend className="px-1 text-xs font-semibold tracking-wide text-[var(--color-muted)] uppercase">
+        From your address book
+      </legend>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {book.addresses.length > 0 && (
+          <div>
+            <label htmlFor="bookAddress" className={label}>
+              Address
+            </label>
+            {/* No `name`: what is submitted is the fields it fills, which the member can still
+                change. Picking one again re-fills them. */}
+            <select
+              id="bookAddress"
+              value={filledId}
+              onChange={(e) => onAddress(e.currentTarget.value)}
+              className={field}
+            >
+              <option value="" disabled>
+                Fill in an address…
+              </option>
+              {book.addresses.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {addressTitle(entry)} — {addressLine(entry)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        {book.cards.length > 0 && (
+          <div>
+            <label htmlFor="bookCard" className={label}>
+              Card
+            </label>
+            <select
+              id="bookCard"
+              value={savedCardId}
+              onChange={(e) => onCard(e.currentTarget.value)}
+              className={field}
+            >
+              <option value="">{isEdit ? "Keep this profile's card" : "Type a card below"}</option>
+              {book.cards.map((card) => {
+                const uses = profilesUsingCard(siblings, card);
+                return (
+                  <option key={card.id} value={card.id}>
+                    {cardTitle(card)} · exp {card.cardExpMonth}/{card.cardExpYear.slice(-2)}
+                    {card.cardExpired ? " · expired" : ""}
+                    {uses > 0 ? ` · on ${uses} ${retailer} profile${uses === 1 ? "" : "s"}` : ""}
+                  </option>
+                );
+              })}
+            </select>
+            {pickedUses > 0 && (
+              <p className="mt-1 text-[11px] text-[var(--color-warn)]">
+                Already on {pickedUses} of your {retailer} profiles. Reusing a card on one retailer
+                can make its orders more likely to fail.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </fieldset>
   );
 }

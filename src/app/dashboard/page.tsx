@@ -3,6 +3,7 @@ import Link from "next/link";
 import { DropCheckouts } from "@/components/drop-checkouts";
 import { MemberCheckoutList } from "@/components/member-checkout-list";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
+import { FAILURE_CHIP } from "@/components/vault/failure-styles";
 import { getPendingConfirmationCount } from "@/db/queries/admin-charges";
 import { getPendingChangeCount } from "@/db/queries/admin-vault";
 import { getMemberDropCheckouts } from "@/db/queries/drop-checkouts";
@@ -55,6 +56,9 @@ export default async function DashboardPage() {
   const allProfiles = profileGroups.flatMap((g) => g.profiles);
   const activeProfiles = allProfiles.filter((p) => p.active).length;
   const expiredCards = allProfiles.filter((p) => p.cardExpired).length;
+  // Failed checkouts since they were last changed -- see lib/vault/failure-flags.ts.
+  const flaggedProfiles = allProfiles.filter((p) => p.failures).length;
+  const highRiskProfiles = allProfiles.filter((p) => p.failures?.risk === "high").length;
 
   // Who they owe besides the operator. When anyone is, the balance box says how much goes to
   // whom: one total and one payment button would send Chess's Crunchyroll fees to the
@@ -98,6 +102,15 @@ export default async function DashboardPage() {
                 {count(data.lifetimeCheckouts)} {plural(data.lifetimeCheckouts, "checkout")} ·{" "}
                 {count(data.lifetimeUnits)} {plural(data.lifetimeUnits, "unit")}
               </p>
+              {/* A stand-in account sees this member's page as its own (lib/auth/stand-ins.ts).
+                  Said, so nobody wonders why the name above isn't the one they signed in with. */}
+              {viewer.signedInAs && (
+                <p className="mt-0.5 text-xs text-[var(--color-muted)]">
+                  Signed in as{" "}
+                  <span className="text-[var(--color-fg)]">{viewer.signedInAs.displayName}</span>,
+                  standing in for this account.
+                </p>
+              )}
             </div>
           </div>
 
@@ -448,8 +461,15 @@ export default async function DashboardPage() {
                 Addresses, cards, and logins. Update them here instead of sending details over.
               </p>
 
-              {(expiredCards > 0 || needingAppPassword.length > 0) && (
+              {(expiredCards > 0 || needingAppPassword.length > 0 || flaggedProfiles > 0) && (
                 <p className="mt-3 flex flex-wrap gap-2">
+                  {flaggedProfiles > 0 && (
+                    <span className={FAILURE_CHIP[highRiskProfiles > 0 ? "high" : "flagged"]}>
+                      <span aria-hidden>⚠</span>
+                      {count(flaggedProfiles)} {plural(flaggedProfiles, "profile")} with failed
+                      checkouts
+                    </span>
+                  )}
                   {expiredCards > 0 && (
                     <span className="inline-flex items-center rounded-full bg-[var(--color-brand)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase">
                       {count(expiredCards)} expired {plural(expiredCards, "card")}

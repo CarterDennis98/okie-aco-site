@@ -4,7 +4,9 @@ import { prisma } from "@/db/client";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { siteStyle } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/queries/email-coverage";
+import { loadFailureFlags } from "@/db/queries/failures";
 import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
+import type { FailureFlag } from "@/lib/vault/failure-flags";
 import { nextProfileName, profileBaseFor, renumberedNames } from "@/lib/vault/profile-input";
 
 /**
@@ -71,6 +73,11 @@ export type VaultProfileSummary = {
    * the two facts are both worth showing.
    */
   confirmedAt: Date | null;
+  /**
+   * Its failed checkouts since it was last changed, or null when none count against it. What
+   * flags it orange, or red at three -- see lib/vault/failure-flags.ts.
+   */
+  failures: FailureFlag | null;
   updatedAt: Date;
 };
 
@@ -204,6 +211,7 @@ function toSummary(
   row: SummaryRow,
   coverage?: MailboxCoverage,
   changes?: ChangeState,
+  failures?: Map<string, FailureFlag>,
 ): VaultProfileSummary {
   return {
     // Filled in per retailer by whoever assembles the groups; a lone profile shares
@@ -211,6 +219,7 @@ function toSummary(
     sharesCardWith: [],
     pendingSince: changes?.pending.get(row.id) ?? null,
     confirmedAt: changes?.confirmed.get(row.id) ?? null,
+    failures: failures?.get(row.id) ?? null,
     id: row.id,
     siteKey: row.siteKey,
     name: row.name,
@@ -243,16 +252,17 @@ function toSummary(
 export async function getMemberProfiles(
   discordUserId: string,
 ): Promise<{ siteKey: string; profiles: VaultProfileSummary[] }[]> {
-  const [rows, coverage, changes] = await Promise.all([
+  const [rows, coverage, changes, failures] = await Promise.all([
     prisma.vaultProfile.findMany({ where: { discordUserId }, select: SUMMARY_SELECT }),
     loadMailboxCoverage(discordUserId),
     loadChangeState(discordUserId),
+    loadFailureFlags(discordUserId),
   ]);
 
   const bySite = new Map<string, VaultProfileSummary[]>();
   for (const row of rows) {
     const list = bySite.get(row.siteKey) ?? [];
-    list.push(toSummary(row, coverage, changes));
+    list.push(toSummary(row, coverage, changes, failures));
     bySite.set(row.siteKey, list);
   }
 
@@ -376,13 +386,14 @@ export async function getMemberProfile(
   // Resolved here rather than left null: a detail row that silently disagreed with the
   // summary about coverage -- or about whether an edit is still waiting -- would be a trap
   // for the next caller.
-  const [coverage, changes] = await Promise.all([
+  const [coverage, changes, failures] = await Promise.all([
     loadMailboxCoverage(discordUserId),
     loadChangeState(discordUserId),
+    loadFailureFlags(discordUserId, profileId),
   ]);
 
   return {
-    ...toSummary(row, coverage, changes),
+    ...toSummary(row, coverage, changes, failures),
     accountId: row.accountId,
     shipLine1: row.shipLine1,
     shipLine2: row.shipLine2,

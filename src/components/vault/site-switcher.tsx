@@ -3,9 +3,14 @@
 import { useState } from "react";
 import Image from "next/image";
 import type { VaultLoginSummary, VaultProfileSummary } from "@/db/queries/vault";
+import type { AddressBook } from "@/lib/vault/address-book";
 import { siteStyle, siteUsesProfiles } from "@/lib/sites";
+import { FlaggedProfiles } from "@/components/vault/flagged-profiles";
 import { LoginManager } from "@/components/vault/login-manager";
 import { ProfileManager } from "@/components/vault/profile-manager";
+
+/** The Flagged tab's key among the retailer keys. No retailer key starts with an underscore. */
+const FLAGGED = "_flagged";
 
 /**
  * One retailer at a time.
@@ -27,6 +32,11 @@ import { ProfileManager } from "@/components/vault/profile-manager";
  * Costco login saved before Costco took full profiles -- and ProfileManager lists those
  * above the profiles. The chip counts both: a member whose only Costco row is a login to
  * finish should land on Costco, not on an empty Target tab.
+ *
+ * FLAGGED, first in the row whenever anything is: every profile with failed checkouts
+ * counting against it, across retailers (FlaggedProfiles). Orange, or red when any of them is
+ * high risk. It doesn't open by default -- a member with one flag among 700 profiles still
+ * lands on their retailer -- but it sits where the eye starts, in the flag's own colour.
  */
 export function SiteSwitcher({
   siteKeys,
@@ -35,6 +45,7 @@ export function SiteSwitcher({
   nextNames,
   renumbered,
   logos,
+  addressBook,
 }: {
   siteKeys: string[];
   profilesBySite: Record<string, VaultProfileSummary[]>;
@@ -43,6 +54,8 @@ export function SiteSwitcher({
   /** Each position's name after a reorder, per retailer. See getProfileNaming. */
   renumbered: Record<string, string[]>;
   logos: Record<string, string | null>;
+  /** The member's saved addresses and cards, for the profile form's pickers. */
+  addressBook: AddressBook;
 }) {
   // What a chip counts, and what "most" means when picking which one opens. On a login-only
   // retailer the logins are the rows; elsewhere they are the ones still to be finished.
@@ -69,9 +82,37 @@ export function SiteSwitcher({
 
   if (siteKeys.length === 0) return null;
 
+  const flagged = siteKeys.flatMap((key) => profilesBySite[key] ?? []).filter((p) => p.failures);
+  const anyHigh = flagged.some((p) => p.failures?.risk === "high");
+  const flagTint = anyHigh ? "var(--color-brand)" : "var(--color-risk)";
+  const onFlagged = active === FLAGGED;
+
   return (
     <section className="mt-10">
       <div className="flex flex-wrap items-center gap-2">
+        {/* Kept while it is open even once it empties, so fixing the last one doesn't yank
+            the member to another tab mid-read: they see the all-clear instead. */}
+        {(flagged.length > 0 || onFlagged) && (
+          <button
+            type="button"
+            onClick={() => setActive(FLAGGED)}
+            aria-pressed={onFlagged}
+            className={
+              "inline-flex items-center gap-2 rounded-full py-1.5 pr-3.5 pl-2.5 text-sm font-medium transition-colors " +
+              (onFlagged ? "text-white" : "text-[var(--color-fg)] hover:text-white")
+            }
+            style={{
+              backgroundColor: `color-mix(in oklab, ${flagTint} ${onFlagged ? 28 : 14}%, transparent)`,
+              boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${flagTint} ${onFlagged ? 70 : 45}%, transparent)`,
+            }}
+          >
+            <span aria-hidden>⚠</span>
+            Flagged
+            <span className={onFlagged ? "text-white/70" : "text-[var(--color-muted)]"}>
+              {flagged.length}
+            </span>
+          </button>
+        )}
         {siteKeys.map((key) => {
           const style = siteStyle(key);
           const count = countFor(key);
@@ -124,7 +165,14 @@ export function SiteSwitcher({
         })}
       </div>
 
-      {siteUsesProfiles(active) ? (
+      {onFlagged ? (
+        <FlaggedProfiles
+          profiles={flagged}
+          profilesBySite={profilesBySite}
+          logos={logos}
+          addressBook={addressBook}
+        />
+      ) : siteUsesProfiles(active) ? (
         <ProfileManager
           key={active}
           siteKey={active}
@@ -133,6 +181,7 @@ export function SiteSwitcher({
           unfinished={loginsBySite[active] ?? []}
           nextName={nextNames[active] ?? ""}
           renumbered={renumbered[active] ?? []}
+          addressBook={addressBook}
         />
       ) : (
         <LoginManager
