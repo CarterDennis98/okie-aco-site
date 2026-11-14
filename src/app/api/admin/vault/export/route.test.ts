@@ -103,10 +103,23 @@ async function profile(
   assignee: string,
   name: string,
   email: string,
-  { site = SITE, hasMembership = false }: { site?: string; hasMembership?: boolean } = {},
+  {
+    site = SITE,
+    hasMembership = false,
+    password,
+  }: { site?: string; hasMembership?: boolean; password?: string } = {},
 ) {
   const account = await prisma.vaultAccount.create({
-    data: { siteKey: site, email, discordUserId: owner, assigneeId: assignee, hasMembership },
+    data: {
+      siteKey: site,
+      email,
+      discordUserId: owner,
+      assigneeId: assignee,
+      hasMembership,
+      passwordEnc: password
+        ? encrypt(password, { entity: "vault_account", field: "password" })
+        : undefined,
+    },
   });
   await prisma.vaultProfile.create({
     data: {
@@ -161,8 +174,9 @@ describe.skipIf(!canRun)("exports for a runner", () => {
       data: { email: A_ALIAS, discordUserId: MEMBER_A, credentialId: aBox.id },
     });
     await credential(MEMBER_A, A_OTHER_MAILBOX, "cccc cccc cccc cccc");
-    await profile(MEMBER_A, RUNNER, "a1", A_MAILBOX);
-    await profile(MEMBER_A, RUNNER, "a2", A_ALIAS);
+    // Each login's password holds a character another accounts shape splits on.
+    await profile(MEMBER_A, RUNNER, "a1", A_MAILBOX, { password: "hunter:2" });
+    await profile(MEMBER_A, RUNNER, "a2", A_ALIAS, { password: "semi;colon" });
 
     // Member B: another runner's.
     await credential(MEMBER_B, B_MAILBOX, "bbbb bbbb bbbb bbbb");
@@ -288,6 +302,69 @@ describe.skipIf(!canRun)("exports for a runner", () => {
       const { status, body } = await exportAs(mattelRunner, "site=mattel&format=accounts");
       expect(status).toBe(400);
       expect(body).toMatch(/don't keep Mattel passwords/);
+    });
+  });
+
+  /**
+   * The accounts list in each separator the team's bots read. The runner's two Topps logins,
+   * in profile-name order, decrypted -- and nothing but the separator changes between them.
+   */
+  describe("accounts separator", () => {
+    /** This test's lines in an accounts file, in file order. */
+    const linesIn = (body: string) => body.split("\n").filter((line) => line.startsWith(PREFIX));
+
+    it("writes email:password when none is asked for, under the name it always had", async () => {
+      const { status, body, filename } = await exportAs(runner, `site=${SITE}&format=accounts`);
+      expect(status).toBe(200);
+      expect(linesIn(body)).toEqual([`${A_MAILBOX}:hunter:2`, `${A_ALIAS}:semi;colon`]);
+      expect(filename).toMatch(/^okie-accounts-topps-\d{4}-\d{2}-\d{2}\.txt$/);
+
+      // Asked for by name, the default is the same file.
+      const named = await exportAs(runner, `site=${SITE}&format=accounts&sep=colon`);
+      expect(named.body).toBe(body);
+      expect(named.filename).toBe(filename);
+    });
+
+    it("writes email:::password, and says so in the file's name", async () => {
+      const { status, body, filename } = await exportAs(
+        runner,
+        `site=${SITE}&format=accounts&sep=triple-colon`,
+      );
+      expect(status).toBe(200);
+      expect(linesIn(body)).toEqual([`${A_MAILBOX}:::hunter:2`, `${A_ALIAS}:::semi;colon`]);
+      expect(filename).toMatch(/^okie-accounts-triple-colon-topps-\d{4}-\d{2}-\d{2}\.txt$/);
+    });
+
+    it("writes email;password, and says so in the file's name", async () => {
+      const { status, body, filename } = await exportAs(
+        runner,
+        `site=${SITE}&format=accounts&sep=semicolon`,
+      );
+      expect(status).toBe(200);
+      expect(linesIn(body)).toEqual([`${A_MAILBOX};hunter:2`, `${A_ALIAS};semi;colon`]);
+      expect(filename).toMatch(/^okie-accounts-semicolon-topps-\d{4}-\d{2}-\d{2}\.txt$/);
+    });
+
+    it("is recorded as the accounts export it is", async () => {
+      await prisma.vaultExport.deleteMany({ where: { actorDiscordId: RUNNER } });
+      await exportAs(runner, `site=${SITE}&format=accounts&sep=semicolon`);
+
+      const rows = await prisma.vaultExport.findMany({ where: { actorDiscordId: RUNNER } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        siteKey: SITE,
+        format: "accounts",
+        scope: "site",
+        accountCount: 2,
+      });
+    });
+
+    it("refuses a separator it doesn't know, or one on a file that has none", async () => {
+      expect((await exportAs(runner, `site=${SITE}&format=accounts&sep=pipe`)).status).toBe(400);
+      expect((await exportAs(runner, `site=${SITE}&format=accounts&sep=;`)).status).toBe(400);
+      // The AYCD file is JSON and the IMAP one a CSV: neither has a separator to change.
+      expect((await exportAs(runner, `site=${SITE}&bot=all&sep=semicolon`)).status).toBe(400);
+      expect((await exportAs(runner, `site=${SITE}&format=imap&sep=semicolon`)).status).toBe(400);
     });
   });
 });

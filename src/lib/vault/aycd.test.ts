@@ -213,4 +213,40 @@ describe("toAccountList", () => {
   it("is empty rather than a stray newline when nothing qualifies", () => {
     expect(toAccountList([])).toBe("");
   });
+
+  /**
+   * The other separators the team's bots read. Same accounts, same order -- only what joins
+   * the fields may change, or a file picked for one bot holds different logins than the
+   * same share picked for another.
+   */
+  it("writes the separator a bot asks for", () => {
+    const accounts = [
+      { email: "a@example.com", password: "hunter2" },
+      { email: "b@example.com", password: "correct horse" },
+    ];
+    expect(toAccountList(accounts, "colon")).toBe(toAccountList(accounts));
+    expect(toAccountList(accounts, "triple-colon").split("\n")).toEqual([
+      "a@example.com:::hunter2",
+      "b@example.com:::correct horse",
+    ]);
+    expect(toAccountList(accounts, "semicolon").split("\n")).toEqual([
+      "a@example.com;hunter2",
+      "b@example.com;correct horse",
+    ]);
+  });
+
+  it("joins a security code with the same separator, and still omits it when absent", () => {
+    const accounts = [
+      { email: "a@example.com", password: "p1", cvv: "4321" },
+      { email: "b@example.com", password: "p2", cvv: null },
+    ];
+    expect(toAccountList(accounts, "triple-colon").split("\n")).toEqual([
+      "a@example.com:::p1:::4321",
+      "b@example.com:::p2",
+    ]);
+    expect(toAccountList(accounts, "semicolon").split("\n")).toEqual([
+      "a@example.com;p1;4321",
+      "b@example.com;p2",
+    ]);
+  });
 });

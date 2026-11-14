@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useActionState, useState } from "react";
 import type { AdminMemberRow } from "@/db/queries/admin-vault";
+import { AccountsExport } from "@/components/vault/accounts-export";
 import type { RunnerOption } from "@/components/vault/runner-select";
 import { assignProfiles, type AssignResult } from "@/lib/vault/assign-actions";
 import { siteStoresPassword, type SiteStyle } from "@/lib/sites";
@@ -176,7 +177,12 @@ export function AdminMemberPicker({
                   member happens to use, so splitting it per site produced overlapping files
                   and left the operator guessing which one was current. */}
               {siteStoresPassword(siteKey) && (
-                <BulkLink href={bulkHref(`format=accounts`)} label="Accounts" />
+                <AccountsExport
+                  href={bulkHref(`format=accounts`)}
+                  siteKey={siteKey}
+                  label="Accounts"
+                  compact
+                />
               )}
             </div>
           )}

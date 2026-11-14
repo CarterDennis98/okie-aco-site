@@ -7,7 +7,8 @@ import {
   type ExistingAccount,
   type ParsedProfile,
 } from "@/lib/vault/aycd-import";
-import { toAycdProfile } from "@/lib/vault/aycd";
+import { ACCOUNT_FORMAT_KEYS } from "@/lib/vault/account-format";
+import { toAccountList, toAycdProfile } from "@/lib/vault/aycd";
 
 /**
  * The round trip is the property that matters: whatever the admin export writes, the
@@ -275,6 +276,52 @@ describe("parseAccountList", () => {
   it("ignores blanks, comments, and malformed lines", () => {
     const map = parseAccountList("\n# a comment\nnot-an-email\nnocolon@example.com\n");
     expect(map.size).toBe(0);
+  });
+
+  it("reads the other shapes the accounts export can write", () => {
+    const map = parseAccountList("a@example.com:::hunter2\nb@example.com;pw\n");
+    expect(map.get("a@example.com")).toBe("hunter2");
+    expect(map.get("b@example.com")).toBe("pw");
+  });
+
+  /**
+   * The failure this guards against is silent: an `email:::password` line read on its first
+   * colon stores "::password", which signs in nowhere and looks like the member's typo. The
+   * cost is the one line both shapes could have written -- an `email:password` whose password
+   * starts with "::" -- which is read the way a bot's file means it.
+   */
+  it("takes ':::' as one separator, not a password starting '::'", () => {
+    expect(parseAccountList("a@example.com:::pw").get("a@example.com")).toBe("pw");
+  });
+
+  it("keeps the other shapes' separators inside a password", () => {
+    const map = parseAccountList(
+      [
+        "a@example.com:pa;ss",
+        "b@example.com;pa:ss",
+        "c@example.com:::pa:::ss",
+        // Two colons: a colon, and a password starting with one.
+        "d@example.com::pw",
+      ].join("\n"),
+    );
+    expect(map.get("a@example.com")).toBe("pa;ss");
+    expect(map.get("b@example.com")).toBe("pa:ss");
+    expect(map.get("c@example.com")).toBe("pa:::ss");
+    expect(map.get("d@example.com")).toBe(":pw");
+  });
+
+  it("reads back every shape the export writes, whatever the passwords hold", () => {
+    const accounts = [
+      { email: "a@example.com", password: "hunter2" },
+      { email: "b@example.com", password: "pa:ss;word" },
+      { email: "c@example.com", password: ":leading" },
+      { email: "d@example.com", password: "correct horse" },
+    ];
+    const expected = Object.fromEntries(accounts.map((a) => [a.email, a.password]));
+    for (const format of ACCOUNT_FORMAT_KEYS) {
+      const map = parseAccountList(toAccountList(accounts, format));
+      expect(Object.fromEntries(map), format).toEqual(expected);
+    }
   });
 });
 

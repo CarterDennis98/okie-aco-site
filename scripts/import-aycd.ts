@@ -73,7 +73,8 @@ const prisma = new PrismaClient({
  * Logins, from either shape the bots export.
  *
  * Shikari writes a `username,password` CSV; the site's own accounts export writes
- * `email:password` lines. Both land here so a round trip works either way.
+ * `email:password` lines, or `email:::password` / `email;password` where a bot wanted those.
+ * All of them land here so a round trip works either way.
  */
 const LINE_BREAK = /\r?\n/;
 

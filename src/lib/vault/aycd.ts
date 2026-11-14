@@ -17,6 +17,11 @@
  */
 
 import { siteBotGeneratesPhone } from "@/lib/sites";
+import {
+  ACCOUNT_FORMATS,
+  DEFAULT_ACCOUNT_FORMAT,
+  type AccountFormat,
+} from "@/lib/vault/account-format";
 import { toAycdCardType, type CardBrand } from "@/lib/vault/card";
 import { BOT_SENTINEL_PHONE } from "@/lib/vault/profile-input";
 import { randomPhone, seededRandom } from "@/lib/vault/random-identity";
@@ -298,23 +303,27 @@ export function toAycdProfile(profile: ExportableProfile): AycdProfile {
 }
 
 /**
- * `<username>:<password>` per line, the format the bots take for accounts.
+ * `<username>:<password>` per line, the format the bots take for accounts -- or with
+ * whichever separator the bot loading the file reads instead, `:::` or `;`. See
+ * account-format.ts.
  *
  * A THIRD FIELD IS APPENDED when the account carries a card security code, giving
- * `<username>:<password>:<cvv>`. Only a login-only retailer has one -- Costco did, while
- * its orders were placed by hand and the site prompted for the code on an already-saved
- * card -- and nothing loads that file into a bot, so the extra column costs no
- * compatibility.
+ * `<username>:<password>:<cvv>`, with the same separator. Only a login-only retailer has
+ * one -- Costco did, while its orders were placed by hand and the site prompted for the code
+ * on an already-saved card -- and nothing loads that file into a bot, so the extra column
+ * costs no compatibility.
  *
  * Every other retailer's file keeps exactly two fields. That matters: a bot splitting on
- * ":" and reading `parts[1]` as the password is unaffected, and a trailing empty field
- * (`email:password:`) would look like a credential that failed to decrypt -- which is why
- * an absent code omits the separator rather than emitting it bare.
+ * its separator and reading `parts[1]` as the password is unaffected, and a trailing empty
+ * field (`email:password:`) would look like a credential that failed to decrypt -- which is
+ * why an absent code omits the separator rather than emitting it bare.
  */
 export function toAccountList(
   accounts: { email: string; password: string; cvv?: string | null }[],
+  format: AccountFormat = DEFAULT_ACCOUNT_FORMAT,
 ): string {
+  const separator = ACCOUNT_FORMATS[format];
   return accounts
-    .map((a) => (a.cvv ? `${a.email}:${a.password}:${a.cvv}` : `${a.email}:${a.password}`))
+    .map((a) => (a.cvv ? [a.email, a.password, a.cvv] : [a.email, a.password]).join(separator))
     .join("\n");
 }

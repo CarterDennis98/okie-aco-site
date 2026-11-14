@@ -9,6 +9,7 @@ import {
   siteUsesProfiles,
 } from "@/lib/sites";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
+import { DEFAULT_ACCOUNT_FORMAT, isAccountFormat } from "@/lib/vault/account-format";
 import { toAccountList } from "@/lib/vault/aycd";
 import { profilesForBot, type BotScope } from "@/lib/vault/bot-split";
 import { decrypt } from "@/lib/vault/crypto";
@@ -28,6 +29,8 @@ import { aycdFile, fileResponse } from "@/lib/vault/export-file";
  *   /api/admin/vault/export?site=target&member=<id>      one member
  *   /api/admin/vault/export?site=target&member=<a>&member=<b>   several, one file
  *   /api/admin/vault/export?site=target&format=accounts  username:password list
+ *   /api/admin/vault/export?site=target&format=accounts&sep=triple-colon   username:::password
+ *   /api/admin/vault/export?site=target&format=accounts&sep=semicolon      username;password
  *   /api/admin/vault/export?site=mattel&membership=with     only accounts with Red Line Club
  *   /api/admin/vault/export?site=mattel&membership=without  only accounts without it
  *   /api/admin/vault/export?format=imap                  EVERY mailbox app password, CSV
@@ -87,6 +90,11 @@ import { aycdFile, fileResponse } from "@/lib/vault/export-file";
  * on the profile form. Split here for the same reason as the bot split. Refused on a
  * retailer with no membership to split by.
  *
+ * SEPARATOR: the accounts list is the same file for every bot except for what splits the
+ * email from the password, and the team's bots don't agree on that -- so `sep` picks it.
+ * Absent, it is `email:password`, the file every accounts link got before there was a
+ * choice. See account-format.ts.
+ *
  * Inactive profiles are never exported: a disabled profile is one the member asked not
  * to run.
  */
@@ -133,6 +141,8 @@ export async function GET(request: Request) {
   const format = url.searchParams.get("format") ?? "aycd";
   // Null means both halves -- the retailer's whole file, as on any other retailer.
   const membershipSplit = url.searchParams.get("membership");
+  // Null means `email:password`. See the separator note at the top.
+  const separator = url.searchParams.get("sep");
 
   if (!["main", "backup", "all"].includes(bot))
     return new Response("Bad bot scope", { status: 400 });
@@ -140,6 +150,17 @@ export async function GET(request: Request) {
     return new Response("Bad format", { status: 400 });
   if (membershipSplit !== null && membershipSplit !== "with" && membershipSplit !== "without")
     return new Response("Bad membership split", { status: 400 });
+  if (separator !== null && !isAccountFormat(separator))
+    return new Response("Bad separator", { status: 400 });
+  // Refused rather than ignored, like a membership split on a retailer without one: the
+  // AYCD file is JSON and the IMAP one a CSV, so a separator asked for there would be
+  // quietly not applied, and the file loaded as if it had been.
+  if (separator !== null && format !== "accounts") {
+    return new Response("A separator applies only to the accounts list (format=accounts).", {
+      status: 400,
+    });
+  }
+  const accountFormat = separator ?? DEFAULT_ACCOUNT_FORMAT;
   // Refused rather than ignored: a file named "rlc" that held every profile would be
   // loaded as the RLC set. See the membership split at the top.
   const membership = siteMembership(siteKey);
@@ -492,8 +513,13 @@ export async function GET(request: Request) {
             ? decrypt(account.cardCvvEnc, { entity: "vault_account", field: "card_cvv" })
             : null,
         })),
+      accountFormat,
     );
-    return fileResponse(body, `okie-accounts-${suffix}.txt`, "text/plain; charset=utf-8");
+    // Any other separator is named in the file, so a `;` list downloaded beside the `:` one
+    // for the same share can't be loaded in its place. The default keeps the name it has
+    // always had.
+    const shape = accountFormat === DEFAULT_ACCOUNT_FORMAT ? "" : `-${accountFormat}`;
+    return fileResponse(body, `okie-accounts${shape}-${suffix}.txt`, "text/plain; charset=utf-8");
   }
 
   return fileResponse(aycdFile(selected), `okie-profiles-${suffix}.json`, "application/json");

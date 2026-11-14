@@ -9,6 +9,7 @@ import {
   getVaultSites,
 } from "@/db/queries/admin-vault";
 import { getAssigneesInUse, getRunnerNames, getRunnersForSite } from "@/db/queries/runners";
+import { AccountsExport } from "@/components/vault/accounts-export";
 import { AdminMemberPicker } from "@/components/vault/admin-member-picker";
 import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
 import { MoveAll, RunnerSelect } from "@/components/vault/runner-select";
@@ -390,9 +391,16 @@ export default async function AdminProfilesPage({
           {/* Meaningless where no password is kept: Pokémon Center has no logins to list,
               and Mattel's are emails only, so the file came out empty and the button implied
               credentials that do not exist. On a login-only retailer this is the ONLY export
-              -- the file is the whole record. */}
+              -- the file is the whole record.
+
+              The separator is picked beside it, for whichever bot the file goes onto, and
+              the member and bulk links below follow the same choice. See AccountsExport. */}
           {storesPassword && (
-            <ExportLink href={`${exportBase}&format=accounts`} label="Accounts (user:pass)" />
+            <AccountsExport
+              href={`${exportBase}&format=accounts`}
+              siteKey={siteKey}
+              label="Accounts"
+            />
           )}
           {runnerAppPasswords && (
             <ExportLink href={`${exportBase}&format=imap`} label="App passwords (IMAP)" />
@@ -634,8 +642,9 @@ export default async function AdminProfilesPage({
                         />
                       ))}
                     {storesPassword && (
-                      <ExportLink
+                      <AccountsExport
                         href={`${exportBase}&member=${selectedMember.discordUserId}&format=accounts`}
+                        siteKey={siteKey}
                         label="Export accounts"
                       />
                     )}

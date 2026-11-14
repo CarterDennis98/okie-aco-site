@@ -140,7 +140,8 @@ export function ImportProfiles({ siteKeys }: { siteKeys: string[] }) {
                   className={field}
                 />
                 <p className="mt-1 text-xs text-[var(--color-muted)]">
-                  One <code>email:password</code> per line. Needed only for accounts we don&rsquo;t
+                  One <code>email:password</code> per line (<code>email:::password</code> and{" "}
+                  <code>email;password</code> work too). Needed only for accounts we don&rsquo;t
                   already have — the profile export doesn&rsquo;t include logins.
                 </p>
               </div>

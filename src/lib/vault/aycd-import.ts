@@ -412,21 +412,28 @@ export function checkProfiles(
  *
  * AYCD's profile export carries no account password -- it holds cards and addresses, not
  * logins -- so a member importing profiles for accounts we've never seen has to supply
- * them separately. This reads the same `email:password` shape the admin accounts export
- * writes, so a round trip works without conversion.
+ * them separately. This reads every shape the admin accounts export can write --
+ * `email:password`, `email:::password` and `email;password`, see account-format.ts -- so a
+ * round trip works without conversion whichever one a bot wanted.
  *
- * Splits on the FIRST colon only: passwords containing colons are common and splitting
- * on all of them would silently truncate them.
+ * The email ends at the FIRST ":" or ";", neither of which a real address holds, and the
+ * password is everything after that separator: passwords containing colons and semicolons
+ * are common, and splitting on every one would silently truncate them. ":::" there is one
+ * separator -- reading it as ":" would import every password of an `email:::password` file
+ * with "::" stuck to the front. That leaves one line ambiguous, an `email:password` whose
+ * password itself starts with "::", and it is read as the `email:::password` a bot's file
+ * actually holds.
  */
 export function parseAccountList(text: string): Map<string, string> {
   const accounts = new Map<string, string>();
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    const split = trimmed.indexOf(":");
+    const split = trimmed.search(/[:;]/);
     if (split <= 0) continue;
+    const separator = trimmed.startsWith(":::", split) ? ":::" : trimmed[split];
     const email = trimmed.slice(0, split).trim().toLowerCase();
-    const password = trimmed.slice(split + 1);
+    const password = trimmed.slice(split + separator.length);
     if (EMAIL_RE.test(email) && password) accounts.set(email, password);
   }
   return accounts;
