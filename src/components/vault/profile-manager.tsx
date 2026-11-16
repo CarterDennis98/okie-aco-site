@@ -19,6 +19,11 @@ import {
   type ActionResult,
 } from "@/lib/vault/actions";
 import { FailureChip } from "@/components/vault/failure-flag";
+import {
+  ACTIVITY_SINCE_LABEL,
+  ActivityCount,
+  ProfileHistoryPanel,
+} from "@/components/vault/profile-activity";
 import { FAILURE_ROW_ACCENT } from "@/components/vault/failure-styles";
 import { RemoveLogin } from "@/components/vault/login-manager";
 import { ProfileArranger } from "@/components/vault/profile-arranger";
@@ -168,6 +173,9 @@ function ProfileRow({
   onSelect: (checked: boolean) => void;
 }) {
   const membership = siteMembership(profile.siteKey);
+  // The success/fail history under the row, opened from its count.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyId = `history-${profile.id}`;
 
   return (
     <li
@@ -201,6 +209,16 @@ function ProfileRow({
           <span className={profile.active ? "" : "text-[var(--color-muted)] line-through"}>
             {profile.name}
           </span>
+          {/* Its record since failure tracking began, first after the name: what members asked
+              to see at a glance. Opens the history below the row. See profile-activity.tsx. */}
+          {profile.activity && (
+            <ActivityCount
+              activity={profile.activity}
+              open={historyOpen}
+              onToggle={() => setHistoryOpen((v) => !v)}
+              controls={historyId}
+            />
+          )}
           {profile.cardExpired && (
             <span className="inline-flex items-center rounded-full bg-[var(--color-brand)]/15 px-2 py-1 text-[10px] leading-none font-medium tracking-wide text-[var(--color-fg)] uppercase">
               Card expired
@@ -298,6 +316,10 @@ function ProfileRow({
       >
         Edit
       </button>
+
+      {historyOpen && profile.activity && (
+        <ProfileHistoryPanel profileId={profile.id} activity={profile.activity} id={historyId} />
+      )}
     </li>
   );
 }
@@ -539,6 +561,17 @@ export function ProfileManager({
   const pendingCount = profiles.filter((p) => p.pendingSince !== null).length;
   const flaggedCount = profiles.filter((p) => p.failures).length;
   const highRiskCount = profiles.filter((p) => p.failures?.risk === "high").length;
+  // The retailer's record since failure tracking began, or null when no profile has one.
+  const totals = profiles.some((p) => p.activity)
+    ? profiles.reduce(
+        (sum, p) => ({
+          checkedOut: sum.checkedOut + (p.activity?.checkedOut ?? 0),
+          cancelled: sum.cancelled + (p.activity?.cancelled ?? 0),
+          failed: sum.failed + (p.activity?.failed ?? 0),
+        }),
+        { checkedOut: 0, cancelled: 0, failed: 0 },
+      )
+    : null;
 
   // Soft cap: the first N ACTIVE profiles run on the main bot, the rest on a backup.
   // Disabled profiles aren't running, so they don't hold a slot -- which means toggling
@@ -748,6 +781,26 @@ export function ProfileManager({
             }
             onCleared={() => setSelected(new Set())}
           />
+          {/* The retailer's record, totalled from the rows' counts, and how to see one
+              profile's. First, because it is the one note that's about results rather than
+              something to fix. */}
+          {totals && (
+            <p className="mb-2 px-1 text-xs text-[var(--color-muted)]">
+              Since {ACTIVITY_SINCE_LABEL} on these profiles:{" "}
+              <span className="font-medium text-[var(--color-good)]">
+                {totals.checkedOut} checked out
+              </span>
+              {" · "}
+              <span className={totals.cancelled ? "font-medium text-[var(--color-risk)]" : ""}>
+                {totals.cancelled} cancelled
+              </span>
+              {" · "}
+              <span className={totals.failed ? "font-medium text-[var(--color-risk)]" : ""}>
+                {totals.failed} failed
+              </span>
+              . Tap a profile&rsquo;s count for its history.
+            </p>
+          )}
           {/* Said once for the retailer, like the shared-card line below it. Members were
               asking in the channel whether an edit had taken effect; this is that answer
               without anyone having to ask. */}

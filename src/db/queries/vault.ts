@@ -7,6 +7,7 @@ import { loadMailboxCoverage, mailboxFor, type MailboxCoverage } from "@/db/quer
 import { loadFailureFlags } from "@/db/queries/failures";
 import { cardSignature, isExpired, maskedLabel } from "@/lib/vault/card";
 import type { FailureFlag } from "@/lib/vault/failure-flags";
+import type { ProfileActivity } from "@/lib/vault/profile-activity";
 import { nextProfileName, profileBaseFor, renumberedNames } from "@/lib/vault/profile-input";
 
 /**
@@ -78,6 +79,12 @@ export type VaultProfileSummary = {
    * flags it orange, or red at three -- see lib/vault/failure-flags.ts.
    */
   failures: FailureFlag | null;
+  /**
+   * Its record since failure tracking began -- checked out, cancelled, failed -- or null with
+   * none. Filled in by the Profiles page only (db/queries/profile-activity.ts), so the
+   * dashboard, which shows no per-profile record, doesn't pay for the reads. Undefined there.
+   */
+  activity?: ProfileActivity | null;
   updatedAt: Date;
 };
 

@@ -5,6 +5,7 @@ import { ImportProfiles } from "@/components/vault/import-profiles";
 import { SiteSwitcher } from "@/components/vault/site-switcher";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getAddressBook } from "@/db/queries/address-book";
+import { getProfileActivity } from "@/db/queries/profile-activity";
 import {
   getEmailsNeedingAppPassword,
   getMemberEmailCredentials,
@@ -29,13 +30,19 @@ const OPEN_SITES = selfServeSiteKeys();
 export default async function ProfilesPage() {
   const viewer = await requireMember();
 
-  const [grouped, logins, credentials, needingPassword, addressBook] = await Promise.all([
+  const [grouped, logins, credentials, needingPassword, addressBook, activity] = await Promise.all([
     getMemberProfiles(viewer.discordUserId),
     getMemberLogins(viewer.discordUserId),
     getMemberEmailCredentials(viewer.discordUserId),
     getEmailsNeedingAppPassword(viewer.discordUserId),
     getAddressBook(viewer.discordUserId),
+    // Each profile's checked-out / cancelled / failed record. Here and not in
+    // getMemberProfiles, so the dashboard doesn't pay for reads it never shows.
+    getProfileActivity(viewer.discordUserId),
   ]);
+  for (const group of grouped) {
+    for (const profile of group.profiles) profile.activity = activity[profile.id] ?? null;
+  }
 
   // Show a section for every retailer they have profiles on, plus any open site they
   // don't yet -- otherwise a member with nothing has no way to add their first profile.

@@ -207,6 +207,11 @@ mutation-checked: removing `discordUserId` from the `where` clause makes it fail
   `src/lib/sites.ts`: on Target only Item Demand and Reseller, never Quantity Limit, which only
   means a member hit their checkout limit. Every failure is stored regardless, and the rule is
   applied when flags are counted. See `src/lib/vault/failure-flags.ts`.
+- **Each profile shows its own record** on the member's Profiles page: checked out, cancelled
+  and failed since 2026-11-01, when failures started being recorded (`ACTIVITY_SINCE`), with a
+  history it opens. Checkouts are matched to a profile by retailer and name at read time,
+  failures by the profile they were bound to on arrival, and an order cancelled after checkout
+  is shown once, as cancelled. Read-only; see `src/lib/vault/profile-activity.ts`.
 - **The address book is the member's alone.** `saved_addresses` and `saved_cards` fill a new
   profile and do nothing else: in no export, on no admin page, in no runner's queue. A saved
   card is re-encrypted into the profile's own columns on the server
