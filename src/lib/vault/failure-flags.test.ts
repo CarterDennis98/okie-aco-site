@@ -11,6 +11,7 @@ import {
   flagLabel,
   flagsByProfile,
   HIGH_RISK_AT,
+  isRaffleEntry,
   matchFailureProfile,
   riskFor,
   tidyReason,
@@ -86,6 +87,34 @@ describe("countsTowardFlag", () => {
     });
     // Nothing but Quantity Limit cancels: no flag at all.
     expect(flagsByProfile([failure(3, "Order Canceled: Quantity Limit")]).size).toBe(0);
+  });
+
+  it("never counts a raffle entry a bot reported as a failure, on any retailer", () => {
+    expect(isRaffleEntry("Raffle Entered")).toBe(true);
+    expect(isRaffleEntry("**Raffle Entered!**")).toBe(true);
+    expect(isRaffleEntry("Checkout Failed (Raffle Entered)")).toBe(true);
+    expect(isRaffleEntry("Draw Entry Failed")).toBe(true);
+    expect(isRaffleEntry("Payment Declined")).toBe(false);
+    expect(isRaffleEntry("Order Withdrawn")).toBe(false);
+    expect(isRaffleEntry(null)).toBe(false);
+
+    expect(countsTowardFlag("target", "Raffle Entered")).toBe(false);
+    expect(countsTowardFlag(null, "Raffle Entered")).toBe(false);
+    const raffled = (day: number, reason: string) => ({
+      vaultProfileId: "r",
+      siteKey: "target",
+      occurredAt: at(`2026-11-1${day}T01:00:00Z`),
+      reason,
+      productRaw: null,
+    });
+    // Entered in two raffles, declined once: one failure, and its reason is the decline's.
+    const flags = flagsByProfile([
+      raffled(7, "Payment Declined"),
+      raffled(8, "Raffle Entered"),
+      raffled(9, "Raffle Entered"),
+    ]);
+    expect(flags.get("r")).toMatchObject({ count: 1, lastReason: "Payment Declined" });
+    expect(flagsByProfile([raffled(8, "Raffle Entered")]).size).toBe(0);
   });
 });
 

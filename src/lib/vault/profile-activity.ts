@@ -3,6 +3,7 @@ import { siteKey } from "@/lib/sites";
 import {
   cancellationReason,
   countsTowardFlag,
+  isRaffleEntry,
   matchFailureProfile,
   tidyReason,
 } from "@/lib/vault/failure-flags";
@@ -136,7 +137,8 @@ function orderKey(orderId: string | null, site: string | null): string | null {
 
 /**
  * One profile's checkouts and failures as a history, newest first: a cancelled order once,
- * as cancelled, with its checkout's product and quantity.
+ * as cancelled, with its checkout's product and quantity. A raffle entry a bot reported as a
+ * failure isn't shown at all: it was neither.
  */
 export function activityEvents(
   checkouts: readonly ActivityCheckout[],
@@ -152,6 +154,7 @@ export function activityEvents(
   const events: ActivityEvent[] = [];
 
   for (const failure of failures) {
+    if (isRaffleEntry(failure.reason)) continue;
     const cancellation = cancellationReason(failure.reason) !== null;
     const key = cancellation ? orderKey(failure.orderId, failure.siteKey) : null;
     const checkout = key ? byOrder.get(key) : undefined;

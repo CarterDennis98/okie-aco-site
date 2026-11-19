@@ -80,10 +80,22 @@ export function cancellationReason(reason: string | null | undefined): string | 
 }
 
 /**
+ * A raffle entry that a bot reported as a failure -- Sniped's "Raffle Entered" -- rather than a
+ * failed checkout. The mirror has stopped sending these (isRaffleEntry in its parsers/shared.js,
+ * the same words); the ones that arrived before that are still on file, and this keeps them
+ * out of every flag and every count. Shikari calls its raffle tasks "Draw", so a draw counts.
+ */
+export function isRaffleEntry(reason: string | null | undefined): boolean {
+  return /\b(?:raffles?|draws?|drawings?)\b/i.test(tidyReason(reason) ?? "");
+}
+
+/**
  * Whether this failure counts toward a flag. Every failure does, except a cancellation whose
- * policy its retailer doesn't flag -- see `flaggedCancellations` in sites.ts.
+ * policy its retailer doesn't flag -- see `flaggedCancellations` in sites.ts -- and a raffle
+ * entry, which was never a failure at all.
  */
 export function countsTowardFlag(siteKey: string | null, reason: string | null): boolean {
+  if (isRaffleEntry(reason)) return false;
   const flagged = siteFlaggedCancellations(siteKey);
   if (!flagged) return true;
   const policy = cancellationReason(reason);

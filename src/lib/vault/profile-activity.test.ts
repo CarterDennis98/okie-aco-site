@@ -150,6 +150,16 @@ describe("activityEvents", () => {
     );
     expect(events.map((e) => e.kind).sort()).toEqual(["cancelled", "checked-out"]);
   });
+
+  it("leaves out a raffle entry a bot reported as a failure, and doesn't count it", () => {
+    const failures = [
+      failure({ id: "entered", reason: "Raffle Entered" }),
+      failure({ id: "declined", occurredAt: at("2026-11-08T02:00:00Z") }),
+    ];
+    expect(activityEvents([], failures).map((e) => e.id)).toEqual(["declined"]);
+    expect(summarizeActivity([], failures)).toMatchObject({ failed: 1 });
+    expect(summarizeActivity([], [failure({ reason: "Raffle Entered" })])).toBeNull();
+  });
 });
 
 describe("summarizeActivity", () => {
