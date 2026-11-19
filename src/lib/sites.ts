@@ -269,6 +269,24 @@ export type SiteStyle = {
   importsValor?: boolean;
 
   /**
+   * The HIDDEN profile group this retailer's profiles are filed under, where its bot is Hidden
+   * AIO -- and with it a second format on the operator's profile export: Hidden's own CSV,
+   * beside AYCD's file. See hidden.ts, and profile-format.ts for the picker.
+   *
+   * Hidden files every profile under a group it identifies by an id it made up, so this is a
+   * fact about the operator's Hidden install rather than about the retailer. It was read off a
+   * file that install exported; if the retailer moves to another Hidden, the id moves with it.
+   *
+   * Only where there are profiles, and only where the export shows ONE profile link to put the
+   * format picker beside: no profileSoftCap and no membership, each of which splits the file
+   * into a pair of links. A test pins both, so a retailer that needs either has the picker
+   * wired into its pair first.
+   *
+   * Unset: AYCD's file only.
+   */
+  hiddenGroup?: { name: string; id: string };
+
+  /**
    * Which of this retailer's CANCELLATIONS flag a profile, by the policy it gave -- set where
    * only some should. Lowercase.
    *
@@ -376,6 +394,9 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // members are asked for one, as on Target. See usesEmailCodes.
     usesEmailCodes: false,
     selfServe: true,
+    // Hidden AIO runs Costco and loads its own CSV, so the export offers that beside AYCD's
+    // file. Hidden's "Costco" profile group, off the test profile it exported on 2026-11-19.
+    hiddenGroup: { name: "Costco", id: "53815241-3f20-4e10-b987-33c26c671f80" },
   },
   crunchyroll: {
     label: "Crunchyroll",
@@ -622,6 +643,19 @@ export function siteBotGeneratesPhone(site: string | null | undefined): boolean 
  */
 export function siteImportsValor(site: string | null | undefined): boolean {
   return siteStyle(site).importsValor === true;
+}
+
+/**
+ * Hidden's profile group for this retailer, or null where its export is AYCD's file only.
+ *
+ * Read by the export route, which files every row of a Hidden CSV under it, and -- through
+ * siteProfileFormats -- by the profiles page, which offers the Hidden format only where there
+ * is one. See `hiddenGroup`.
+ */
+export function siteHiddenGroup(
+  site: string | null | undefined,
+): { name: string; id: string } | null {
+  return siteStyle(site).hiddenGroup ?? null;
 }
 
 /**

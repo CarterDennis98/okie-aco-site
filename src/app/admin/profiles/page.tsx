@@ -10,6 +10,7 @@ import {
 } from "@/db/queries/admin-vault";
 import { getAssigneesInUse, getRunnerNames, getRunnersForSite } from "@/db/queries/runners";
 import { AccountsExport } from "@/components/vault/accounts-export";
+import { ProfilesExport } from "@/components/vault/profiles-export";
 import { AdminMemberPicker } from "@/components/vault/admin-member-picker";
 import { AdminPendingChanges } from "@/components/vault/admin-pending-changes";
 import { MoveAll, RunnerSelect } from "@/components/vault/runner-select";
@@ -30,6 +31,7 @@ import {
   isProfileFilterActive,
   parseProfileFilter,
 } from "@/lib/vault/profile-filter";
+import { siteProfileFormats } from "@/lib/vault/profile-format";
 import { revealAppPasswordForAdmin } from "@/lib/vault/admin-actions";
 import { RevealAppPassword } from "@/components/vault/reveal-app-password";
 
@@ -168,6 +170,11 @@ export default async function AdminProfilesPage({
   // profile is gated on this. See usesProfiles in sites.ts.
   const usesProfiles = siteUsesProfiles(siteKey);
   const noun = usesProfiles ? "profile" : "login";
+  // Whether the profile links carry a format picker: Costco's bot is Hidden AIO, which loads
+  // its own CSV as well as AYCD's file. Everywhere else they stay plain AYCD links. A test in
+  // sites.test.ts keeps this off retailers with a bot split or a membership split, whose pairs
+  // of links have no picker. See ProfilesExport.
+  const pickFormat = siteProfileFormats(siteKey).length > 1;
   // Where a login-only retailer prompts for the security code on a saved card, a login
   // without one is a gap worth showing. See storesCardCvv.
   const storesCardCvv = siteStoresCardCvv(siteKey);
@@ -385,6 +392,8 @@ export default async function AdminProfilesPage({
                 />
                 <ExportLink href={`${exportBase}&bot=backup`} label="Backup bot" />
               </>
+            ) : pickFormat ? (
+              <ProfilesExport href={`${exportBase}&bot=all`} siteKey={siteKey} label="Profiles" />
             ) : (
               <ExportLink href={`${exportBase}&bot=all`} label="Profiles (AYCD)" />
             ))}
@@ -635,6 +644,12 @@ export default async function AdminProfilesPage({
                             }
                           />
                         </>
+                      ) : pickFormat ? (
+                        <ProfilesExport
+                          href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all`}
+                          siteKey={siteKey}
+                          label="Export profiles"
+                        />
                       ) : (
                         <ExportLink
                           href={`${exportBase}&member=${selectedMember.discordUserId}&bot=all`}

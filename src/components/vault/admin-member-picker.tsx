@@ -4,9 +4,11 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 import type { AdminMemberRow } from "@/db/queries/admin-vault";
 import { AccountsExport } from "@/components/vault/accounts-export";
+import { ProfilesExport } from "@/components/vault/profiles-export";
 import type { RunnerOption } from "@/components/vault/runner-select";
 import { assignProfiles, type AssignResult } from "@/lib/vault/assign-actions";
 import { siteStoresPassword, type SiteStyle } from "@/lib/sites";
+import { siteProfileFormats } from "@/lib/vault/profile-format";
 
 /**
  * The member roster, with a checkbox per member for bulk export -- and, for a full admin,
@@ -165,6 +167,15 @@ export function AdminMemberPicker({
                     />
                     <BulkLink href={bulkHref(`bot=backup`)} label="Profiles · backup" />
                   </>
+                ) : siteProfileFormats(siteKey).length > 1 ? (
+                  // Costco's Hidden CSV or AYCD's file, by the choice the page's other
+                  // profile links share. See ProfilesExport.
+                  <ProfilesExport
+                    href={bulkHref(`bot=all`)}
+                    siteKey={siteKey}
+                    label="Profiles"
+                    compact
+                  />
                 ) : (
                   <BulkLink href={bulkHref(`bot=all`)} label="Profiles (AYCD)" />
                 ))}

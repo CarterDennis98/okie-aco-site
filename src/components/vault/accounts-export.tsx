@@ -1,12 +1,11 @@
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
+import { rememberedPerSite } from "@/components/vault/remembered-choice";
 import {
   ACCOUNT_FORMAT_KEYS,
   DEFAULT_ACCOUNT_FORMAT,
   accountFormatLabel,
   isAccountFormat,
-  type AccountFormat,
 } from "@/lib/vault/account-format";
 
 /**
@@ -14,87 +13,18 @@ import {
  * `email:::password` or `email;password`, whichever the bot loading the file reads. See
  * account-format.ts.
  *
- * REMEMBERED PER RETAILER, in this browser. A retailer's file goes onto the same bot every
- * time, so the shape picked once is the one wanted next time -- and every accounts link on
- * the page (the whole retailer, one member, the ticked members) reads the same choice, so
- * changing it beside one changes them all. Browser storage rather than the database: it is
- * a convenience for whoever is downloading, and a lost choice falls back to the shape every
- * file had before there was a choice.
+ * REMEMBERED PER RETAILER, in this browser, and read by every accounts link on the page (the
+ * whole retailer, one member, the ticked members), so changing it beside one changes them all.
+ * See remembered-choice.ts.
  *
  * Nothing here decides what may be exported. The route checks who is asking, and refuses a
  * separator it doesn't know.
  */
 
-const STORAGE_KEY = "okie:accounts:format";
-
-const listeners = new Set<() => void>();
-/** This page's copy of what storage holds: read once, then every change made here. */
-let stored: string | null = null;
-
-function snapshot(): string {
-  if (stored === null) {
-    try {
-      stored = window.localStorage.getItem(STORAGE_KEY) ?? "{}";
-    } catch {
-      // Storage blocked (a private window, say): the choice still works, for this visit.
-      stored = "{}";
-    }
-  }
-  return stored;
-}
-
-function subscribe(listener: () => void) {
-  // A choice made in another tab is picked up too.
-  const fromStorage = (event: StorageEvent) => {
-    if (event.key !== STORAGE_KEY) return;
-    stored = null;
-    listener();
-  };
-  listeners.add(listener);
-  window.addEventListener("storage", fromStorage);
-  return () => {
-    listeners.delete(listener);
-    window.removeEventListener("storage", fromStorage);
-  };
-}
-
-/** Site key -> format. Anything unreadable is dropped rather than trusted. */
-function parse(raw: string): Record<string, AccountFormat> {
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    return Object.fromEntries(
-      Object.entries(value).filter((entry): entry is [string, AccountFormat] =>
-        isAccountFormat(entry[1]),
-      ),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function save(siteKey: string, format: AccountFormat) {
-  stored = JSON.stringify({ ...parse(snapshot()), [siteKey]: format });
-  try {
-    window.localStorage.setItem(STORAGE_KEY, stored);
-  } catch {
-    // Kept for this visit only.
-  }
-  for (const listener of listeners) listener();
-}
-
-/**
- * The shape remembered for this retailer. Read through useSyncExternalStore so the server --
- * which can't see this browser's storage -- and the first render agree on the default, and
- * the remembered choice follows straight after.
- */
-function useAccountFormat(siteKey: string): AccountFormat {
-  const raw = useSyncExternalStore(subscribe, snapshot, () => "{}");
-  return useMemo(() => {
-    const remembered = parse(raw);
-    return Object.hasOwn(remembered, siteKey) ? remembered[siteKey] : DEFAULT_ACCOUNT_FORMAT;
-  }, [raw, siteKey]);
-}
+const { useChoice: useAccountFormat, save: saveAccountFormat } = rememberedPerSite(
+  "okie:accounts:format",
+  isAccountFormat,
+);
 
 export function AccountsExport({
   href,
@@ -109,7 +39,7 @@ export function AccountsExport({
   /** The bulk bar's smaller size. */
   compact?: boolean;
 }) {
-  const format = useAccountFormat(siteKey);
+  const format = useAccountFormat(siteKey, DEFAULT_ACCOUNT_FORMAT);
   // The default leaves the URL exactly as it was before there was a choice.
   const target = format === DEFAULT_ACCOUNT_FORMAT ? href : `${href}&sep=${format}`;
 
@@ -137,7 +67,7 @@ export function AccountsExport({
         value={format}
         onChange={(event) => {
           const next = event.currentTarget.value;
-          if (isAccountFormat(next)) save(siteKey, next);
+          if (isAccountFormat(next)) saveAccountFormat(siteKey, next);
         }}
         className={
           "border-l border-[var(--color-edge)] bg-[var(--color-ink)] font-mono text-[var(--color-muted)] focus:text-[var(--color-fg)] focus:outline-none " +

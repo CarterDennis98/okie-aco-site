@@ -22,6 +22,7 @@ import {
   supportedSites,
   siteBotGeneratesPhone,
   siteFlaggedCancellations,
+  siteHiddenGroup,
   siteImportsValor,
   siteMembership,
   siteRequiresPhone,
@@ -599,6 +600,45 @@ describe("siteImportsValor", () => {
 
   it("accepts the raw vendor spelling", () => {
     expect(siteImportsValor("Pokemon Center US")).toBe(true);
+  });
+});
+
+describe("siteHiddenGroup", () => {
+  /**
+   * Where the operator's export offers Hidden AIO's CSV, and which Hidden group its rows land
+   * in. Costco only: Hidden runs it, and its group id was read off a file Hidden exported.
+   */
+  it("is Hidden's Costco group on Costco, and nothing anywhere else", () => {
+    expect(siteHiddenGroup("costco")).toEqual({
+      name: "Costco",
+      id: "53815241-3f20-4e10-b987-33c26c671f80",
+    });
+    for (const site of supportedSites().filter((s) => s.key !== "costco")) {
+      expect(siteHiddenGroup(site.key), `${site.key} exports AYCD only`).toBeNull();
+    }
+    expect(siteHiddenGroup("some-new-store")).toBeNull();
+    expect(siteHiddenGroup(null)).toBeNull();
+  });
+
+  it("only sits where the export has one profile link to put the format picker beside", () => {
+    // The picker is wired into the single "Profiles" link. A soft cap or a membership splits
+    // that link in two, and neither half would offer Hidden until it was wired there too.
+    for (const site of supportedSites().filter((s) => siteHiddenGroup(s.key))) {
+      expect(siteUsesProfiles(site.key), site.key).toBe(true);
+      expect(site.profileSoftCap, site.key).toBeUndefined();
+      expect(siteMembership(site.key), site.key).toBeNull();
+    }
+  });
+
+  it("holds a UUID, the shape Hidden gives its groups", () => {
+    for (const site of supportedSites()) {
+      const group = siteHiddenGroup(site.key);
+      if (!group) continue;
+      expect(group.name.trim(), site.key).not.toBe("");
+      expect(group.id, site.key).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+    }
   });
 });
 

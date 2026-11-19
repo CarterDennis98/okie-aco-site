@@ -11,6 +11,9 @@
  *   MEMBERSHIP     Mattel's profiles split into the accounts with Red Line Club and the ones
  *                  without, the two halves adding up to the whole, and neither reaching past
  *                  the runner's own share.
+ *   HIDDEN         Costco's profiles as Hidden AIO's CSV: the runner's own share, decrypted,
+ *                  filed under Hidden's Costco group, and recorded as the profile export it
+ *                  is. Refused on any retailer Hidden doesn't run.
  *
  * The one thing faked is who is asking: requireAnyAdmin reads a session cookie that cannot
  * exist outside a request. Everything after that -- the scope, the profiles, the forwarding
@@ -21,6 +24,7 @@ import { GET } from "@/app/api/admin/vault/export/route";
 import { prisma } from "@/db/client";
 import { ALL_SITES, type AdminSites } from "@/lib/auth/admin-scope";
 import { encrypt } from "@/lib/vault/crypto";
+import { HIDDEN_HEADER } from "@/lib/vault/hidden";
 
 type FakeViewer = { discordUserId: string; adminSites: AdminSites; isAdmin: boolean };
 
@@ -41,6 +45,7 @@ const RUNNER = "999900000000000231";
 const OTHER_RUNNER = "999900000000000232";
 const CR_RUNNER = "999900000000000233";
 const MATTEL_RUNNER = "999900000000000234";
+const COSTCO_RUNNER = "999900000000000235";
 const MEMBER_A = "999900000000000211";
 const MEMBER_B = "999900000000000212";
 
@@ -64,6 +69,11 @@ const mattelRunner: FakeViewer = {
   adminSites: ["mattel"],
   isAdmin: false,
 };
+const costcoRunner: FakeViewer = {
+  discordUserId: COSTCO_RUNNER,
+  adminSites: ["costco"],
+  isAdmin: false,
+};
 
 async function exportAs(viewer: FakeViewer, query: string) {
   asking.viewer = viewer;
@@ -73,6 +83,7 @@ async function exportAs(viewer: FakeViewer, query: string) {
     status: response.status,
     body: await response.text(),
     filename: disposition.match(/filename="([^"]+)"/)?.[1] ?? null,
+    contentType: response.headers.get("content-type"),
   };
 }
 
@@ -194,6 +205,10 @@ describe.skipIf(!canRun)("exports for a runner", () => {
       ...mattel,
       hasMembership: true,
     });
+
+    // Costco: one profile with the Costco runner, and one with somebody else.
+    await profile(MEMBER_A, COSTCO_RUNNER, "c-a", `${PREFIX}c-a@example.com`, { site: "costco" });
+    await profile(MEMBER_B, OTHER_RUNNER, "c-b", `${PREFIX}c-b@example.com`, { site: "costco" });
   });
 
   afterAll(cleanup);
@@ -367,13 +382,109 @@ describe.skipIf(!canRun)("exports for a runner", () => {
       expect((await exportAs(runner, `site=${SITE}&format=imap&sep=semicolon`)).status).toBe(400);
     });
   });
+
+  /** Costco's profiles in the file Hidden AIO loads. See hidden.ts for the format itself. */
+  describe("Hidden CSV", () => {
+    /** This test's rows in a Hidden CSV, each as column name -> value. */
+    const rowsIn = (csv: string) =>
+      csv
+        .split("\n")
+        .slice(1)
+        .filter((line) => line.startsWith(PREFIX))
+        .map((line) => {
+          const cells = line.split(",");
+          return Object.fromEntries(HIDDEN_HEADER.map((column, i) => [column, cells[i]]));
+        });
+
+    it("hands the Costco runner their own profiles, decrypted, under Hidden's Costco group", async () => {
+      const { status, body, filename, contentType } = await exportAs(
+        costcoRunner,
+        "site=costco&bot=all&format=hidden",
+      );
+      expect(status).toBe(200);
+      expect(contentType).toBe("text/csv; charset=utf-8");
+      expect(filename).toMatch(/^okie-profiles-hidden-costco-\d{4}-\d{2}-\d{2}\.csv$/);
+      expect(body.split("\n")[0]).toBe(HIDDEN_HEADER.join(","));
+
+      // c-b sits with another runner, so only c-a is here.
+      const rows = rowsIn(body);
+      expect(rows.map((row) => row.profileName)).toEqual([`${PREFIX}c-a`]);
+      expect(rows[0]).toMatchObject({
+        shippingFirstName: "Test",
+        shippingLastName: "Member",
+        shippingEmail: `${PREFIX}c-a@example.com`,
+        shippingCountry: "US",
+        shippingState: "OK",
+        cardType: "visa",
+        cardNumber: "4242424242424242",
+        cardCvv: "123",
+        cardExpMonth: "12",
+        cardExpYear: "2030",
+        "profileId (do not edit)": "",
+        groupName: "Costco",
+        "groupId (do not edit)": "53815241-3f20-4e10-b987-33c26c671f80",
+      });
+      // No phone on file, and Costco's bot makes none up, so the file carries a generated one.
+      expect(rows[0].shippingPhone).toMatch(/^\d{10}$/);
+    });
+
+    it("is recorded as the profile export it is, under its own format", async () => {
+      await prisma.vaultExport.deleteMany({ where: { actorDiscordId: COSTCO_RUNNER } });
+      await exportAs(costcoRunner, "site=costco&bot=all&format=hidden");
+
+      const rows = await prisma.vaultExport.findMany({ where: { actorDiscordId: COSTCO_RUNNER } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        siteKey: "costco",
+        format: "hidden",
+        scope: "site",
+        profileCount: 1,
+        accountCount: 0,
+      });
+    });
+
+    it("gives a full admin every runner's, and one member's on its own", async () => {
+      const everyone = await exportAs(operator, "site=costco&bot=all&format=hidden&runner=all");
+      expect(rowsIn(everyone.body).map((row) => row.profileName)).toEqual([
+        `${PREFIX}c-a`,
+        `${PREFIX}c-b`,
+      ]);
+
+      const one = await exportAs(
+        operator,
+        `site=costco&bot=all&format=hidden&runner=all&member=${MEMBER_B}`,
+      );
+      expect(rowsIn(one.body).map((row) => row.profileName)).toEqual([`${PREFIX}c-b`]);
+      expect(one.filename).toMatch(/^okie-profiles-hidden-costco-every-runner-member-/);
+    });
+
+    it("still writes AYCD's file on Costco when no format is asked for", async () => {
+      const { status, body, filename } = await exportAs(costcoRunner, "site=costco&bot=all");
+      expect(status).toBe(200);
+      expect(profilesIn(body)).toEqual([`${PREFIX}c-a`]);
+      expect(filename).toMatch(/^okie-profiles-costco-\d{4}-\d{2}-\d{2}\.json$/);
+    });
+
+    it("refuses Hidden on a retailer Hidden doesn't run", async () => {
+      const topps = await exportAs(runner, `site=${SITE}&bot=all&format=hidden`);
+      expect(topps.status).toBe(400);
+      expect(topps.body).toBe("Topps profiles don't export as Hidden.");
+      expect((await exportAs(operator, "site=target&bot=all&format=hidden")).status).toBe(400);
+      // A separator means nothing to a profile file, Hidden's included.
+      expect(
+        (await exportAs(costcoRunner, "site=costco&bot=all&format=hidden&sep=semicolon")).status,
+      ).toBe(400);
+    });
+  });
 });
 
 async function cleanup() {
   const members = [MEMBER_A, MEMBER_B];
   await prisma.vaultExport.deleteMany({
     where: {
-      actorDiscordId: { in: [OPERATOR, RUNNER, OTHER_RUNNER, CR_RUNNER, MATTEL_RUNNER] },
+      actorDiscordId: {
+        in: [OPERATOR, RUNNER, OTHER_RUNNER, CR_RUNNER, MATTEL_RUNNER, COSTCO_RUNNER],
+      },
     },
   });
   await prisma.vaultProfile.deleteMany({ where: { name: { startsWith: PREFIX } } });

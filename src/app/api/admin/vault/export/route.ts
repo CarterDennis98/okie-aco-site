@@ -2,6 +2,7 @@ import { prisma } from "@/db/client";
 import { EVERYONE, mayExport, vaultScopeFor } from "@/lib/auth/admin-scope";
 import { requireAnyAdmin } from "@/lib/auth/guard";
 import {
+  siteHiddenGroup,
   siteMembership,
   siteStoresPassword,
   siteStyle,
@@ -13,7 +14,12 @@ import { DEFAULT_ACCOUNT_FORMAT, isAccountFormat } from "@/lib/vault/account-for
 import { toAccountList } from "@/lib/vault/aycd";
 import { profilesForBot, type BotScope } from "@/lib/vault/bot-split";
 import { decrypt } from "@/lib/vault/crypto";
-import { aycdFile, fileResponse } from "@/lib/vault/export-file";
+import { aycdFile, fileResponse, hiddenFile } from "@/lib/vault/export-file";
+import {
+  isProfileFormat,
+  profileFormatLabel,
+  siteProfileFormats,
+} from "@/lib/vault/profile-format";
 
 /**
  * Profile export — one of the audited exports that decrypt stored secrets. Another is the
@@ -28,6 +34,7 @@ import { aycdFile, fileResponse } from "@/lib/vault/export-file";
  *   /api/admin/vault/export?site=target&runner=<id>      one other runner's
  *   /api/admin/vault/export?site=target&member=<id>      one member
  *   /api/admin/vault/export?site=target&member=<a>&member=<b>   several, one file
+ *   /api/admin/vault/export?site=costco&format=hidden    Hidden AIO's profile CSV (Costco only)
  *   /api/admin/vault/export?site=target&format=accounts  username:password list
  *   /api/admin/vault/export?site=target&format=accounts&sep=triple-colon   username:::password
  *   /api/admin/vault/export?site=target&format=accounts&sep=semicolon      username;password
@@ -90,6 +97,12 @@ import { aycdFile, fileResponse } from "@/lib/vault/export-file";
  * on the profile form. Split here for the same reason as the bot split. Refused on a
  * retailer with no membership to split by.
  *
+ * PROFILE FORMAT: the same profiles, in whichever file the retailer's bot loads. AYCD's JSON
+ * everywhere, and what no `format` means; Hidden AIO's CSV (`format=hidden`) where sites.ts
+ * names a Hidden group to file the rows under, which is Costco alone. Asked for anywhere else,
+ * it is refused rather than answered with AYCD's file under a .csv name. Every scope above
+ * applies to both. See profile-format.ts.
+ *
  * SEPARATOR: the accounts list is the same file for every bot except for what splits the
  * email from the password, and the team's bots don't agree on that -- so `sep` picks it.
  * Absent, it is `email:password`, the file every accounts link got before there was a
@@ -146,15 +159,17 @@ export async function GET(request: Request) {
 
   if (!["main", "backup", "all"].includes(bot))
     return new Response("Bad bot scope", { status: 400 });
-  if (!["aycd", "accounts", "imap"].includes(format))
+  // A file of profiles (AYCD's or Hidden's), or one of the two credential lists.
+  const profileFormat = isProfileFormat(format) ? format : null;
+  if (!profileFormat && format !== "accounts" && format !== "imap")
     return new Response("Bad format", { status: 400 });
   if (membershipSplit !== null && membershipSplit !== "with" && membershipSplit !== "without")
     return new Response("Bad membership split", { status: 400 });
   if (separator !== null && !isAccountFormat(separator))
     return new Response("Bad separator", { status: 400 });
   // Refused rather than ignored, like a membership split on a retailer without one: the
-  // AYCD file is JSON and the IMAP one a CSV, so a separator asked for there would be
-  // quietly not applied, and the file loaded as if it had been.
+  // AYCD file is JSON and the Hidden and IMAP ones CSVs, so a separator asked for there would
+  // be quietly not applied, and the file loaded as if it had been.
   if (separator !== null && format !== "accounts") {
     return new Response("A separator applies only to the accounts list (format=accounts).", {
       status: 400,
@@ -172,6 +187,15 @@ export async function GET(request: Request) {
   // Every format but `imap` is a list OF PROFILES on one retailer, so it cannot mean
   // anything without a site. App passwords can, and that is the form the UI uses.
   if (!siteKey && format !== "imap") return new Response("Missing site", { status: 400 });
+  // A profile file in a shape this retailer's bot doesn't load: Hidden's CSV anywhere but
+  // Costco. Refused rather than swapped for AYCD's file, which would fail at import, mid-setup,
+  // under a name saying it was the other one.
+  if (profileFormat && !siteProfileFormats(siteKey).includes(profileFormat)) {
+    return new Response(
+      `${siteStyle(siteKey).label} profiles don't export as ${profileFormatLabel(profileFormat)}.`,
+      { status: 400 },
+    );
+  }
 
   // Site-less app passwords: the credentials are the subject, so this path never touches
   // the profile table or the per-retailer bot cap at all.
@@ -212,7 +236,7 @@ export async function GET(request: Request) {
   // stores no cards". `accounts` and `imap` both still work here: on such a retailer the
   // login IS the record, and the order is placed by hand from the member's own account.
   const loginOnly = Boolean(siteKey) && !siteUsesProfiles(siteKey);
-  if (loginOnly && format === "aycd") {
+  if (loginOnly && profileFormat) {
     return new Response(
       `${siteStyle(siteKey).label} stores a login only — there are no checkout profiles to export.`,
       { status: 400 },
@@ -362,8 +386,8 @@ export async function GET(request: Request) {
   // two disagree: there are no profiles, and counting the file's credentials as 0 would
   // leave `vault_exports` claiming an empty export of the one thing that did leave.
   const countsFor = (profiles: typeof selected, accounts: number, boxes: number) => ({
-    profileCount: format === "aycd" ? profiles.length : 0,
-    accountCount: format === "aycd" ? 0 : format === "imap" ? boxes : accounts,
+    profileCount: profileFormat ? profiles.length : 0,
+    accountCount: profileFormat ? 0 : format === "imap" ? boxes : accounts,
   });
 
   // Audited BEFORE the secrets are decrypted, so a crash mid-export still leaves the
@@ -520,6 +544,18 @@ export async function GET(request: Request) {
     // always had.
     const shape = accountFormat === DEFAULT_ACCOUNT_FORMAT ? "" : `-${accountFormat}`;
     return fileResponse(body, `okie-accounts${shape}-${suffix}.txt`, "text/plain; charset=utf-8");
+  }
+
+  if (profileFormat === "hidden") {
+    // Unreachable without one -- the format was refused above -- but a file whose rows name no
+    // group would land somewhere in Hidden nobody looks, so it is checked rather than asserted.
+    const group = siteHiddenGroup(siteKey);
+    if (!group) throw new Error(`No Hidden profile group for ${siteKey}`);
+    return fileResponse(
+      hiddenFile(selected, group),
+      `okie-profiles-hidden-${suffix}.csv`,
+      "text/csv; charset=utf-8",
+    );
   }
 
   return fileResponse(aycdFile(selected), `okie-profiles-${suffix}.json`, "application/json");
