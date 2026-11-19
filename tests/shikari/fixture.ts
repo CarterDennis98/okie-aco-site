@@ -51,8 +51,8 @@ const SCHEMA = readFileSync(fileURLToPath(new URL("./schema.sql", import.meta.ur
 export const SKU_A = "90000001";
 export const SKU_B = "90000002";
 /**
- * In the Miscellaneous line, which runs on Valor: the payload never sends it to Shikari. Only
- * an earlier export's "Target - Miscellaneous" group holds it -- see withMiscGroup.
+ * In the Miscellaneous line: sent only to an instance that runs the line, and run there from
+ * "Target - Miscellaneous". Nobody picks it by default; withMiscGroup's tasks hold it.
  */
 export const SKU_M = "90000003";
 /** Raffled: entered by Draw tasks, never watched or checked out. See withRaffleGroup. */
@@ -140,10 +140,14 @@ export function vaultProfiles(): DesiredProfile[] {
  * `known` -- the three vault profiles and the house profile "Target 11" -- and one that isn't
  * among `profiles` is said to be switched off, unless `absent` gives another reason.
  * "stranger - 1" is the one the site has never heard of.
+ *
+ * With `runsLine`, the instance runs the Miscellaneous line, so Product M comes too, flagged,
+ * as the payload sends it (see runsMiscLine).
  */
 export function desiredInstance(
   profiles: DesiredProfile[] = vaultProfiles(),
   absent: Record<string, KnownProfile["why"]> = {},
+  runsLine = false,
 ): DesiredInstance {
   const here = new Set(profiles.map((p) => p.name));
   const known = [
@@ -160,10 +164,14 @@ export function desiredInstance(
     profiles,
     known,
     products: [
-      { sku: SKU_A, name: "Product A", setName: "Set One", maxQty: null },
-      { sku: SKU_B, name: "Product B", setName: "Set One", maxQty: null },
+      { sku: SKU_A, name: "Product A", setName: "Set One", misc: false, maxQty: null },
+      { sku: SKU_B, name: "Product B", setName: "Set One", misc: false, maxQty: null },
+      ...(runsLine
+        ? [{ sku: SKU_M, name: "Product M", setName: "Odds and Ends", misc: true, maxQty: null }]
+        : []),
     ],
     raffles: [],
+    misc: { runs: runsLine, picked: profiles.filter((p) => p.skus.includes(SKU_M)).length },
   };
 }
 
@@ -620,12 +628,17 @@ export const TASKS: TaskSettings = {
   remoteWatchdogs: 1,
 };
 
+/**
+ * Every section, as a fresh instance has them: all but the Miscellaneous line, which an
+ * instance runs only once the operator says so.
+ */
 export const ALL_SECTIONS: Sections = {
   profiles: true,
   accounts: true,
   imap: true,
   proxies: true,
   tasks: true,
+  misc: false,
   wipes: true,
   raffles: true,
 };
@@ -666,9 +679,10 @@ export function legacy(
 
 /**
  * A fixture with the "Target - Miscellaneous" group an earlier export built for the
- * Miscellaneous line, before the line moved to Valor -- laid out as that export left it: a
- * remote watchdog, a watchdog on Product M at each interval, and checkout tasks for alice - 1
- * (reading her mailbox) and bob - 1 on Product M, their browsers pinned to "ISP - All".
+ * Miscellaneous line, back when its checkout tasks ran on a proxy group of their own -- laid out
+ * as that export left it: a remote watchdog, a watchdog on Product M at each interval, and
+ * checkout tasks for alice - 1 (reading her mailbox) and bob - 1 on Product M, their browsers
+ * pinned to "ISP - All".
  */
 export function withMiscGroup(
   fixture: () => Promise<{ db: ShikariDb }>,

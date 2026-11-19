@@ -22,6 +22,7 @@ const sectionFields = {
   imap: z.boolean(),
   proxies: z.boolean(),
   tasks: z.boolean(),
+  misc: z.boolean(),
   wipes: z.boolean(),
   raffles: z.boolean(),
 };
@@ -29,11 +30,16 @@ const sectionFields = {
 const sections = z.object(sectionFields).strict();
 
 /**
- * Sections as stored. "raffles" came on 2026-11-19, so a setup saved before then has none:
- * it gets raffles ON, like a fresh one, rather than losing every other section's choice to
- * the defaults.
+ * Sections as stored. "raffles" and "misc" came on 2026-11-19, so a setup saved before then has
+ * neither: it gets them as a fresh one does -- raffles ON, and misc OFF, since the Miscellaneous
+ * line runs on Valor unless the operator says otherwise -- rather than losing every other
+ * section's choice to the defaults.
  */
-const storedSections = z.object({ ...sectionFields, raffles: z.boolean().default(true) });
+const storedSections = z.object({
+  ...sectionFields,
+  misc: z.boolean().default(false),
+  raffles: z.boolean().default(true),
+});
 
 /**
  * Keep or clear, for another Target profile group -- keyed by its name as `groupKey` has it
@@ -57,7 +63,10 @@ export const shikariInstanceConfig = z
 export type ShikariInstanceConfig = z.infer<typeof shikariInstanceConfig>;
 export type GroupChoice = "keep" | "remove";
 
-/** A fresh instance: everyone's main-bot profiles, every section, every group by its default. */
+/**
+ * A fresh instance: everyone's main-bot profiles, every section but the Miscellaneous line
+ * (which runs on Valor until the operator says otherwise), every group by its default.
+ */
 export function defaultInstanceConfig(memberIds: string[] = []): ShikariInstanceConfig {
   return {
     memberIds,
@@ -68,6 +77,7 @@ export function defaultInstanceConfig(memberIds: string[] = []): ShikariInstance
       imap: true,
       proxies: true,
       tasks: true,
+      misc: false,
       wipes: true,
       raffles: true,
     },
@@ -89,6 +99,14 @@ const storedConfig = z.object({
 export function readInstanceConfig(raw: unknown): ShikariInstanceConfig {
   const parsed = storedConfig.safeParse(raw);
   return parsed.success ? parsed.data : defaultInstanceConfig();
+}
+
+/**
+ * Whether an instance runs the Miscellaneous line: its misc box, which is part of the tasks
+ * section and means nothing with that off.
+ */
+export function runsMiscLine(config: Pick<ShikariInstanceConfig, "sections">): boolean {
+  return config.sections.tasks && config.sections.misc;
 }
 
 /** Whether two bot scopes can hand the same profile to two instances. */

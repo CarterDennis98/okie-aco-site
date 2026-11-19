@@ -25,7 +25,7 @@ import { siteStyle } from "@/lib/sites";
  *
  * Valor is the second, the same way: its two instances' backups take the Pokémon Center
  * profiles, split between them, and the second takes the Target Miscellaneous line's picks,
- * which Shikari no longer runs -- see lib/valor/build.ts.
+ * which Shikari runs too only on an instance set to -- see lib/products/misc-line.ts.
  */
 export const dynamic = "force-dynamic";
 
@@ -119,7 +119,8 @@ export default async function ExportPage() {
             >
               {siteStyle(SHIKARI_SITE).label} Products
             </Link>
-            , which Shikari leaves out.
+            . Shikari runs that line too only on an instance with &ldquo;{MISC_LINE} tasks&rdquo;
+            ticked.
           </p>
           <ValorExport overview={valor} />
         </section>

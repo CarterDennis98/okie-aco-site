@@ -113,11 +113,16 @@ export type KnownProfile = {
   instance?: number;
 };
 
-/** A product Shikari runs. Never one in the Miscellaneous line, which runs on Valor (MISC_LINE). */
+/**
+ * A product Shikari runs. One in the Miscellaneous line (MISC_LINE) is sent only to an instance
+ * set to run the line (Sections.misc), and runs there from a task group of its own, MISC_GROUP.
+ */
 export type CatalogProduct = {
   sku: string;
   name: string;
   setName: string;
+  /** In the Miscellaneous line: run from MISC_GROUP, apart from everything else in "Target". */
+  misc: boolean;
   /**
    * Target's limit per checkout, where an admin posted one (DropProduct.maxQty); null when
    * none is. Lowers the qty a profile whose member picked none runs at -- never a pick.
@@ -144,6 +149,12 @@ export type DesiredInstance = {
   products: CatalogProduct[];
   /** Every raffle on the site, oldest first. */
   raffles: DesiredRaffle[];
+  /**
+   * The Miscellaneous line here: whether this instance runs it -- its products then come in
+   * `products`, flagged, and its picks in each profile's `skus` -- and how many of the
+   * instance's profiles picked from it, run here or not. The review warns with the second.
+   */
+  misc: { runs: boolean; picked: number };
 };
 
 export type Sections = {
@@ -153,6 +164,12 @@ export type Sections = {
   proxies: boolean;
   /** The "Target" task group: watchdogs and checkout tasks. */
   tasks: boolean;
+  /**
+   * Part of the tasks section, and nothing without it: the Miscellaneous line's picks run from
+   * "Target - Miscellaneous", built like "Target" (true), or that group is emptied and the
+   * line left to Valor (false).
+   */
+  misc: boolean;
   /** The "Target - Profile Updates" task group: a Wipe Account task per pending change. */
   wipes: boolean;
   /** A "Target Raffle <SKU>" task group per raffle: a Draw task per profile entered. */
@@ -319,7 +336,7 @@ export type BuildReport = {
     /** Browsers that were pinned to a removed row, re-pinned to one that's left. */
     browsersMoved: number;
   }[];
-  /** The "Target" group's checkout tasks, and who got none. */
+  /** The "Target" group's checkout tasks, and who got none in either group. */
   checkout: CheckoutReport & {
     /** Selected profiles that picked no products, so got no task. */
     noProducts: string[];
@@ -328,16 +345,17 @@ export type BuildReport = {
   };
   watchdogs: WatchdogReport;
   /**
-   * "Target - Miscellaneous", where earlier exports ran the Miscellaneous line before it moved
-   * to Valor: left as it is, for the operator to clear by hand (see MISC_GROUP). Null when the
-   * backup has no such group.
+   * "Target - Miscellaneous" (MISC_GROUP): the Miscellaneous line's picks, built by the rules
+   * "Target" is when this instance runs the line, emptied when it doesn't. Null when the tasks
+   * section was off, or when the backup has no such group and nothing called for one.
    */
   misc: {
     name: string;
-    /** Its tasks, after the export. */
-    tasks: number;
-    /** Its tasks that went with a profile the export took out: a task can't outlive its profile. */
-    removed: number;
+    /** Whether this instance runs the line: the group built, or emptied. */
+    runs: boolean;
+    created: boolean;
+    checkout: CheckoutReport;
+    watchdogs: WatchdogReport;
   } | null;
   wipes: {
     added: ProfileLine[];

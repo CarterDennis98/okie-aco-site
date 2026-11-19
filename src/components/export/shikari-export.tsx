@@ -175,6 +175,7 @@ export function ShikariExport({
         fileName: `okie-shikari-instance-${position}-${new Date().toISOString().slice(0, 10)}.bak`,
         profiles: desired.profiles.length,
         productNames: Object.fromEntries(desired.products.map((p) => [p.sku, p.name])),
+        misc: desired.misc,
       };
       const open = openBackup(SQL, d.backup!.bytes);
       try {

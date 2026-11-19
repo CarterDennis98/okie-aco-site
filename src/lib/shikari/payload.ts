@@ -8,9 +8,10 @@ import { SHIKARI_SITE } from "@/db/queries/shikari";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { MISC_LINE } from "@/lib/products/misc-line";
 import { rafflesByProfile } from "@/lib/raffles/entries";
-import type { ExportRequest } from "@/lib/shikari/config";
+import { runsMiscLine, type ExportRequest } from "@/lib/shikari/config";
 import type {
   AbsentReason,
+  CatalogProduct,
   DesiredInstance,
   DesiredProfile,
   KnownProfile,
@@ -40,9 +41,12 @@ import { normalizePhone } from "@/lib/vault/profile-input";
  * instances: that is a member checked out twice, the failure every export split exists to
  * prevent.
  *
- * The Miscellaneous line's products are never sent: they run on Valor (see MISC_LINE), and a
- * product on both bots is the same double checkout. A profile that picked only from the line
- * goes out picking nothing.
+ * The Miscellaneous line's products go only to an instance set to run the line (runsMiscLine),
+ * flagged, for the builder's task group of their own. Any other instance gets none of them --
+ * the line is Valor's there -- and a profile on it that picked only from the line goes out
+ * picking nothing; how many did is sent along for the review. Valor's export builds the line
+ * either way: which bot runs a drop of it is the operator's call, made when starting tasks,
+ * since a product started on both is a member checked out twice.
  *
  * Every raffle on the site goes out, with the raffles each profile is entered in, for the
  * builder's raffle groups. And since a raffle has a deadline, the entries of the operator's
@@ -174,15 +178,18 @@ export async function buildShikariPayload(
           account: { select: { email: true, assigneeId: true } },
         },
       }),
-      // The Miscellaneous line's sets: their products run on Valor, so none of them go here.
+      // The Miscellaneous line's sets: their products go only where the line runs.
       getSetsInLine(SHIKARI_SITE, MISC_LINE),
       // Every raffle, open or closed: a raffle's group stays in the backups until it's deleted.
       getRaffles(SHIKARI_SITE, { includeClosed: true }),
       // Every member's entries, not only the picked members': what the gaps are found from.
       getRaffleEntries(SHIKARI_SITE),
     ]);
-  const shikariCatalog = catalog.filter((p) => !miscSets.has(p.setName));
-  const runsHere = new Set(shikariCatalog.map((p) => p.sku));
+  const listed = new Set(catalog.map((p) => p.sku));
+  const inLine = new Set(catalog.filter((p) => miscSets.has(p.setName)).map((p) => p.sku));
+  /** Whether an instance runs a pick: anything listed, but the line only where it runs. */
+  const runs = (runsLine: boolean) => (sku: string) =>
+    listed.has(sku) && (runsLine || !inLine.has(sku));
 
   // Raffles oldest first, so a backup's groups come in the order the raffles were listed.
   const raffleOrder = [...raffles].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
@@ -255,7 +262,8 @@ export async function buildShikariPayload(
     });
   }
 
-  const toDesired = (row: Row): DesiredProfile => {
+  const toDesired = (row: Row, runsLine: boolean): DesiredProfile => {
+    const runsHere = runs(runsLine);
     const phone = digits(
       exportPhone({ id: row.id, siteKey: row.siteKey, phone: row.phone, shipState: row.shipState }),
     );
@@ -307,22 +315,26 @@ export async function buildShikariPayload(
         ? decrypt(row.account.passwordEnc, { entity: "vault_account", field: "password" })
         : null,
       mailbox: box ? (mailboxByEmail.get(box.toLowerCase()) ?? null) : null,
-      skus: (skus.get(row.id) ?? []).filter((sku) => runsHere.has(sku)),
+      skus: (skus.get(row.id) ?? []).filter(runsHere),
       qty: Object.fromEntries(
-        Object.entries(qty.get(row.id) ?? {}).filter(([sku]) => runsHere.has(sku)),
+        Object.entries(qty.get(row.id) ?? {}).filter(([sku]) => runsHere(sku)),
       ),
       raffles: entered.get(row.id) ?? [],
       pending: fields ? { fields: [...fields] } : null,
     };
   };
 
-  const products = shikariCatalog.map((p) => ({
-    sku: p.sku,
-    name: p.name,
-    setName: p.setName,
-    // The builder's to apply, against the standard qty the operator types in the browser.
-    maxQty: p.maxQty,
-  }));
+  const productsFor = (runsLine: boolean): CatalogProduct[] =>
+    catalog
+      .filter((p) => runsLine || !inLine.has(p.sku))
+      .map((p) => ({
+        sku: p.sku,
+        name: p.name,
+        setName: p.setName,
+        misc: inLine.has(p.sku),
+        // The builder's to apply, against the standard qty the operator types in the browser.
+        maxQty: p.maxQty,
+      }));
 
   // Why each profile the site holds is or isn't on an instance, in the order the reasons are
   // checked: switched off, another runner's, its member not picked, or -- its member picked,
@@ -349,13 +361,22 @@ export async function buildShikariPayload(
 
   return {
     ok: true,
-    instances: chosen.map((instance) => ({
-      position: instance.position,
-      profiles: instance.rows.map(toDesired),
-      known: knownFor(instance),
-      products,
-      raffles: raffleOrder.map((r) => ({ sku: r.sku, name: r.name })),
-    })),
+    instances: chosen.map((instance) => {
+      const runsLine = runsMiscLine(instance.config);
+      return {
+        position: instance.position,
+        profiles: instance.rows.map((row) => toDesired(row, runsLine)),
+        known: knownFor(instance),
+        products: productsFor(runsLine),
+        raffles: raffleOrder.map((r) => ({ sku: r.sku, name: r.name })),
+        misc: {
+          runs: runsLine,
+          picked: instance.rows.filter((row) =>
+            (skus.get(row.id) ?? []).some((sku) => inLine.has(sku)),
+          ).length,
+        },
+      };
+    }),
     raffleGaps,
   };
 }

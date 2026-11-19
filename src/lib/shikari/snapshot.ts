@@ -173,12 +173,10 @@ export const UPDATES_GROUP = "Target - Profile Updates";
 export const PAUSED_PROFILE_GROUP = "Target - Paused";
 
 /**
- * The task group earlier exports ran the Miscellaneous line from, before the line moved to
- * Valor (see MISC_LINE). Never built, changed, emptied or taken out now: it is the
- * operator's to clear by hand, and until then nothing in it is the export's -- not its
- * watchdogs, and not its checkout tasks, which don't count as a profile's Target task. The
- * one exception is a task whose profile the export deletes: a task can't outlive its
- * profile, so it goes with it, and the review says how many did.
+ * The task group the Miscellaneous line's picks run from (see MISC_LINE), apart from everything
+ * else in "Target": its drops come at their own times, so its tasks are started and stopped on
+ * their own. Built like "Target" on an instance set to run the line (Sections.misc), emptied
+ * on one that leaves it to Valor; taken out never, so it's there for the next drop.
  */
 export const MISC_GROUP = "Target - Miscellaneous";
 
@@ -236,7 +234,7 @@ export type TargetGroups = {
   /**
    * The task group the export rebuilds as "Target": the one already called that, or failing
    * that the one holding most of the Target profiles' checkout tasks -- "Target - All
-   * Products" on the main instance -- never MISC_GROUP, which the export leaves alone. Null
+   * Products" on the main instance -- never MISC_GROUP, which is a group of its own. Null
    * when there are no such tasks to go by.
    */
   tasks: STaskGroup | null;

@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { enteredWith, rafflePhase, rafflesByProfile, toRaffleView } from "@/lib/raffles/entries";
 import { parseRaffleInput, type RaffleFields } from "@/lib/raffles/raffle-input";
 import { fromZonedInput, raffleTimeLabel, toZonedInput } from "@/lib/raffles/time";
-import { readInstanceConfig } from "@/lib/shikari/config";
+import { readInstanceConfig, runsMiscLine } from "@/lib/shikari/config";
 
 describe("raffle times", () => {
   it("reads a typed time as Central, in standard time and daylight time", () => {
@@ -203,7 +203,7 @@ describe("raffle entries", () => {
 });
 
 describe("a Shikari instance's saved setup", () => {
-  it("runs raffles on a setup saved before there were any, keeping its other choices", () => {
+  it("runs raffles but not the Miscellaneous line on a setup saved before either, keeping its other choices", () => {
     const config = readInstanceConfig({
       memberIds: ["999900000000000501"],
       bot: "backup",
@@ -224,9 +224,32 @@ describe("a Shikari instance's saved setup", () => {
       imap: true,
       proxies: false,
       tasks: true,
+      // The line stays Valor's until the operator ticks it for an instance.
+      misc: false,
       wipes: false,
       raffles: true,
     });
+  });
+
+  it("keeps the Miscellaneous line on where the operator ticked it", () => {
+    const config = readInstanceConfig({
+      memberIds: [],
+      bot: "backup",
+      sections: {
+        profiles: true,
+        accounts: true,
+        imap: true,
+        proxies: true,
+        tasks: true,
+        misc: true,
+        wipes: true,
+        raffles: true,
+      },
+      groups: {},
+    });
+    expect(config.sections.misc).toBe(true);
+    expect(runsMiscLine(config)).toBe(true);
+    expect(runsMiscLine({ sections: { ...config.sections, tasks: false } })).toBe(false);
   });
 
   it("keeps raffles off where the operator switched them off", () => {

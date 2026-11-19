@@ -37,6 +37,8 @@ export type BuiltInstance = {
   /** Profiles the vault says this instance runs. */
   profiles: number;
   productNames: Record<string, string>;
+  /** Whether it runs the Miscellaneous line, and how many of its profiles picked from it. */
+  misc: { runs: boolean; picked: number };
   report: BuildReport | null;
   diff: TableDiff[];
   forbidden: string[];
@@ -323,6 +325,89 @@ function RaffleBlock({ raffles }: { raffles: RaffleReport }) {
   );
 }
 
+/** Checkout tasks a group holds after the export: kept, changed or new. */
+const miscTasks = (r: BuildReport | null) =>
+  r?.misc
+    ? r.misc.checkout.added.length + r.misc.checkout.changed.length + r.misc.checkout.unchanged
+    : 0;
+
+/** What became of "Target - Miscellaneous", said under the instance's name when it's news. */
+function MiscNote({ built, report: r }: { built: BuiltInstance; report: BuildReport }) {
+  const misc = r.misc;
+  if (built.misc.runs) {
+    if (miscTasks(r) === 0) {
+      return (
+        <p className="mt-0.5 text-xs text-[var(--color-muted)]">
+          Runs the {MISC_LINE} line, but none of this instance&rsquo;s profiles picked from it.
+        </p>
+      );
+    }
+    if (!misc?.created) return null;
+    return (
+      <p className="mt-0.5 text-xs text-[var(--color-fg)]">
+        Task group &ldquo;{misc.name}&rdquo; is new in this backup, for the {MISC_LINE} line&rsquo;s
+        picks.
+      </p>
+    );
+  }
+  // Emptied: said only when there was something in it to take out.
+  const out = misc
+    ? misc.checkout.removed.length + misc.watchdogs.before.length + misc.watchdogs.remote.before
+    : 0;
+  if (!misc || out === 0) return null;
+  return (
+    <p className="mt-0.5 text-xs text-[var(--color-fg)]">
+      Task group &ldquo;{misc.name}&rdquo; is emptied ({n(out, "task")} out): this instance
+      doesn&rsquo;t run the {MISC_LINE} line, so only Valor has its tasks.
+    </p>
+  );
+}
+
+/**
+ * The Miscellaneous line across the whole export, once any instance runs it: it's on Valor
+ * too, so only one bot's tasks should be started; and profiles on an instance that doesn't run
+ * it have only Valor's.
+ */
+function MiscWarnings({ built }: { built: BuiltInstance[] }) {
+  if (!built.some((b) => b.misc.runs)) return null;
+  const tasks = built.reduce((sum, b) => sum + (b.misc.runs ? miscTasks(b.report) : 0), 0);
+  const missed = built.filter((b) => !b.misc.runs && b.misc.picked > 0);
+  if (tasks === 0 && missed.length === 0) return null;
+  const where = missed
+    .map(
+      (b, i) =>
+        `${i === 0 ? n(b.misc.picked, "profile") : b.misc.picked} on Instance ${b.position}`,
+    )
+    .join(" and ");
+  const one = missed.length === 1;
+  return (
+    <div
+      role="alert"
+      className="rounded-xl border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/5 px-4 py-3 text-sm"
+    >
+      {tasks > 0 && (
+        <>
+          <p className="font-semibold text-white">
+            The {MISC_LINE} line is on Shikari and on Valor.
+          </p>
+          <p className="mt-1 text-[var(--color-muted)]">
+            Valor&rsquo;s export builds the line&rsquo;s tasks too, on its second instance. Start
+            them on one bot only for each drop, or members get checked out twice.
+          </p>
+        </>
+      )}
+      {missed.length > 0 && (
+        <p className={tasks > 0 ? "mt-2 text-[var(--color-fg)]" : "font-semibold text-white"}>
+          {where} picked from the {MISC_LINE} line, which{" "}
+          {one ? "that instance doesn't" : "those instances don't"} run: their picks are on Valor
+          only. Tick &ldquo;{MISC_LINE} tasks&rdquo; on {one ? "it" : "them"} to run them on Shikari
+          too.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function InstanceReview({
   built,
   done,
@@ -354,14 +439,7 @@ function InstanceReview({
               Task group &ldquo;{r.taskGroup.name}&rdquo; is new in this backup.
             </p>
           )}
-          {r?.misc && (
-            <p className="mt-0.5 text-xs text-[var(--color-fg)]">
-              Task group &ldquo;{r.misc.name}&rdquo; is left as it is ({n(r.misc.tasks, "task")}
-              ): the {MISC_LINE} line runs on Valor now, so clear it out in Shikari by hand.
-              {r.misc.removed > 0 &&
-                ` ${n(r.misc.removed, "task")} in it went with profiles that came out.`}
-            </p>
-          )}
+          {r && <MiscNote built={built} report={r} />}
         </div>
         {done && built.bytes && (
           <button type="button" onClick={onDownload} className={secondary}>
@@ -512,6 +590,21 @@ function ReviewDetails({ built, report: r }: { built: BuiltInstance; report: Bui
       </CheckoutBlock>
       <WatchdogBlock title="Watchdogs" watchdogs={r.watchdogs} names={built.productNames} />
 
+      {r.misc && (
+        <>
+          <CheckoutBlock
+            title={`${MISC_LINE} checkout tasks`}
+            checkout={r.misc.checkout}
+            name={name}
+          />
+          <WatchdogBlock
+            title={`${MISC_LINE} watchdogs`}
+            watchdogs={r.misc.watchdogs}
+            names={built.productNames}
+          />
+        </>
+      )}
+
       <Block
         title="Profile updates"
         changed={r.wipes.added.length + r.wipes.removed > 0}
@@ -623,6 +716,7 @@ export function ShikariReview({
           </ul>
         </div>
       )}
+      <MiscWarnings built={built} />
       {done ? (
         <div
           role="status"

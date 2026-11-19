@@ -47,7 +47,8 @@ export type InstanceDraft = {
   error: string | null;
 };
 
-const SECTIONS: { key: keyof Sections; label: string; hint: string }[] = [
+/** `within`: a section that does nothing without that one, and is greyed out while it's off. */
+const SECTIONS: { key: keyof Sections; label: string; hint: string; within?: keyof Sections }[] = [
   {
     key: "profiles",
     label: "Profiles",
@@ -67,7 +68,13 @@ const SECTIONS: { key: keyof Sections; label: string; hint: string }[] = [
   {
     key: "tasks",
     label: "Target tasks",
-    hint: `Watchdogs and checkout tasks, from Target Products. ${MISC_LINE} picks run on Valor, so they're left out, and “${MISC_GROUP}” is left as it is.`,
+    hint: `Watchdogs and checkout tasks, from Target Products: all but the ${MISC_LINE} line, which has its own box.`,
+  },
+  {
+    key: "misc",
+    label: `${MISC_LINE} tasks`,
+    hint: `The ${MISC_LINE} line's picks, in a “${MISC_GROUP}” task group built like Target, on the same proxies. Valor builds the line too, so start it on one bot. Off, that group is emptied.`,
+    within: "tasks",
   },
   {
     key: "wipes",
@@ -225,26 +232,42 @@ export function InstanceCard({
       <div className="mt-6">
         <h4 className="text-sm font-bold text-white">Update in this backup</h4>
         <ul className="mt-2 grid gap-2 sm:grid-cols-2">
-          {SECTIONS.map((section) => (
-            <li key={section.key}>
-              <label className="flex cursor-pointer items-start gap-2.5 text-sm">
-                <input
-                  type="checkbox"
-                  checked={config.sections[section.key]}
-                  onChange={(event) =>
-                    setConfig({
-                      sections: { ...config.sections, [section.key]: event.currentTarget.checked },
-                    })
+          {SECTIONS.map((section) => {
+            const needs = section.within && !config.sections[section.within];
+            return (
+              <li key={section.key}>
+                <label
+                  className={
+                    "flex items-start gap-2.5 text-sm " +
+                    (needs ? "cursor-not-allowed opacity-60" : "cursor-pointer")
                   }
-                  className="mt-0.5 size-4 accent-[var(--color-brand)]"
-                />
-                <span>
-                  <span className="font-medium text-white">{section.label}</span>
-                  <span className="block text-xs text-[var(--color-muted)]">{section.hint}</span>
-                </span>
-              </label>
-            </li>
-          ))}
+                >
+                  <input
+                    type="checkbox"
+                    checked={config.sections[section.key]}
+                    disabled={Boolean(needs)}
+                    onChange={(event) =>
+                      setConfig({
+                        sections: {
+                          ...config.sections,
+                          [section.key]: event.currentTarget.checked,
+                        },
+                      })
+                    }
+                    className="mt-0.5 size-4 accent-[var(--color-brand)]"
+                  />
+                  <span>
+                    <span className="font-medium text-white">{section.label}</span>
+                    <span className="block text-xs text-[var(--color-muted)]">
+                      {section.hint}
+                      {needs &&
+                        ` Needs ${SECTIONS.find((s) => s.key === section.within)?.label} on.`}
+                    </span>
+                  </span>
+                </label>
+              </li>
+            );
+          })}
         </ul>
 
         {backup && config.sections.profiles && (
@@ -332,6 +355,7 @@ export function InstanceCard({
         <TaskSettingsForm
           settings={settings}
           groups={backup.summary.proxyGroups}
+          misc={config.sections.misc}
           onChange={(next) => onChange({ settings: next })}
         />
       )}
@@ -711,10 +735,13 @@ function IntervalsInput({
 function TaskSettingsForm({
   settings,
   groups,
+  misc,
   onChange,
 }: {
   settings: TaskSettings;
   groups: { id: number; name: string }[];
+  /** Whether the Miscellaneous line's group is built too -- with these same settings. */
+  misc: boolean;
   onChange: (settings: TaskSettings) => void;
 }) {
   const number = (value: string, fallback: number) => {
@@ -827,6 +854,12 @@ function TaskSettingsForm({
           />
         </label>
       </div>
+      {misc && (
+        <p className="mt-3 text-xs text-[var(--color-muted)]">
+          &ldquo;{MISC_GROUP}&rdquo; is built with these too: the same qty, proxy groups and
+          watchdogs.
+        </p>
+      )}
     </details>
   );
 }
