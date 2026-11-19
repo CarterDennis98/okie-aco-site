@@ -55,6 +55,9 @@ export const SKU_B = "90000002";
  * an earlier export's "Target - Miscellaneous" group holds it -- see withMiscGroup.
  */
 export const SKU_M = "90000003";
+/** Raffled: entered by Draw tasks, never watched or checked out. See withRaffleGroup. */
+export const SKU_R = "90000004";
+export const SKU_S = "90000005";
 export const T0 = "2026-09-25 03:03:10.934300";
 
 /** The fixture's profiles as the vault has them: identical to the backup, to the digit. */
@@ -89,6 +92,7 @@ export function vaultProfiles(): DesiredProfile[] {
       },
       skus: [SKU_A, SKU_B],
       qty: {},
+      raffles: [],
       pending: null,
     },
     {
@@ -109,6 +113,7 @@ export function vaultProfiles(): DesiredProfile[] {
       },
       skus: [SKU_A],
       qty: {},
+      raffles: [],
       pending: null,
     },
     {
@@ -124,6 +129,7 @@ export function vaultProfiles(): DesiredProfile[] {
       mailbox: null,
       skus: [SKU_B],
       qty: {},
+      raffles: [],
       pending: null,
     },
   ];
@@ -157,6 +163,7 @@ export function desiredInstance(
       { sku: SKU_A, name: "Product A", setName: "Set One", maxQty: null },
       { sku: SKU_B, name: "Product B", setName: "Set One", maxQty: null },
     ],
+    raffles: [],
   };
 }
 
@@ -620,6 +627,7 @@ export const ALL_SECTIONS: Sections = {
   proxies: true,
   tasks: true,
   wipes: true,
+  raffles: true,
 };
 
 /**
@@ -751,6 +759,56 @@ export function withMiscGroup(
         options: CHECKOUT_OPTIONS,
       });
       watch(id, 2);
+    }
+    return { db, bytes: db.bytes() };
+  };
+}
+
+/**
+ * A fixture with a raffle group made by hand in Shikari, as the operator made the first one
+ * (2026-11-19 backup): "Target - Raffle", holding a Draw task for alice - 1 and one for bob - 1,
+ * each entering Product R -- type "Draw", flow "draw", target kind "drawing_entry", password
+ * login, the state Shikari keeps, no mailbox, a browser pinned to a Resi proxy -- and one for
+ * "crisp 81" when the fixture has another runner's member (mainInstanceBackup).
+ */
+export function withRaffleGroup(
+  fixture: () => Promise<{ db: ShikariDb }>,
+): () => Promise<{ db: ShikariDb; bytes: Uint8Array }> {
+  return async () => {
+    const { db } = await fixture();
+    const group = db.insert(
+      `INSERT INTO task_group (created_at, name, color, order_index)
+       VALUES (?, 'Target - Raffle', '#F09300', (SELECT MAX(order_index) + 1 FROM task_group))`,
+      [T0],
+    );
+    const crisp = db.get("SELECT 1 FROM profile WHERE id = 8");
+    let place = 0;
+    for (const profile of [1, 3, ...(crisp ? [8] : [])]) {
+      const jar = db.insert("INSERT INTO cookie_jar (created_at, cookies) VALUES (?, '[]')", [T0]);
+      const browser = db.insert(
+        "INSERT INTO browser (created_at, proxy_group_id, proxy_id, fingerprint_name, cookie_jar_id) VALUES (?, 1, ?, 'macOS-Chrome-d1.json', ?)",
+        [T0, 5 + place, jar],
+      );
+      const task = db.insert(
+        `INSERT INTO task (created_at, task_group_id, running, preloaded, type, website_id, profile_id,
+                           generic_data, browser_id, imap_account_id, flow_key, options, state,
+                           target_kind, order_index)
+         VALUES (?, ?, 0, 0, 'Draw', 5, ?, '{}', ?, NULL, 'draw', '{"login_method": "password"}',
+                 ?, 'drawing_entry', ?)`,
+        [
+          T0,
+          group,
+          profile,
+          browser,
+          `{"px": {"identity": "PX-${profile}"}, "ffid": "FF-${profile}"}`,
+          place,
+        ],
+      );
+      db.run(
+        "INSERT INTO target_product (created_at, task_id, target_method, target_data, qty, miscellaneous_data) VALUES (?, ?, 'drawing_entry', ?, NULL, '{}')",
+        [T0, task, SKU_R],
+      );
+      place += 1;
     }
     return { db, bytes: db.bytes() };
   };

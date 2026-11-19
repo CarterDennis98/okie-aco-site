@@ -8,6 +8,7 @@ import { scopesOverlap, type GroupChoice, type ShikariInstanceConfig } from "@/l
 import type { ParsedProxyList } from "@/lib/shikari/proxies";
 import {
   MISC_GROUP,
+  RAFFLE_GROUP,
   TARGET_GROUP,
   defaultGroupChoice,
   groupChoice,
@@ -72,6 +73,11 @@ const SECTIONS: { key: keyof Sections; label: string; hint: string }[] = [
     key: "wipes",
     label: "Profile updates",
     hint: "A Wipe Account task for each profile with a pending change; old ones are cleared.",
+  },
+  {
+    key: "raffles",
+    label: "Raffles",
+    hint: `A “${RAFFLE_GROUP} <SKU>” task group per raffle on Target Products, with an entry for each profile entered. A raffle's group comes out once it's deleted there.`,
   },
 ];
 

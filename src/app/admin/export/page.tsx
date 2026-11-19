@@ -4,6 +4,7 @@ import { ShikariExport } from "@/components/export/shikari-export";
 import { ValorExport } from "@/components/export/valor-export";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import { getCatalog } from "@/db/queries/products";
+import { getRaffles } from "@/db/queries/raffles";
 import { SHIKARI_SITE, getShikariInstances, getShikariMembers } from "@/db/queries/shikari";
 import { getValorOverview } from "@/db/queries/valor";
 import { operatorId } from "@/lib/auth/admin-scope";
@@ -34,10 +35,11 @@ export default async function ExportPage() {
   const viewer = await requireAdmin();
   if (viewer.discordUserId !== operatorId()) notFound();
 
-  const [members, saved, catalog, valor] = await Promise.all([
+  const [members, saved, catalog, raffles, valor] = await Promise.all([
     getShikariMembers(viewer.discordUserId),
     getShikariInstances(),
     getCatalog(SHIKARI_SITE),
+    getRaffles(SHIKARI_SITE, { includeClosed: true }),
     getValorOverview(viewer.discordUserId),
   ]);
 
@@ -88,7 +90,10 @@ export default async function ExportPage() {
             >
               {siteStyle(SHIKARI_SITE).label} Products
             </Link>{" "}
-            ({catalog.length} listed).
+            ({catalog.length} listed
+            {raffles.length > 0 &&
+              `, and ${raffles.length} raffle${raffles.length === 1 ? "" : "s"}, each its own task group`}
+            ).
           </p>
           <ShikariExport
             members={members}

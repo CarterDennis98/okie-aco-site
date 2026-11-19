@@ -155,6 +155,13 @@ export const isRemoteWatchdog = (task: STask) =>
  */
 export const isWipe = (task: STask) =>
   /wipe/.test(lower(task.type)) || /wipe/.test(lower(task.flowKey));
+/**
+ * A raffle entry: type "Draw", flow "draw", target_kind "drawing_entry" in the 2026-11-19
+ * backup, its one product row's method "drawing_entry". Matched exactly, not on the word:
+ * Walmart's raffle tasks are "Draw Joiner" / "draw_joiner", and never the export's.
+ */
+export const isDraw = (task: STask) =>
+  lower(task.type) === "draw" || lower(task.flowKey) === "draw";
 
 /**
  * The group names the export works with. Looked up by `groupKey`, so "Target - Paused" and
@@ -178,6 +185,28 @@ export const MISC_GROUP = "Target - Miscellaneous";
 /** A group name with case, spaces and punctuation ignored: "Target - Paused" -> "targetpaused". */
 export function groupKey(name: string | null | undefined): string {
   return lower(name).replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Raffle task groups: one per raffle, named for its product's TCIN -- "Target Raffle
+ * 1012850572". By SKU rather than product name because Shikari's task_group.name is a
+ * VARCHAR(25), and "Target - Raffle - " leaves no room for a name; a TCIN also never changes,
+ * so neither does the group.
+ *
+ * A group whose name starts that way, however it's spelled -- "Target - Raffle", set up by hand
+ * -- is a raffle group too: the export finds a raffle's group by its name, or failing that by
+ * the TCIN its entries are for, and takes a group out once no raffle on the site needs it.
+ */
+export const RAFFLE_GROUP = "Target Raffle";
+
+/** "Target Raffle 1012850572"; "Raffle 1012850572" for a TCIN too long to fit the 25. */
+export function raffleGroupName(sku: string): string {
+  const name = `${RAFFLE_GROUP} ${sku}`;
+  return name.length <= 25 ? name : `Raffle ${sku}`.slice(0, 25);
+}
+
+export function isRaffleGroupName(name: string | null | undefined): boolean {
+  return groupKey(name).startsWith(groupKey(RAFFLE_GROUP));
 }
 
 export function findGroup<T extends { name: string }>(groups: T[], name: string): T | undefined {

@@ -1134,6 +1134,7 @@ describe("buildInstance", () => {
           proxies: false,
           tasks: false,
           wipes: false,
+          raffles: false,
         },
       },
       fixtureBackup,

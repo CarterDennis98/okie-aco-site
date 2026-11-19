@@ -62,7 +62,11 @@ export function extras(report: BuildReport): string[] {
   if (report.wipes.removed) said.push(n(report.wipes.removed, "old wipe task"));
   if (report.strays)
     said.push(n(report.strays, "leftover address or card", "leftover addresses and cards"));
-  const groups = [...report.groupsRemoved.profile, ...report.groupsRemoved.task];
+  const groups = [
+    ...report.groupsRemoved.profile,
+    ...report.groupsRemoved.task,
+    ...report.raffles.removed.map((g) => g.name),
+  ];
   if (groups.length > 0)
     said.push(
       `${groups.length === 1 ? "group" : "groups"} ${groups.map((g) => `“${g}”`).join(", ")}`,

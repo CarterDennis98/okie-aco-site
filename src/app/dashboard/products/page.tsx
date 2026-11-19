@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { DropStatsPanel } from "@/components/products/drop-stats";
 import { ProductPicker } from "@/components/products/product-picker";
+import { LiveRaffles } from "@/components/raffles/live-raffles";
 import { SiteFooter, SiteHeader } from "@/components/site-shell";
 import {
   getCatalog,
@@ -12,8 +13,10 @@ import {
   getSetDetails,
   getSetOrder,
 } from "@/db/queries/products";
+import { getMemberRaffleEntries, getRaffleCounts, getRaffles } from "@/db/queries/raffles";
 import { requireMember } from "@/lib/auth/guard";
 import { MAX_QTY, STANDARD_QTY } from "@/lib/products/qty";
+import { toRaffleView } from "@/lib/raffles/entries";
 
 /**
  * Target Products ("SKUs" in the dashboard's links): which Target products a member wants to
@@ -27,6 +30,9 @@ import { MAX_QTY, STANDARD_QTY } from "@/lib/products/qty";
  * more on it: a summary (who is being run, on how many profiles, for what), the catalog
  * controls -- adding, arranging, editing and retiring products -- and how many members and
  * profiles each product would run on.
+ *
+ * Above the products, Live Raffles: Target's drawings, which members enter the same way they
+ * switch a product on, and which full admins list there (see LiveRaffles).
  */
 export const dynamic = "force-dynamic";
 
@@ -35,18 +41,35 @@ const SITE = "target";
 
 export default async function ProductsPage() {
   const viewer = await requireMember();
+  // One instant for the whole page, so a raffle is open or closed everywhere on it at once.
+  const now = new Date();
 
-  const [catalog, choices, profiles, setOrder, setDetails, lines, counts, stats] =
-    await Promise.all([
-      getCatalog(SITE, { includeRetired: viewer.isAdmin }),
-      getMemberChoices(viewer.discordUserId, SITE),
-      getPickableProfiles(viewer.discordUserId, SITE),
-      getSetOrder(SITE),
-      getSetDetails(SITE),
-      getProductLines(SITE),
-      viewer.isAdmin ? getSelectionCounts(SITE) : Promise.resolve(null),
-      viewer.isAdmin ? getDropStats(SITE) : Promise.resolve(null),
-    ]);
+  const [
+    catalog,
+    choices,
+    profiles,
+    setOrder,
+    setDetails,
+    lines,
+    counts,
+    stats,
+    raffles,
+    entries,
+    raffleCounts,
+  ] = await Promise.all([
+    getCatalog(SITE, { includeRetired: viewer.isAdmin }),
+    getMemberChoices(viewer.discordUserId, SITE),
+    getPickableProfiles(viewer.discordUserId, SITE),
+    getSetOrder(SITE),
+    getSetDetails(SITE),
+    getProductLines(SITE),
+    viewer.isAdmin ? getSelectionCounts(SITE) : Promise.resolve(null),
+    viewer.isAdmin ? getDropStats(SITE) : Promise.resolve(null),
+    // Closed ones too: everyone sees those under "Past raffles", read-only.
+    getRaffles(SITE, { includeClosed: true, now }),
+    getMemberRaffleEntries(viewer.discordUserId, SITE),
+    viewer.isAdmin ? getRaffleCounts(SITE) : Promise.resolve(null),
+  ]);
   const products = catalog.filter((p) => p.active);
   const retired = catalog.filter((p) => !p.active);
   const sets = [...new Set(catalog.map((p) => p.setName))].sort();
@@ -98,6 +121,15 @@ export default async function ProductsPage() {
             some&rdquo; under it. {qtyNote} &ldquo;By profile&rdquo; sets it for each profile.
           </p>
         )}
+
+        <LiveRaffles
+          raffles={raffles.map((raffle) => toRaffleView(raffle, now))}
+          profiles={profiles}
+          initialEntries={entries}
+          admin={viewer.isAdmin}
+          counts={raffleCounts}
+          products={products}
+        />
 
         {stats && <DropStatsPanel stats={stats} />}
 

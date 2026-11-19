@@ -120,6 +120,7 @@ model DiscordMember {
   emailAliases      EmailAlias[]
   acoCredits        AcoCredit[]
   productSelections ProductSelection[]
+  raffleEntries     RaffleEntry[]
   savedAddresses    SavedAddress[]
   savedCards        SavedCard[]
 
@@ -741,6 +742,8 @@ model VaultProfile {
   productSelections ProductSelectionProfile[]
   // Its own qty of a product, where its owner set one apart from the pick's.
   productQtys       ProductSelectionQty[]
+  // The raffles this profile was entered in by name, when its owner chose "only some".
+  raffleEntries     RaffleEntryProfile[]
 
   @@unique([siteKey, name])
   @@index([discordUserId, siteKey])
@@ -1185,6 +1188,93 @@ model ProductSelectionQty {
   @@id([selectionId, profileId])
   @@index([profileId])
   @@map("product_selection_qtys")
+}
+
+// ---------------------------------------------------------------------------
+// Raffles
+// ---------------------------------------------------------------------------
+// Target's drawings, which it added in November 2026: a product sold to whoever's entry is
+// drawn rather than to whoever checks out first. Shikari enters one with a "Draw" task per
+// profile, and the Shikari export builds those from these rows -- a "Target Raffle <SKU>"
+// task group per raffle, holding an entry for each profile entered (lib/shikari/build.ts).
+//
+// An admin lists each raffle under "Live Raffles" on Target Products: the product, when the
+// raffle starts on Target, and when entries are due. Members can enter from the moment it is
+// listed until entries are due -- before it starts included -- with every profile they hold
+// there or only the ones they pick, exactly like a product pick. OPT-IN, like a pick: no row,
+// no entry.
+//
+// A raffle stays in every export until an admin deletes it, due or not. What Shikari does
+// with an entry task once entries close isn't the site's to guess, so a raffle's group leaves
+// the backups only when the raffle leaves the site.
+
+model Raffle {
+  id      String @id @default(uuid())
+  // The retailer it runs on. Only Target has raffles today, as only Target has products.
+  siteKey String @map("site_key")
+
+  // The product, as the raffle shows it. Copied from Target Products when picked from there,
+  // typed in when it isn't listed -- a raffled product is often one nobody can simply buy. A
+  // copy, so a raffle stands on its own: editing or retiring the listed product changes none.
+  sku        String
+  name       String
+  url        String
+  imageUrl   String? @map("image_url")
+  // Retail price, shown to members deciding whether to enter. Never a fee.
+  priceCents Int?    @map("price_cents")
+
+  // When the raffle starts on Target, and when entries are due. Members can enter, change or
+  // withdraw an entry until `dueAt`; before `startsAt` too.
+  startsAt DateTime @map("starts_at") @db.Timestamptz(3)
+  dueAt    DateTime @map("due_at") @db.Timestamptz(3)
+
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  entries RaffleEntry[]
+
+  // One raffle per product at a time: its Shikari group is found by the SKU, and two raffles
+  // for one would enter every member twice. Delete the old one to raffle a product again.
+  @@unique([siteKey, sku])
+  @@index([siteKey, dueAt])
+  @@map("raffles")
+}
+
+// "Enter me." One row per member per raffle; its absence means no.
+model RaffleEntry {
+  id            String @id @default(uuid())
+  raffleId      String @map("raffle_id")
+  discordUserId String @map("discord_user_id")
+
+  // True: every profile the member holds on the retailer, INCLUDING ones added later -- the
+  // default. False: only the profiles listed beneath it.
+  allProfiles Boolean @default(true) @map("all_profiles")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  raffle   Raffle               @relation(fields: [raffleId], references: [id], onDelete: Cascade)
+  member   DiscordMember        @relation(fields: [discordUserId], references: [discordUserId])
+  profiles RaffleEntryProfile[]
+
+  @@unique([raffleId, discordUserId])
+  @@index([discordUserId])
+  @@map("raffle_entries")
+}
+
+// The profiles an entry is narrowed to, when it isn't all of them. Deleting a profile deletes
+// its entries with it, as it does its product picks.
+model RaffleEntryProfile {
+  entryId   String @map("entry_id")
+  profileId String @map("profile_id")
+
+  entry   RaffleEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  profile VaultProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([entryId, profileId])
+  @@index([profileId])
+  @@map("raffle_entry_profiles")
 }
 
 // ---------------------------------------------------------------------------

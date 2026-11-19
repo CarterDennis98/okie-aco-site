@@ -16,16 +16,24 @@ const snowflake = z.string().regex(/^\d{15,25}$/);
 
 export const BOT_SCOPES = ["main", "backup", "all"] as const satisfies readonly BotScope[];
 
-const sections = z
-  .object({
-    profiles: z.boolean(),
-    accounts: z.boolean(),
-    imap: z.boolean(),
-    proxies: z.boolean(),
-    tasks: z.boolean(),
-    wipes: z.boolean(),
-  })
-  .strict();
+const sectionFields = {
+  profiles: z.boolean(),
+  accounts: z.boolean(),
+  imap: z.boolean(),
+  proxies: z.boolean(),
+  tasks: z.boolean(),
+  wipes: z.boolean(),
+  raffles: z.boolean(),
+};
+
+const sections = z.object(sectionFields).strict();
+
+/**
+ * Sections as stored. "raffles" came on 2026-11-19, so a setup saved before then has none:
+ * it gets raffles ON, like a fresh one, rather than losing every other section's choice to
+ * the defaults.
+ */
+const storedSections = z.object({ ...sectionFields, raffles: z.boolean().default(true) });
 
 /**
  * Keep or clear, for another Target profile group -- keyed by its name as `groupKey` has it
@@ -61,6 +69,7 @@ export function defaultInstanceConfig(memberIds: string[] = []): ShikariInstance
       proxies: true,
       tasks: true,
       wipes: true,
+      raffles: true,
     },
     groups: {},
   };
@@ -73,7 +82,7 @@ export function defaultInstanceConfig(memberIds: string[] = []): ShikariInstance
 const storedConfig = z.object({
   memberIds: z.array(snowflake).max(500).catch([]),
   bot: z.enum(BOT_SCOPES).catch("main"),
-  sections: sections.catch(defaultInstanceConfig().sections),
+  sections: storedSections.catch(defaultInstanceConfig().sections),
   groups: groupChoices.catch({}),
 });
 

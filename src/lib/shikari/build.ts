@@ -10,12 +10,15 @@ import {
   findGroup,
   groupKey,
   isCheckout,
+  isDraw,
+  isRaffleGroupName,
   isRemoteWatchdog,
   isTargetGroupName,
   isWatchdog,
   isWipe,
   lower,
   mostCommon,
+  raffleGroupName,
   readSnapshot,
   targetGroups,
   type SAccount,
@@ -34,6 +37,7 @@ import type {
   DesiredProfile,
   KnownProfile,
   QtyChange,
+  RaffleGroupReport,
   ShikariAddress,
   TaskChange,
   WatchList,
@@ -76,6 +80,16 @@ import type {
  * Its checkout tasks don't count as a profile's Target task, so none is moved out of it,
  * kept as a profile's own, or deleted as a second copy. Only the tasks of a profile the
  * export deletes go, since a task can't outlive its profile; the review counts them.
+ *
+ * RAFFLES. Each raffle on the site that anyone on this instance is entered in gets a task group
+ * of its own, "Target Raffle <TCIN>", holding one Draw task per profile entered -- in member
+ * order, like "Target" -- with the raffle's TCIN as its one product. A raffle's group is the
+ * one already named for it, or failing that the raffle group whose entries are for its TCIN
+ * (one set up by hand, "Target - Raffle"), renamed; an entry kept keeps its browser, session
+ * and state, like a checkout task. A raffle group no raffle on the site needs any more -- the
+ * raffle was deleted, or nobody here is entered -- loses its entries of ours and goes once
+ * empty. The main instance gets the entries of each member's first five profiles and a
+ * backup the rest, because the profiles it runs are those.
  *
  * PER PRODUCT. Each product row on a checkout task carries the qty its member picked for that
  * product on that profile -- past the product's posted limit if they chose so, never past the
@@ -192,12 +206,29 @@ const ABSENT: Record<AbsentReason, string> = {
   member: "member not on this instance",
 };
 
+/**
+ * A raffle entry as Shikari wrote the five in the 2026-11-19 backup: type "Draw", flow "draw",
+ * target kind "drawing_entry", no generic data, password login. Used when the backup has no
+ * Draw task to copy.
+ */
+const DEFAULT_DRAW = {
+  type: "Draw",
+  flowKey: "draw",
+  targetKind: "drawing_entry",
+  genericData: "{}",
+  options: pyJson({ login_method: "password" }),
+};
+
 /** Shikari's own colours for its groups; the new one matches the old "Target Wipe" green. */
 const TARGET_COLOR = "#D81B60";
 const UPDATES_COLOR = "#0B8043";
+/** The orange the hand-made "Target - Raffle" group was given. */
+const RAFFLE_COLOR = "#F09300";
 
 /** Products are watched by TCIN, the only method any Target task in a backup has used. */
 const TARGET_METHOD = "tcins";
+/** A Draw task's product row enters the drawing for its TCIN by this method. */
+const DRAW_METHOD = "drawing_entry";
 
 /**
  * A product's price limits as Shikari leaves them when none is set: NULL, no limit. Every
@@ -233,6 +264,16 @@ type ProfileMatch = {
 
 /** A profile of ours that isn't this instance's, and what became of it. */
 type Departure = { profile: SProfile; why: string; deleted: boolean };
+
+/** What a new raffle entry is made like: see drawTemplate. */
+type DrawShape = {
+  type: string | null;
+  flowKey: string | null;
+  targetKind: string | null;
+  genericData: string | null;
+  options: string;
+  proxyGroupId: number | null;
+};
 
 /** The "Target" task group, as the tasks section builds it: checkout tasks and watchdogs. */
 type TaskGroupPlan = {
@@ -294,6 +335,8 @@ class InstanceBuilder {
   private miscRemoved = 0;
   /** The "Target" task group, once the tasks section has claimed it. */
   private plan: TaskGroupPlan | null = null;
+  /** Each raffle's task group, once claimed or made, and its entries in member order. */
+  private readonly raffleGroups: { id: number; order: number[] }[] = [];
   /** A task's id now -> the id the backup gave it, for each task orderGroupTasks moved. */
   private readonly renumbered = new Map<number, number>();
 
@@ -352,6 +395,7 @@ class InstanceBuilder {
       watchdogs: { before: [], after: [], remote: { before: 0, after: 0 } },
       misc: null,
       wipes: { added: [], removed: 0, template: null },
+      raffles: { groups: [], removed: [], missingProfile: [], template: null },
       warnings: [],
     };
     this.removing = this.groupsToClear();
@@ -408,6 +452,7 @@ class InstanceBuilder {
     this.syncImap(sections.imap);
     if (sections.proxies) this.syncProxies();
     if (sections.tasks) this.syncTargetTasks(match);
+    if (sections.raffles) this.syncRaffles(match);
     if (sections.wipes) this.syncWipes();
 
     // The clean-up: what nothing on the Target side uses any more, now that the rest is done.
@@ -418,6 +463,7 @@ class InstanceBuilder {
     // Last of the edits: in a backup from before drag-and-drop it renumbers tasks, and
     // everything above finds them by the id the backup gave them.
     if (sections.tasks && this.plan) this.orderGroupTasks(this.plan.id, this.plan.order);
+    for (const group of this.raffleGroups) this.orderGroupTasks(group.id, group.order);
 
     this.reportMiscGroup();
     this.sortProfiles();
@@ -633,6 +679,8 @@ class InstanceBuilder {
         continue;
       }
       if (isWipe(kind)) this.report.wipes.removed += 1;
+      // A raffle entry is the raffle section's to report, under its group -- when it runs.
+      else if (isDraw(kind) && this.options.sections.raffles) continue;
       else if (!isCheckout(kind)) this.otherTasks.push(task.type || task.flow_key || "task");
     }
     this.db.run("DELETE FROM profile WHERE id = ?", [profile.id]);
@@ -663,7 +711,12 @@ class InstanceBuilder {
         )
         .map((r) => Number(r.id)),
     );
-    const idle = (d: DesiredProfile) => (d.skus.length === 0 ? "picked no products" : "no task");
+    const idle = (d: DesiredProfile) =>
+      d.skus.length > 0
+        ? "no task"
+        : d.raffles.length > 0
+          ? "entered in raffles only"
+          : "picked no products";
 
     for (const d of this.people) {
       const id = this.profileIdByKey.get(d.key);
@@ -1783,6 +1836,322 @@ class InstanceBuilder {
   }
 
   // -------------------------------------------------------------------------
+  // Raffles: a "Target Raffle <TCIN>" task group per raffle, a Draw task per entry
+  // -------------------------------------------------------------------------
+
+  /**
+   * Every profile of ours entered in a raffle gets exactly ONE Draw task for it, in that
+   * raffle's group -- see the note at the top.
+   *
+   * The entries the export answers for are the Target Draw tasks of profiles it answers for
+   * (match.managed), in a raffle group or entering a raffle the site lists. Of a profile's
+   * entries in one raffle, the one already in the raffle's group stays, and failing that the
+   * oldest is moved in; any other is a second copy, and goes. An entry of ours that no raffle
+   * here needs -- not entered any more, the raffle deleted from the site, the profile gone --
+   * goes too. Anyone else's Draw task stays exactly where it is, and keeps its group.
+   */
+  private syncRaffles(match: ProfileMatch) {
+    const report = this.report.raffles;
+    const website = this.s.targetWebsiteId;
+    const names = new Map(this.s.profiles.map((p) => [p.id, p.name]));
+    const skusOf = (taskId: number) =>
+      this.s.products.filter((p) => p.taskId === taskId).map((p) => p.data);
+    const raffleGroups = this.s.taskGroups.filter((g) => isRaffleGroupName(g.name));
+    const inRaffleGroup = new Set(raffleGroups.map((g) => g.id));
+    const listed = new Set(this.desired.raffles.map((r) => r.sku));
+
+    const draws = this.s.tasks.filter((t) => isDraw(t) && t.websiteId === website);
+    const ours = draws.filter(
+      (t) =>
+        t.profileId !== null &&
+        match.managed.has(t.profileId) &&
+        ((t.groupId !== null && inRaffleGroup.has(t.groupId)) ||
+          skusOf(t.id).some((sku) => listed.has(sku))),
+    );
+    // The TCIN a raffle group is for: the one most of its entries -- anyone's -- enter.
+    const groupSku = new Map(
+      raffleGroups.map((g) => [
+        g.id,
+        mostCommon(draws.filter((t) => t.groupId === g.id).flatMap((t) => skusOf(t.id))),
+      ]),
+    );
+
+    // Each raffle's entrants of ours, in the order the group lists them; a raffle with none
+    // here gets no group.
+    const entrants = new Map<string, DesiredProfile[]>();
+    for (const d of this.byMember) {
+      for (const sku of new Set(d.raffles)) if (listed.has(sku)) push(entrants, sku, d);
+    }
+
+    const handled = new Set<number>();
+    const claimed = new Map<number, RaffleGroupReport>();
+    for (const raffle of this.desired.raffles) {
+      const here = (entrants.get(raffle.sku) ?? []).filter((d) => {
+        if (this.profileIdByKey.has(d.key)) return true;
+        report.missingProfile.push(`${d.name} (${raffle.name})`);
+        return false;
+      });
+      if (here.length === 0) continue;
+
+      const group = this.claimRaffleGroup(raffle.sku, raffleGroups, groupSku, claimed);
+      const line: RaffleGroupReport = {
+        sku: raffle.sku,
+        product: raffle.name,
+        name: group.name,
+        created: group.created,
+        renamedFrom: group.renamedFrom,
+        added: [],
+        removed: [],
+        changed: [],
+        unchanged: 0,
+        untouched: [],
+      };
+      claimed.set(group.id, line);
+      report.groups.push(line);
+      const order: number[] = [];
+      this.raffleGroups.push({ id: group.id, order });
+
+      for (const d of here) {
+        const profileId = this.profileIdByKey.get(d.key) as number;
+        // Its entries in this raffle, wherever they are: the one in the group stays, failing
+        // that the oldest. The rest are second copies.
+        const spare = ours.filter(
+          (t) =>
+            t.profileId === profileId && !handled.has(t.id) && skusOf(t.id).includes(raffle.sku),
+        );
+        const inGroup = spare.findIndex((t) => t.groupId === group.id);
+        const task = inGroup < 0 ? spare.shift() : spare.splice(inGroup, 1)[0];
+        for (const copy of spare) {
+          this.deleteTask(copy.id);
+          handled.add(copy.id);
+          line.removed.push(`${d.name} (a second copy)`);
+        }
+        if (!task) {
+          const id = this.createDrawTask(group.id, profileId, d, raffle.sku);
+          handled.add(id);
+          order.push(id);
+          line.added.push(d.name);
+          continue;
+        }
+        handled.add(task.id);
+        order.push(task.id);
+        const what = this.syncDrawTask(task, d, raffle.sku, group.id);
+        if (what.length > 0) line.changed.push({ profile: d.name, what });
+        else line.unchanged += 1;
+      }
+    }
+
+    // What's left of ours enters a raffle nobody here needs: it comes off, under the group it
+    // was in. A profile deleted above has already taken its tasks with it, and is listed all
+    // the same, since its entry is gone either way.
+    const lost = new Map<number, number>();
+    const strays = new Map<string, number>();
+    for (const task of ours) {
+      if (handled.has(task.id)) continue;
+      this.deleteTask(task.id);
+      const label = names.get(task.profileId as number) ?? `profile ${task.profileId}`;
+      const line = task.groupId === null ? undefined : claimed.get(task.groupId);
+      if (line) {
+        line.removed.push(
+          match.duplicates.has(task.profileId as number) ? `${label} (a second copy)` : label,
+        );
+      } else if (task.groupId !== null && inRaffleGroup.has(task.groupId)) {
+        lost.set(task.groupId, (lost.get(task.groupId) ?? 0) + 1);
+      } else {
+        // An entry in a raffle the site lists, made by hand outside the raffle groups.
+        const where = this.s.taskGroups.find((g) => g.id === task.groupId)?.name ?? "no group";
+        strays.set(where, (strays.get(where) ?? 0) + 1);
+      }
+    }
+    for (const [where, n] of strays) {
+      this.report.warnings.push(
+        `Took ${n} raffle entr${n === 1 ? "y" : "ies"} nobody here needs out of "${where}".`,
+      );
+    }
+
+    // Anyone else's tasks in a raffle's group stay as they are, and are said to -- the ones
+    // still there: a checkout task in one is the tasks section's, and may have moved out.
+    const oursIds = new Set(ours.map((t) => t.id));
+    for (const task of this.s.tasks) {
+      const line = task.groupId === null ? undefined : claimed.get(task.groupId);
+      if (!line || handled.has(task.id) || oursIds.has(task.id)) continue;
+      if (
+        !this.db.get("SELECT 1 FROM task WHERE id = ? AND task_group_id = ?", [
+          task.id,
+          task.groupId,
+        ])
+      )
+        continue;
+      line.untouched.push(
+        task.profileId === null
+          ? `task ${task.id}`
+          : (names.get(task.profileId) ?? `task ${task.id}`),
+      );
+    }
+
+    // A raffle group that no raffle here needs goes once nothing is left in it -- never one
+    // that was empty already, which somebody made on purpose, and never one still holding
+    // anyone else's entries.
+    const home = new Map([...claimed.values()].map((line) => [line.sku, line.name]));
+    for (const group of raffleGroups) {
+      if (claimed.has(group.id)) continue;
+      const had = this.s.tasks.filter((t) => t.groupId === group.id).length;
+      if (had === 0) continue;
+      const left = Number(
+        this.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM task WHERE task_group_id = ?", [
+          group.id,
+        ])?.n,
+      );
+      const sku = groupSku.get(group.id) ?? null;
+      const why =
+        sku === null
+          ? "no raffle on the site"
+          : !listed.has(sku)
+            ? "its raffle isn't on the site"
+            : home.has(sku)
+              ? `its raffle's entries are in "${home.get(sku)}"`
+              : "nobody on this instance is entered";
+      if (left > 0) {
+        this.report.warnings.push(
+          `"${group.name}" holds ${left} task${left === 1 ? "" : "s"} the export leaves alone, so it was kept, though ${why}.`,
+        );
+        continue;
+      }
+      this.db.run("DELETE FROM task_group WHERE id = ?", [group.id]);
+      report.removed.push({ name: group.name, why, tasks: lost.get(group.id) ?? had });
+    }
+  }
+
+  /**
+   * The task group a raffle's entries go in: the one already named for it, failing that the
+   * raffle group whose entries are for its TCIN -- renamed -- and failing both a new one.
+   */
+  private claimRaffleGroup(
+    sku: string,
+    raffleGroups: { id: number; name: string }[],
+    groupSku: Map<number, string | null>,
+    claimed: Map<number, RaffleGroupReport>,
+  ): { id: number; name: string; created: boolean; renamedFrom: string | null } {
+    const name = raffleGroupName(sku);
+    const free = raffleGroups.filter((g) => !claimed.has(g.id));
+    const found =
+      free.find((g) => groupKey(g.name) === groupKey(name)) ??
+      free.find((g) => groupSku.get(g.id) === sku);
+    if (!found) {
+      return {
+        id: this.ensureGroup("task_group", name, RAFFLE_COLOR),
+        name,
+        created: true,
+        renamedFrom: null,
+      };
+    }
+    if (found.name === name) return { id: found.id, name, created: false, renamedFrom: null };
+    this.db.run("UPDATE task_group SET name = ?, updated_at = ? WHERE id = ?", [
+      name,
+      this.now,
+      found.id,
+    ]);
+    return { id: found.id, name, created: false, renamedFrom: found.name };
+  }
+
+  /**
+   * The shape a new entry copies: the backup's own Draw tasks -- their type, flow, target kind,
+   * generic data and most common options -- or, with none to copy, Shikari's (DEFAULT_DRAW).
+   * Its browser goes in the checkout proxy group, as the entries made in Shikari do, or the one
+   * the backup's own entries use.
+   */
+  private drawTemplate(): DrawShape {
+    const draws = this.s.tasks.filter((t) => isDraw(t) && t.websiteId === this.s.targetWebsiteId);
+    const first = draws[0];
+    this.report.raffles.template = first ? "copied" : "built-in";
+    const options = mostCommon(
+      draws.map((t) => t.options).filter((o): o is string => Boolean(o?.trim().startsWith("{"))),
+    );
+    return {
+      type: first?.type ?? DEFAULT_DRAW.type,
+      flowKey: first?.flowKey ?? DEFAULT_DRAW.flowKey,
+      targetKind: first ? first.targetKind : DEFAULT_DRAW.targetKind,
+      genericData: first?.genericData ?? DEFAULT_DRAW.genericData,
+      options: options ?? DEFAULT_DRAW.options,
+      proxyGroupId:
+        this.liveGroup(this.options.tasks.checkoutProxyGroupId) ??
+        mostCommon(
+          draws
+            .map((t) => this.liveGroup(this.s.browsers.get(t.browserId)?.proxyGroupId ?? null))
+            .filter((id) => id !== null),
+        ) ??
+        this.checkoutTemplate().proxyGroupId,
+    };
+  }
+
+  /** drawTemplate's answer, worked out once, on the first new entry. */
+  private drawShape: DrawShape | null = null;
+
+  /** A new entry for a profile: its own browser, its mailbox, the raffle's TCIN. */
+  private createDrawTask(groupId: number, profileId: number, d: DesiredProfile, sku: string) {
+    const shape = (this.drawShape ??= this.drawTemplate());
+    const generic = jsonObject(shape.genericData);
+    if ("ios_device_data" in generic) {
+      generic.ios_device_data = freshDeviceData(
+        generic.ios_device_data,
+        this.options.random,
+        this.options.now,
+      );
+    }
+    const id = this.insertTask({
+      groupId,
+      type: shape.type,
+      flowKey: shape.flowKey,
+      targetKind: shape.targetKind,
+      profileId,
+      browserId: this.createBrowser(shape.proxyGroupId, this.fingerprintFor("draw")),
+      // Its own mailbox, as a checkout task has: a Draw task signs in with the password too,
+      // and Target can ask for a code on the way in.
+      imapId: d.mailbox ? (this.imapIdByMailbox.get(lower(d.mailbox.username)) ?? null) : null,
+      genericData: "ios_device_data" in generic ? pyJson(generic) : shape.genericData,
+      options: shape.options,
+      state: "{}",
+    });
+    this.syncProducts(id, [sku], () => null, DRAW_METHOD);
+    return id;
+  }
+
+  /**
+   * Brings a kept entry in line, where it stands: the raffle's TCIN as its one product, in the
+   * raffle's group, reading its profile's mailbox, its browser in the checkout proxy group.
+   * Answers what changed, in words; nothing, for an entry already right.
+   */
+  private syncDrawTask(task: STask, d: DesiredProfile, sku: string, groupId: number): string[] {
+    const what: string[] = [];
+    const products = this.syncProducts(task.id, [sku], () => null, DRAW_METHOD);
+    if (products.added.length > 0 || products.removed.length > 0) what.push("product");
+    if (task.groupId !== groupId) {
+      // In at the bottom, as a new task would be; orderGroupTasks finds it its place.
+      if (this.s.taskOrder) {
+        this.db.run("UPDATE task SET task_group_id = ?, order_index = ? WHERE id = ?", [
+          groupId,
+          this.endOfGroup(groupId),
+          task.id,
+        ]);
+      } else {
+        this.db.run("UPDATE task SET task_group_id = ? WHERE id = ?", [groupId, task.id]);
+      }
+      const from = this.s.taskGroups.find((g) => g.id === task.groupId)?.name;
+      what.push(from ? `moved in from "${from}"` : "moved in");
+    }
+    const imapId = d.mailbox ? this.imapIdByMailbox.get(lower(d.mailbox.username)) : undefined;
+    if (imapId !== undefined && imapId !== task.imapId) {
+      this.db.run("UPDATE task SET imap_account_id = ? WHERE id = ?", [imapId, task.id]);
+      what.push("mailbox");
+    }
+    if (this.moveBrowser(task.browserId, this.options.tasks.checkoutProxyGroupId))
+      what.push("proxy group");
+    if (what.length > 0)
+      this.db.run("UPDATE task SET updated_at = ? WHERE id = ?", [this.now, task.id]);
+    return what;
+  }
+
+  // -------------------------------------------------------------------------
   // Tasks, browsers, products
   // -------------------------------------------------------------------------
 
@@ -1840,16 +2209,26 @@ class InstanceBuilder {
    * price limits, keeping rows that already match. Answers what changed: the products added
    * and removed, the kept ones whose qty moved, and how many kept ones had price limits taken
    * off.
+   *
+   * Rows are watched by TCIN (TARGET_METHOD) unless `method` says otherwise -- a Draw task's
+   * enter its drawing (DRAW_METHOD). Given one, a row by any other method doesn't match, and
+   * is swapped for one that does.
    */
-  private syncProducts(taskId: number, skus: string[], qtyOf: (sku: string) => number | null) {
+  private syncProducts(
+    taskId: number,
+    skus: string[],
+    qtyOf: (sku: string) => number | null,
+    method?: string,
+  ) {
     const rows = this.db.all<{
       id: number;
+      target_method: string | null;
       target_data: string;
       qty: number | null;
       min_price: number | null;
       max_price: number | null;
     }>(
-      "SELECT id, target_data, qty, min_price, max_price FROM target_product WHERE task_id = ? ORDER BY id",
+      "SELECT id, target_method, target_data, qty, min_price, max_price FROM target_product WHERE task_id = ? ORDER BY id",
       [taskId],
     );
     const want = new Set(skus);
@@ -1859,9 +2238,10 @@ class InstanceBuilder {
     let prices = 0;
     for (const row of rows) {
       const sku = String(row.target_data);
-      if (!want.has(sku) || have.has(sku)) {
+      const wrongMethod = method !== undefined && row.target_method !== method;
+      if (!want.has(sku) || have.has(sku) || wrongMethod) {
         this.db.run("DELETE FROM target_product WHERE id = ?", [row.id]);
-        if (!want.has(sku)) removed.push(sku);
+        if (!want.has(sku) || wrongMethod) removed.push(sku);
         continue;
       }
       have.add(sku);
@@ -1882,7 +2262,7 @@ class InstanceBuilder {
         `INSERT INTO target_product (created_at, updated_at, task_id, target_method, target_data,
                                      min_price, max_price, qty, miscellaneous_data)
          VALUES (?, NULL, ?, ?, ?, ?, ?, ?, '{}')`,
-        [this.now, taskId, TARGET_METHOD, sku, MIN_PRICE, MAX_PRICE, qtyOf(sku)],
+        [this.now, taskId, method ?? TARGET_METHOD, sku, MIN_PRICE, MAX_PRICE, qtyOf(sku)],
       );
       have.add(sku);
     }
@@ -1988,20 +2368,30 @@ class InstanceBuilder {
    * A fingerprint for a new browser: the least-used one among browsers doing the same job.
    * Shikari ships these as files on the operator's machine, so only names a backup already
    * uses can be trusted to exist -- an invented one would point at nothing.
+   *
+   * A raffle entry with no other entries to go by takes a checkout task's: it signs in and
+   * runs as one.
    */
-  private fingerprintFor(kind: "checkout" | "watchdog" | "wipe"): string {
+  private fingerprintFor(kind: "checkout" | "watchdog" | "wipe" | "draw"): string {
     let counts = this.fingerprints.get(kind);
     if (!counts) {
-      const doing =
+      const checkout = (t: STask) => this.isTargetCheckout(t);
+      const draw = (t: STask) => isDraw(t) && t.websiteId === this.s.targetWebsiteId;
+      const used = (doing: (t: STask) => boolean) =>
+        this.s.tasks
+          .filter(doing)
+          .map((t) => this.s.browsers.get(t.browserId)?.fingerprint)
+          .filter(Boolean) as string[];
+      let names = used(
         kind === "checkout"
-          ? (t: STask) => this.isTargetCheckout(t)
+          ? checkout
           : kind === "watchdog"
             ? isWatchdog
-            : isWipe;
-      let names = this.s.tasks
-        .filter(doing)
-        .map((t) => this.s.browsers.get(t.browserId)?.fingerprint)
-        .filter(Boolean) as string[];
+            : kind === "draw"
+              ? draw
+              : isWipe,
+      );
+      if (names.length === 0 && kind === "draw") names = used(checkout);
       if (names.length === 0)
         names = [...this.s.browsers.values()].map((b) => b.fingerprint).filter(Boolean);
       if (names.length === 0) {
@@ -2073,6 +2463,8 @@ class InstanceBuilder {
     const hadTasks = new Set(this.s.tasks.map((t) => t.groupId));
     for (const group of this.s.taskGroups) {
       if (!hadTasks.has(group.id) || ownTasks.has(group.id)) continue;
+      // A raffle group the raffle section took out already, and said so (syncRaffles).
+      if (!this.db.get("SELECT 1 FROM task_group WHERE id = ?", [group.id])) continue;
       if (this.db.get("SELECT 1 FROM task WHERE task_group_id = ? LIMIT 1", [group.id])) continue;
       this.db.run("DELETE FROM task_group WHERE id = ?", [group.id]);
       report.task.push(group.name);

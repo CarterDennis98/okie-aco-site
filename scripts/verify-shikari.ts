@@ -27,6 +27,12 @@
  *   profiles that came out. The line's products never reach the builder (the payload drops
  *   them), so a desired state read back from a backup leaves them out too.
  *
+ *   And raffles: the entries a backup already has (its Target Draw tasks) are read back as
+ *   raffles the site lists, each profile entered in what it enters. The round trip must keep
+ *   every entry -- same task, browser and state -- in a group named for its raffle; the drop
+ *   enters more profiles, takes one out, and lists a second raffle; and every file must hold
+ *   exactly one entry per profile per raffle, in member order, in the raffle's own group.
+ *
  *   3. AGAIN. The drop's output exported once more with the same state: a clean backup must
  *      stay as it is -- nothing more to remove, nothing activated or deactivated.
  *
@@ -47,8 +53,11 @@ import {
   findGroup,
   groupsToClear,
   isCheckout,
+  isDraw,
+  isRaffleGroupName,
   isTargetGroupName,
   isWatchdog,
+  raffleGroupName,
   readSnapshot,
   summarize,
   targetGroups,
@@ -106,6 +115,17 @@ function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInst
   const inMisc = new Set(
     s.tasks.filter((t) => isCheckout(t) && t.groupId === misc?.id).map((t) => t.id),
   );
+  // Each profile's raffle entries -- its Target Draw tasks' TCINs -- as raffles the site lists.
+  const raffleGroups = new Set(
+    s.taskGroups.filter((g) => isRaffleGroupName(g.name)).map((g) => g.id),
+  );
+  const enteredIn = new Map<number, string[]>();
+  for (const t of s.tasks) {
+    if (!isDraw(t) || t.websiteId !== s.targetWebsiteId || t.profileId === null) continue;
+    if (t.groupId === null || !raffleGroups.has(t.groupId)) continue;
+    const skus = s.products.filter((x) => x.taskId === t.id).map((x) => x.data);
+    enteredIn.set(t.profileId, [...new Set([...(enteredIn.get(t.profileId) ?? []), ...skus])]);
+  }
   const imap = new Map(s.imap.map((m) => [m.id, m]));
   const toAddress = (id: number | null): ShikariAddress | null => {
     const a = id === null ? undefined : s.addresses.get(id);
@@ -178,10 +198,12 @@ function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInst
             .map((x) => [x.data, x.qty as number]),
         ),
       ),
+      raffles: enteredIn.get(p.id) ?? [],
       pending: null,
     });
   }
   const skus = [...new Set(profiles.flatMap((p) => p.skus))];
+  const raffles = [...new Set(profiles.flatMap((p) => p.raffles))];
   const wanted = new Set(profiles.map((p) => p.key));
   return {
     position: 1,
@@ -196,6 +218,7 @@ function desiredFromBackup(s: ShikariSnapshot, standardQty: number): DesiredInst
       })),
     // A backup records no limits: every product reads as having none, so its standard holds.
     products: skus.map((sku) => ({ sku, name: sku, setName: "", maxQty: null })),
+    raffles: raffles.map((sku) => ({ sku, name: `raffle ${sku}` })),
   };
 }
 
@@ -287,6 +310,17 @@ function describe(report: BuildReport) {
         `(${report.misc.removed} went with profiles that came out)`,
     );
   }
+  for (const g of report.raffles.groups) {
+    console.log(
+      `  raffle "${g.name}"${g.created ? " (created)" : ""}${g.renamedFrom ? ` (renamed from "${g.renamedFrom}")` : ""}: ` +
+        `+${g.added.length} ~${g.changed.length} -${g.removed.length} =${g.unchanged}, ${g.untouched.length} untouched`,
+    );
+  }
+  for (const g of report.raffles.removed) {
+    console.log(`  raffle group "${g.name}" taken out: ${g.why} (${g.tasks} tasks)`);
+  }
+  if (report.raffles.template)
+    console.log(`  raffle entries' template: ${report.raffles.template}`);
   for (const warning of report.warnings) console.log(`  warning: ${warning}`);
 }
 
@@ -493,6 +527,61 @@ function checkFile(
     );
   }
 
+  // Raffles: exactly one entry per desired profile per raffle it's entered in, in the raffle's
+  // own group, entering its TCIN and nothing else; none for anything else; each group in
+  // member order, every entry on a place of its own.
+  const draws = db.all<{
+    id: number;
+    email: string;
+    group_name: string | null;
+    group_id: number | null;
+    products: string | null;
+  }>(
+    `SELECT t.id, p.email, g.name AS group_name, g.id AS group_id,
+            (SELECT group_concat(tp.target_method || ':' || tp.target_data || ':' || IFNULL(tp.qty, 'null'))
+               FROM target_product tp WHERE tp.task_id = t.id) AS products
+       FROM task t JOIN profile p ON p.id = t.profile_id
+       LEFT JOIN task_group g ON g.id = t.task_group_id
+      WHERE (lower(t.type) = 'draw' OR lower(t.flow_key) = 'draw') AND t.website_id = ?`,
+    [s.targetWebsiteId],
+  );
+  const want = desired.profiles.flatMap((d) =>
+    d.raffles.map((sku) => `${lower(d.email)}|${raffleGroupName(sku)}|drawing_entry:${sku}:null`),
+  );
+  const have = draws
+    .filter((t) => byEmail.has(lower(t.email)))
+    .map((t) => `${lower(t.email)}|${t.group_name}|${t.products}`);
+  check(
+    JSON.stringify([...want].sort()) === JSON.stringify([...have].sort()),
+    `one entry per desired profile per raffle, in its group, entering its TCIN (${want.length})`,
+  );
+  for (const raffle of desired.raffles) {
+    const name = raffleGroupName(raffle.sku);
+    const group = findGroup(s.taskGroups, name);
+    if (!group) continue;
+    const listed = db
+      .values(
+        `SELECT p.email FROM task t JOIN profile p ON p.id = t.profile_id
+          WHERE t.task_group_id = ? ORDER BY ${s.taskOrder ? "t.order_index, " : ""}t.id`,
+        [group.id],
+      )
+      .map(([email]) => ownerOf.get(lower(String(email))) ?? "?");
+    const runs = listed.filter((owner, i) => i === 0 || listed[i - 1] !== owner).length;
+    check(
+      runs === new Set(listed).size,
+      `each member's entries in "${name}" together (${listed.length} entries)`,
+    );
+    if (s.taskOrder) {
+      check(
+        db.get<{ apart: number }>(
+          "SELECT COUNT(DISTINCT order_index) = COUNT(*) AS apart FROM task WHERE task_group_id = ?",
+          [group.id],
+        )?.apart === 1,
+        `each entry in "${name}" on a place of its own`,
+      );
+    }
+  }
+
   const out = backupBytes(built.open);
   check(out[18] === 2 && out[19] === 2 ? original.wal : !original.wal, "journal mode preserved");
   // Reopened exactly as the export page would open it -- a copy, never `out` itself.
@@ -548,7 +637,16 @@ async function main() {
 
   const desired = desiredFromBackup(snapshot, settings.checkoutQty);
   console.log(
-    `  desired (read back): ${desired.profiles.length} profiles, ${desired.products.length} products`,
+    `  desired (read back): ${desired.profiles.length} profiles, ${desired.products.length} products, ` +
+      `${desired.raffles.length} raffles (${desired.profiles.filter((p) => p.raffles.length > 0).length} profiles entered)`,
+  );
+  // The entries the backup has, by task id: what the round trip must keep, task for task.
+  const entriesBefore = rows(
+    original.db,
+    `SELECT t.id, t.profile_id, t.browser_id, t.state, t.generic_data, t.options, t.target_kind
+       FROM task t WHERE (lower(t.type) = 'draw' OR lower(t.flow_key) = 'draw') AND t.website_id = ?
+      ORDER BY t.id`,
+    [snapshot.targetWebsiteId],
   );
 
   const base: BuildOptions = {
@@ -559,6 +657,7 @@ async function main() {
       proxies: true,
       tasks: true,
       wipes: true,
+      raffles: true,
     },
     removeProfileGroups: clear,
     proxyLists: [],
@@ -628,6 +727,21 @@ async function main() {
     trip.report.checkout.changed.every((c) => c.qty.length === 0),
     "no product's qty changed",
   );
+  check(
+    trip.report.raffles.groups.every((g) => g.added.length === 0 && g.removed.length === 0) &&
+      trip.report.raffles.removed.length === 0,
+    `no raffle entry added or removed (${trip.report.raffles.groups.length} raffle groups)`,
+  );
+  check(
+    rows(
+      trip.open.db,
+      `SELECT t.id, t.profile_id, t.browser_id, t.state, t.generic_data, t.options, t.target_kind
+         FROM task t WHERE (lower(t.type) = 'draw' OR lower(t.flow_key) = 'draw') AND t.website_id = ?
+        ORDER BY t.id`,
+      [snapshot.targetWebsiteId],
+    ) === entriesBefore,
+    "every raffle entry kept: same task, profile, browser, state and options",
+  );
   checkFile(SQL, original, trip, desired, settings);
   trip.open.db.close();
 
@@ -676,6 +790,17 @@ async function main() {
     });
     edited.known.push({ name: "verify-new - 1", email: "verify-new-1@example.invalid", why: null });
   }
+  // Raffles: one profile already entered withdraws, five more are entered in a second raffle
+  // the site lists now -- the new member is entered wherever the profile it copies is.
+  const withdrawn = edited.profiles.find(
+    (p) => p !== first && p !== second && p.raffles.length > 0,
+  );
+  const withdrewFrom = withdrawn ? [...withdrawn.raffles] : [];
+  if (withdrawn) withdrawn.raffles = [];
+  const NEW_RAFFLE = "96100000";
+  edited.raffles.push({ sku: NEW_RAFFLE, name: "Synthetic raffle" });
+  const newEntrants = edited.profiles.slice(5, 10);
+  for (const p of newEntrants) p.raffles = [...p.raffles, NEW_RAFFLE];
 
   // The list the checkout tasks use, swapped for one 10% shorter.
   const swapped =
@@ -717,8 +842,42 @@ async function main() {
     "and its checkout task removed",
   );
   check(
-    !idle || p.deactivated.some((l) => l.name === idle && l.why === "picked no products"),
+    !idle ||
+      p.deactivated.some(
+        (l) =>
+          l.name === idle &&
+          l.why === (second?.raffles.length ? "entered in raffles only" : "picked no products"),
+      ),
     "profile with no products reported as deactivated",
+  );
+  const raffleLine = (sku: string) =>
+    drop.report.raffles.groups.find((g) => g.name === raffleGroupName(sku));
+  check(
+    raffleLine(NEW_RAFFLE)?.created === true &&
+      JSON.stringify(raffleLine(NEW_RAFFLE)?.added) ===
+        JSON.stringify(
+          [...newEntrants]
+            .sort((a, b) =>
+              new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare(
+                a.name,
+                b.name,
+              ),
+            )
+            .map((x) => x.name),
+        ),
+    `a new raffle's group made, with its ${newEntrants.length} entries`,
+  );
+  check(
+    !withdrawn || withdrewFrom.every((sku) => raffleLine(sku)?.removed.includes(withdrawn.name)),
+    `an entry withdrawn (${withdrawn?.name ?? "none"}) taken out of its raffle's group`,
+  );
+  check(
+    !moved || moved.raffles.every((sku) => raffleLine(sku)?.removed.includes(moved.name)),
+    "the moved profile's entries went with it",
+  );
+  check(
+    !first || first.raffles.every((sku) => raffleLine(sku)?.added.includes("verify-new - 1")),
+    "the new member entered where the profile it copies is",
   );
   check(
     !moved ||
@@ -810,6 +969,13 @@ async function main() {
   check(
     a.checkout.added.length + a.checkout.changed.length + a.checkout.removed.length === 0,
     "no checkout task changes the second time",
+  );
+  check(
+    a.raffles.groups.every(
+      (g) =>
+        !g.created && !g.renamedFrom && g.added.length + g.changed.length + g.removed.length === 0,
+    ) && a.raffles.removed.length === 0,
+    `no raffle entry changes the second time (${a.raffles.groups.reduce((n, g) => n + g.unchanged, 0)} entries)`,
   );
   again.open.db.close();
 

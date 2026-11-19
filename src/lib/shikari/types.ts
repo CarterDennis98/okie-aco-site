@@ -66,11 +66,28 @@ export type DesiredProfile = {
    */
   qty: Record<string, number>;
   /**
+   * The raffles this profile is entered in, by their product's TCIN, in DesiredInstance.raffles
+   * order. Each earns it a Draw task in that raffle's group. Empty: entered in none.
+   */
+  raffles: string[];
+  /**
    * Unconfirmed changes to this profile, and which fields. Earns it a Wipe Account task, so
    * the stale card and address saved on the Target account come off before the new ones go
    * on. Exporting never confirms them: that stays a separate, manual step.
    */
   pending: { fields: string[] } | null;
+};
+
+/**
+ * A raffle on Target Products: a drawing Target runs for one product, which Shikari enters
+ * with a Draw task per profile. Every raffle the site lists, open or closed -- a raffle's group
+ * stays in the backups until it's deleted from the site (see Raffle in schema.prisma).
+ */
+export type DesiredRaffle = {
+  /** The product's TCIN: what the Draw tasks enter, and what names the raffle's group. */
+  sku: string;
+  /** The product's name, for the review. */
+  name: string;
 };
 
 /**
@@ -108,6 +125,12 @@ export type CatalogProduct = {
   maxQty: number | null;
 };
 
+/**
+ * Profiles entered in a raffle that NO instance of an export runs -- their member picked on
+ * none, or past the main bot's share with no backup instance -- by raffle. Said on the review.
+ */
+export type RaffleGap = { raffle: string; profiles: string[] };
+
 export type DesiredInstance = {
   position: number;
   profiles: DesiredProfile[];
@@ -119,6 +142,8 @@ export type DesiredInstance = {
   known: KnownProfile[];
   /** Every product being run, in catalog order: names for the review, order for watchdogs. */
   products: CatalogProduct[];
+  /** Every raffle on the site, oldest first. */
+  raffles: DesiredRaffle[];
 };
 
 export type Sections = {
@@ -130,6 +155,8 @@ export type Sections = {
   tasks: boolean;
   /** The "Target - Profile Updates" task group: a Wipe Account task per pending change. */
   wipes: boolean;
+  /** A "Target Raffle <SKU>" task group per raffle: a Draw task per profile entered. */
+  raffles: boolean;
 };
 
 export type ProxyEntry = {
@@ -200,6 +227,37 @@ export type CheckoutReport = {
   unchanged: number;
   /** Checkout tasks in the group for profiles the export keeps its hands off. */
   untouched: string[];
+};
+
+/** One raffle's task group, as the export leaves it. */
+export type RaffleGroupReport = {
+  sku: string;
+  /** The raffle's product, as the site names it. */
+  product: string;
+  /** The group's name after the export: "Target Raffle 1012850572". */
+  name: string;
+  created: boolean;
+  /** The name it had, when it was found under another -- "Target - Raffle", set up by hand. */
+  renamedFrom: string | null;
+  /** Profiles given an entry task. */
+  added: string[];
+  /** Profiles whose entry task came out: no longer entered, gone, or a second copy. */
+  removed: string[];
+  /** Entry tasks kept but changed, by profile, and what moved: "moved in", "mailbox", .... */
+  changed: { profile: string; what: string[] }[];
+  unchanged: number;
+  /** Tasks in it for profiles the export keeps its hands off, left as they are. */
+  untouched: string[];
+};
+
+export type RaffleReport = {
+  groups: RaffleGroupReport[];
+  /** Raffle groups taken out, emptied by this export, and why. */
+  removed: { name: string; why: string; tasks: number }[];
+  /** Profiles entered in a raffle with no Shikari profile to attach an entry to. */
+  missingProfile: string[];
+  /** Where the new entry tasks' shape came from: a Draw task in the backup, or built in. */
+  template: "copied" | "built-in" | null;
 };
 
 /** The watchdogs of one task group the export builds. */
@@ -288,6 +346,8 @@ export type BuildReport = {
     /** Where the new ones' shape came from: a Wipe Account task in the backup, or built in. */
     template: "copied" | "built-in" | null;
   };
+  /** The raffle groups: one per raffle anyone on this instance is entered in. */
+  raffles: RaffleReport;
   /** Things worth reading before exporting. None of them stop it. */
   warnings: string[];
 };

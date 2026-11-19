@@ -14,12 +14,19 @@ import type { ShikariDb } from "@/lib/shikari/sqlite";
 
 /**
  * The Alembic revisions of the backups these tables were read from: 2026-10-05's;
- * 2026-10-06's, which gave tasks drag-and-drop order (see hasTaskOrder); and 2026-11-04's,
+ * 2026-10-06's, which gave tasks drag-and-drop order (see hasTaskOrder); 2026-11-04's,
  * which put a qty and price limits on each product in Shikari's task editor -- on the
  * target_product columns every version has had -- and added a `sign_up` table the export
- * never reads.
+ * never reads; and 2026-11-19's, which added two webhook columns to notification_config (a
+ * table the export never touches) and came with Target raffle entry: "Draw" tasks, on the
+ * task and target_product columns every version has had.
  */
-export const KNOWN_SHIKARI_VERSIONS = ["d4e8b21c7f05", "e5b1c9d3a7f2", "f2b6d8e4a1c9"];
+export const KNOWN_SHIKARI_VERSIONS = [
+  "d4e8b21c7f05",
+  "e5b1c9d3a7f2",
+  "f2b6d8e4a1c9",
+  "c7e1f4a93d25",
+];
 
 /**
  * Every column the export touches, per table. `inserts` marks the tables it creates rows

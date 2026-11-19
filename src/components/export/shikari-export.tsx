@@ -20,6 +20,7 @@ import {
   summarize,
 } from "@/lib/shikari/snapshot";
 import { backupBytes, openBackup } from "@/lib/shikari/sqlite";
+import type { RaffleGap } from "@/lib/shikari/types";
 import { InstanceCard, type InstanceDraft } from "@/components/export/shikari-instance";
 import { ShikariReview, type BuiltInstance } from "@/components/export/shikari-review";
 
@@ -84,6 +85,7 @@ export function ShikariExport({
   });
   const [step, setStep] = useState<"setup" | "review" | "done">("setup");
   const [built, setBuilt] = useState<BuiltInstance[]>([]);
+  const [raffleGaps, setRaffleGaps] = useState<RaffleGap[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -215,6 +217,7 @@ export function ShikariExport({
       }
     });
     setBuilt(results);
+    setRaffleGaps(payload.raffleGaps);
     setBusy(null);
     setStep("review");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -253,6 +256,7 @@ export function ShikariExport({
     return (
       <ShikariReview
         built={built}
+        raffleGaps={raffleGaps}
         done={step === "done"}
         onBack={() => setStep("setup")}
         onConfirm={confirm}

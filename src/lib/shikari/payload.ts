@@ -3,15 +3,18 @@ import "server-only";
 import { prisma } from "@/db/client";
 import { loadMailboxCoverage, mailboxFor } from "@/db/queries/email-coverage";
 import { getSetsInLine, getSkusForProfiles } from "@/db/queries/products";
+import { getRaffleEntries, getRaffles } from "@/db/queries/raffles";
 import { SHIKARI_SITE } from "@/db/queries/shikari";
 import { VaultAction, VaultEntity } from "@/generated/prisma/enums";
 import { MISC_LINE } from "@/lib/products/misc-line";
+import { rafflesByProfile } from "@/lib/raffles/entries";
 import type { ExportRequest } from "@/lib/shikari/config";
 import type {
   AbsentReason,
   DesiredInstance,
   DesiredProfile,
   KnownProfile,
+  RaffleGap,
   ShikariAddress,
   ShikariMailbox,
 } from "@/lib/shikari/types";
@@ -40,10 +43,16 @@ import { normalizePhone } from "@/lib/vault/profile-input";
  * The Miscellaneous line's products are never sent: they run on Valor (see MISC_LINE), and a
  * product on both bots is the same double checkout. A profile that picked only from the line
  * goes out picking nothing.
+ *
+ * Every raffle on the site goes out, with the raffles each profile is entered in, for the
+ * builder's raffle groups. And since a raffle has a deadline, the entries of the operator's
+ * profiles that NO instance of this export runs -- a member nobody picked, a sixth profile
+ * with no backup instance -- come back too, for the review to name.
  */
 
 export type PayloadResult =
-  { ok: true; instances: DesiredInstance[] } | { ok: false; error: string };
+  | { ok: true; instances: DesiredInstance[]; raffleGaps: RaffleGap[] }
+  | { ok: false; error: string };
 
 /** Changes that earn a Wipe Account task. A move between runners edits nothing. */
 const WIPE_ACTIONS = [VaultAction.CREATE, VaultAction.UPDATE, VaultAction.ACTIVATE];
@@ -132,43 +141,78 @@ export async function buildShikariPayload(
 
   const all = chosen.flatMap((c) => c.rows);
   const accountToProfile = new Map(all.map((r) => [r.account.id, r.id]));
-  const [coverage, { skus, qty, catalog }, pending, known, miscSets] = await Promise.all([
-    // Unscoped, like every other coverage read: an alias row is unique globally.
-    loadMailboxCoverage(),
-    getSkusForProfiles(
-      SHIKARI_SITE,
-      all.map((r) => ({ id: r.id, discordUserId: r.discordUserId })),
-    ),
-    prisma.vaultChange.findMany({
-      where: {
-        appliedAt: null,
-        siteKey: SHIKARI_SITE,
-        action: { in: WIPE_ACTIONS },
-        OR: [
-          { entity: VaultEntity.VAULT_PROFILE, entityId: { in: all.map((r) => r.id) } },
-          { entity: VaultEntity.VAULT_ACCOUNT, entityId: { in: [...accountToProfile.keys()] } },
-        ],
-      },
-      orderBy: { at: "asc" },
-      select: { entity: true, entityId: true, action: true, fields: true },
-    }),
-    // Every Target profile on file, any runner's: what says why a profile in the backup isn't
-    // this instance's -- or that the site has never heard of it.
-    prisma.vaultProfile.findMany({
-      where: { siteKey: SHIKARI_SITE },
-      select: {
-        id: true,
-        name: true,
-        active: true,
-        discordUserId: true,
-        account: { select: { email: true, assigneeId: true } },
-      },
-    }),
-    // The Miscellaneous line's sets: their products run on Valor, so none of them go here.
-    getSetsInLine(SHIKARI_SITE, MISC_LINE),
-  ]);
+  const [coverage, { skus, qty, catalog }, pending, known, miscSets, raffles, entries] =
+    await Promise.all([
+      // Unscoped, like every other coverage read: an alias row is unique globally.
+      loadMailboxCoverage(),
+      getSkusForProfiles(
+        SHIKARI_SITE,
+        all.map((r) => ({ id: r.id, discordUserId: r.discordUserId })),
+      ),
+      prisma.vaultChange.findMany({
+        where: {
+          appliedAt: null,
+          siteKey: SHIKARI_SITE,
+          action: { in: WIPE_ACTIONS },
+          OR: [
+            { entity: VaultEntity.VAULT_PROFILE, entityId: { in: all.map((r) => r.id) } },
+            { entity: VaultEntity.VAULT_ACCOUNT, entityId: { in: [...accountToProfile.keys()] } },
+          ],
+        },
+        orderBy: { at: "asc" },
+        select: { entity: true, entityId: true, action: true, fields: true },
+      }),
+      // Every Target profile on file, any runner's: what says why a profile in the backup isn't
+      // this instance's -- or that the site has never heard of it.
+      prisma.vaultProfile.findMany({
+        where: { siteKey: SHIKARI_SITE },
+        select: {
+          id: true,
+          name: true,
+          active: true,
+          discordUserId: true,
+          account: { select: { email: true, assigneeId: true } },
+        },
+      }),
+      // The Miscellaneous line's sets: their products run on Valor, so none of them go here.
+      getSetsInLine(SHIKARI_SITE, MISC_LINE),
+      // Every raffle, open or closed: a raffle's group stays in the backups until it's deleted.
+      getRaffles(SHIKARI_SITE, { includeClosed: true }),
+      // Every member's entries, not only the picked members': what the gaps are found from.
+      getRaffleEntries(SHIKARI_SITE),
+    ]);
   const shikariCatalog = catalog.filter((p) => !miscSets.has(p.setName));
   const runsHere = new Set(shikariCatalog.map((p) => p.sku));
+
+  // Raffles oldest first, so a backup's groups come in the order the raffles were listed.
+  const raffleOrder = [...raffles].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  // Who's entered in what, over every active profile of the operator's whose member entered
+  // anything: the instances' profiles, and the ones no instance runs.
+  const entrants = [...new Set(entries.map((e) => e.discordUserId))];
+  const entrantProfiles =
+    entrants.length === 0
+      ? []
+      : await prisma.vaultProfile.findMany({
+          where: {
+            siteKey: SHIKARI_SITE,
+            active: true,
+            discordUserId: { in: entrants },
+            account: { assigneeId: operatorId },
+          },
+          select: { id: true, name: true, discordUserId: true },
+        });
+  const entered = rafflesByProfile(entrantProfiles, entries, raffleOrder);
+  const raffleName = new Map(raffleOrder.map((r) => [r.sku, r.name]));
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+  const raffleGaps = raffleOrder.flatMap((raffle) => {
+    const profiles = entrantProfiles
+      .filter((p) => !placed.has(p.id) && (entered.get(p.id) ?? []).includes(raffle.sku))
+      .map((p) => p.name)
+      .sort(collator.compare);
+    return profiles.length > 0
+      ? [{ raffle: raffleName.get(raffle.sku) ?? raffle.sku, profiles }]
+      : [];
+  });
 
   const pendingFields = new Map<string, Set<string>>();
   for (const change of pending) {
@@ -267,6 +311,7 @@ export async function buildShikariPayload(
       qty: Object.fromEntries(
         Object.entries(qty.get(row.id) ?? {}).filter(([sku]) => runsHere.has(sku)),
       ),
+      raffles: entered.get(row.id) ?? [],
       pending: fields ? { fields: [...fields] } : null,
     };
   };
@@ -309,6 +354,8 @@ export async function buildShikariPayload(
       profiles: instance.rows.map(toDesired),
       known: knownFor(instance),
       products,
+      raffles: raffleOrder.map((r) => ({ sku: r.sku, name: r.name })),
     })),
+    raffleGaps,
   };
 }

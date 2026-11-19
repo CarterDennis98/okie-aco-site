@@ -10,6 +10,8 @@ import type {
   BuildReport,
   CheckoutReport,
   ProfileLine,
+  RaffleGap,
+  RaffleReport,
   WatchdogReport,
   WatchList,
 } from "@/lib/shikari/types";
@@ -245,6 +247,82 @@ function WatchdogBlock({
   );
 }
 
+/**
+ * The raffle groups: one per raffle anyone here is entered in, each with its entries added,
+ * changed and taken out -- and the groups no raffle needs any more, taken out.
+ */
+function RaffleBlock({ raffles }: { raffles: RaffleReport }) {
+  const entries = raffles.groups.reduce(
+    (sum, g) => sum + g.added.length + g.changed.length + g.unchanged,
+    0,
+  );
+  const added = raffles.groups.reduce((sum, g) => sum + g.added.length, 0);
+  const changed = raffles.groups.reduce((sum, g) => sum + g.changed.length, 0);
+  const removed = raffles.groups.reduce((sum, g) => sum + g.removed.length, 0);
+  const touched =
+    added + changed + removed + raffles.removed.length > 0 ||
+    raffles.groups.some((g) => g.created || g.renamedFrom);
+  return (
+    <Block
+      title="Raffles"
+      changed={touched}
+      summary={
+        raffles.groups.length === 0 && raffles.removed.length === 0
+          ? "none"
+          : tally([
+              [raffles.groups.length, raffles.groups.length === 1 ? "group" : "groups"],
+              [entries, entries === 1 ? "entry" : "entries"],
+              [added, "added"],
+              [changed, "changed"],
+              [removed, "removed"],
+              [
+                raffles.removed.length,
+                raffles.removed.length === 1 ? "group taken out" : "groups taken out",
+              ],
+            ])
+      }
+    >
+      {raffles.groups.map((g) => (
+        <div key={g.sku}>
+          <p>
+            <span className="font-medium text-white">{g.name}</span>{" "}
+            <span className="text-[var(--color-muted)]">
+              · {g.product} ·{" "}
+              {n(g.added.length + g.changed.length + g.unchanged, "entry", "entries")}
+              {g.created && " · new group"}
+              {g.renamedFrom && ` · renamed from “${g.renamedFrom}”`}
+            </span>
+          </p>
+          <div className="mt-0.5 space-y-0.5 pl-3">
+            <Names label="Added" items={g.added} />
+            <Names
+              label="Changed"
+              items={g.changed.map((c) => `${c.profile} (${c.what.join(", ")})`)}
+            />
+            <Names label="Removed" items={g.removed} tone="warn" />
+            <Names label="Others' tasks, left alone" items={g.untouched} tone="muted" />
+          </div>
+        </div>
+      ))}
+      <Names
+        label="Groups taken out"
+        items={raffles.removed.map((g) => `${g.name} (${g.why}; ${n(g.tasks, "task")})`)}
+        tone="warn"
+      />
+      <Names
+        label="Entered, but not a profile in this backup, so no entry"
+        items={raffles.missingProfile}
+        tone="warn"
+      />
+      {raffles.template === "built-in" && (
+        <p className="text-[var(--color-muted)]">
+          No Draw task in this backup to copy, so new entries use Shikari&rsquo;s standard one.
+        </p>
+      )}
+    </Block>
+  );
+}
+
 function InstanceReview({
   built,
   done,
@@ -450,6 +528,8 @@ function ReviewDetails({ built, report: r }: { built: BuiltInstance; report: Bui
         )}
       </Block>
 
+      <RaffleBlock raffles={r.raffles} />
+
       <details className="border-t border-[var(--color-edge)] pt-2.5">
         <summary className="cursor-pointer text-sm">
           <span className="font-semibold text-white">The file itself</span>{" "}
@@ -499,6 +579,7 @@ function ReviewDetails({ built, report: r }: { built: BuiltInstance; report: Bui
 
 export function ShikariReview({
   built,
+  raffleGaps,
   done,
   onBack,
   onConfirm,
@@ -506,6 +587,8 @@ export function ShikariReview({
   onStartOver,
 }: {
   built: BuiltInstance[];
+  /** Raffle entries no instance here runs: said once, above every instance. */
+  raffleGaps: RaffleGap[];
   done: boolean;
   onBack: () => void;
   onConfirm: () => void;
@@ -517,6 +600,29 @@ export function ShikariReview({
 
   return (
     <div className="space-y-6">
+      {raffleGaps.length > 0 && (
+        <div
+          role="alert"
+          className="rounded-xl border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/5 px-4 py-3 text-sm"
+        >
+          <p className="font-semibold text-white">
+            Some raffle entries aren&rsquo;t on any instance in this export.
+          </p>
+          <p className="mt-1 text-[var(--color-muted)]">
+            Their members aren&rsquo;t picked on any instance, or they&rsquo;re past the profiles
+            the main bot runs and there&rsquo;s no backup instance. Nothing enters these unless you
+            add them.
+          </p>
+          <ul className="mt-2 space-y-0.5 text-xs">
+            {raffleGaps.map((gap) => (
+              <li key={gap.raffle}>
+                <span className="font-medium text-white">{gap.raffle}</span>
+                <span className="text-[var(--color-muted)]"> · {gap.profiles.join(", ")}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {done ? (
         <div
           role="status"
