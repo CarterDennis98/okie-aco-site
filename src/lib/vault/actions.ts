@@ -20,6 +20,7 @@ import { detectBrand, isPlausibleCvv, last4, normalizePan } from "@/lib/vault/ca
 import { moveCard, sealCard } from "@/lib/vault/card-secrets";
 import { encrypt } from "@/lib/vault/crypto";
 import { domainOf, unsupportedMessage } from "@/lib/vault/email-providers";
+import { planForwards, type ForwardSkip } from "@/lib/vault/forwarding";
 import { resolveMailProvider } from "@/lib/vault/email-mx";
 import { revealCredential, type RevealResult } from "@/lib/vault/reveal";
 import { testCredential, type ImapTestOutcome } from "@/lib/vault/imap-test";
@@ -1240,6 +1241,143 @@ export async function saveEmailAlias(form: FormData): Promise<ActionResult> {
 
   revalidatePath("/dashboard/profiles");
   return { ok: true };
+}
+
+/** The most addresses one bulk forward takes: past any member's count, and a bound on one POST. */
+const MAX_FORWARDS = 1000;
+
+export type ForwardManyResult =
+  | { ok: true; forwarded: number; to: string; skipped: ForwardSkip[] }
+  | { ok: false; error: string };
+
+/**
+ * Point many addresses at one inbox at once: saveEmailAlias for a whole selection.
+ *
+ * A member who adds 200 profiles on addresses that all land in one Gmail had to pick that
+ * Gmail 200 times. The rules are the single action's, per address, decided in planForwards,
+ * which also only takes addresses on the member's own logins.
+ *
+ * An address that can't be forwarded is skipped and named, never fatal: one stale row in a
+ * selection of 200 shouldn't cost the other 199. One notification for the lot, like every
+ * other bulk change, with every row stamped at the same instant.
+ */
+export async function forwardEmailAddresses(form: FormData): Promise<ForwardManyResult> {
+  const viewer = await requireMember();
+  const credentialId = text(form, "credentialId");
+  const emails = [
+    ...new Set(
+      form
+        .getAll("email")
+        .map((value) => String(value).trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (emails.length === 0) return { ok: false, error: "Tick the addresses to forward." };
+  if (!credentialId) return { ok: false, error: "Pick the inbox they forward to." };
+  if (emails.length > MAX_FORWARDS) {
+    return {
+      ok: false,
+      error: `That's ${emails.length} addresses. Forward up to ${MAX_FORWARDS} at a time.`,
+    };
+  }
+
+  const inbox = await prisma.emailCredential.findFirst({
+    where: { id: credentialId, discordUserId: viewer.discordUserId },
+    select: { id: true, email: true },
+  });
+  if (!inbox) return { ok: false, error: "Not found." };
+
+  const [logins, passwords, aliases] = await Promise.all([
+    prisma.vaultAccount.findMany({
+      where: { discordUserId: viewer.discordUserId },
+      select: { email: true },
+    }),
+    prisma.emailCredential.findMany({
+      where: { discordUserId: viewer.discordUserId },
+      select: { email: true },
+    }),
+    // Every member's, not just theirs: a forwarded address is unique across members.
+    prisma.emailAlias.findMany({
+      where: { email: { in: emails } },
+      select: { id: true, email: true, discordUserId: true, credentialId: true },
+    }),
+  ]);
+
+  const plan = planForwards({
+    emails,
+    inbox,
+    viewerId: viewer.discordUserId,
+    logins: logins.map((login) => login.email),
+    ownPasswords: passwords.map((password) => password.email),
+    aliases,
+  });
+
+  const created = await prisma.$transaction(async (tx) => {
+    const rows =
+      plan.create.length === 0
+        ? []
+        : await tx.emailAlias.createManyAndReturn({
+            data: plan.create.map((email) => ({
+              discordUserId: viewer.discordUserId,
+              email,
+              credentialId: inbox.id,
+            })),
+            // Claimed by somebody else since the read above: theirs stays theirs.
+            skipDuplicates: true,
+            select: { id: true, email: true },
+          });
+    if (plan.repoint.length > 0) {
+      await tx.emailAlias.updateMany({
+        where: {
+          id: { in: plan.repoint.map((alias) => alias.id) },
+          discordUserId: viewer.discordUserId,
+        },
+        data: { credentialId: inbox.id },
+      });
+    }
+    return rows;
+  });
+
+  const made = new Set(created.map((row) => row.email));
+  const skipped = [
+    ...plan.skipped,
+    ...plan.create
+      .filter((email) => !made.has(email))
+      .map((email) => ({ email, why: "is already claimed" })),
+  ];
+
+  const changed = [
+    ...created.map((row) => ({ ...row, action: VaultAction.CREATE })),
+    ...plan.repoint.map((row) => ({ ...row, action: VaultAction.UPDATE })),
+  ];
+  const changes = changed.map((row) => ({
+    actorDiscordId: viewer.discordUserId,
+    ownerDiscordId: viewer.discordUserId,
+    entity: VaultEntity.EMAIL_ALIAS,
+    entityId: row.id,
+    action: row.action,
+    // A mailbox serves every retailer its owner uses, so it belongs to no one runner.
+    assigneeId: null,
+    label: `${row.email} -> ${inbox.email}`,
+    fields: ["forwards to"],
+  }));
+  const n = changes.length;
+  if (n > 0) {
+    await recordBulkChange(
+      changes,
+      viewer.displayName,
+      `forwarded ${n} address${n === 1 ? "" : "es"} to \`${inbox.email}\``,
+      // The notice names the inbox once, so its list needs only the addresses.
+      {
+        listed: changes.map((change, i) => ({ ...change, label: changed[i].email })),
+        at: new Date(),
+      },
+    );
+  }
+
+  revalidatePath("/dashboard/profiles");
+  return { ok: true, forwarded: n, to: inbox.email, skipped };
 }
 
 export async function deleteEmailAlias(form: FormData): Promise<ActionResult> {

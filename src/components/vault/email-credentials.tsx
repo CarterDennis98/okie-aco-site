@@ -7,13 +7,13 @@ import { EMAIL_PROVIDERS } from "@/lib/vault/email-providers";
 import {
   deleteEmailAlias,
   deleteEmailCredential,
-  saveEmailAlias,
   saveEmailCredential,
   testOwnEmailCredential,
   type ActionResult,
 } from "@/lib/vault/actions";
 import { TestButton } from "@/components/vault/imap-test-controls";
 import { PasswordInput } from "@/components/vault/password-input";
+import { UncoveredAddresses } from "@/components/vault/uncovered-addresses";
 
 /**
  * Email app passwords, for reading checkout verification codes over IMAP.
@@ -28,7 +28,9 @@ import { PasswordInput } from "@/components/vault/password-input";
  * FORWARDING is the second half of this section. Ten retailer accounts whose mail all
  * lands in one Gmail need one app password between them, so an address can either hold a
  * password of its own or point at the mailbox it forwards into. The list below shows
- * both, because "why does that address have no password" is otherwise a mystery.
+ * both, because "why does that address have no password" is otherwise a mystery. Addresses
+ * not yet covered either way are listed under it, where they can be forwarded one at a time
+ * or hundreds at once (see uncovered-addresses.tsx).
  */
 
 const field =
@@ -136,50 +138,6 @@ function RemoveAlias({ id, alias }: { id: string; alias: string }) {
       >
         ×
       </button>
-    </form>
-  );
-}
-
-/**
- * "This address forwards into one of my inboxes."
- *
- * A select that submits on change rather than a select plus a Save button: there is one
- * field, and a member clearing up ten forwarded addresses should not click twenty times.
- */
-function ForwardPicker({
-  email,
-  credentials,
-}: {
-  email: string;
-  credentials: EmailCredentialSummary[];
-}) {
-  const [state, formAction] = useActionState(
-    async (_previous: ActionResult | null, formData: FormData) => saveEmailAlias(formData),
-    null,
-  );
-
-  return (
-    <form action={formAction} className="flex items-center gap-2">
-      <input type="hidden" name="email" value={email} />
-      <select
-        name="credentialId"
-        defaultValue=""
-        aria-label={`Inbox that ${email} forwards to`}
-        onChange={(e) => e.currentTarget.form?.requestSubmit()}
-        className="max-w-52 min-h-11 rounded-lg border border-[var(--color-edge)] bg-[var(--color-ink)] px-2 py-1 text-base text-[var(--color-fg)] focus:border-[var(--color-brand)] focus:outline-none sm:min-h-0 sm:text-xs"
-      >
-        <option value="" disabled>
-          Forwards to…
-        </option>
-        {credentials.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.email}
-          </option>
-        ))}
-      </select>
-      {state && !state.ok && (
-        <span className="text-[11px] text-[var(--color-warn)]">{state.error}</span>
-      )}
     </form>
   );
 }
@@ -362,39 +320,13 @@ export function EmailCredentials({
         </ul>
       )}
 
-      {needingPassword.length > 0 && (
-        <div className="mt-4">
-          <p className="mb-2 text-xs text-[var(--color-muted)]">
-            <span className="text-[var(--color-fg)]">{needingPassword.length}</span> address
-            {needingPassword.length === 1 ? " has" : "es have"} nowhere to read a code from. Give
-            each one its own app password, or — if its mail lands in an inbox you have already added
-            — point it there instead.
-          </p>
-          {/* Scrolls rather than running the page long: a member can have dozens of these. */}
-          <ul className="max-h-64 divide-y divide-[var(--color-edge)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--color-edge)] bg-[var(--color-surface)]">
-            {needingPassword.map((email) => (
-              <li
-                key={email}
-                className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 sm:px-5"
-              >
-                <span className="min-w-0 flex-1 truncate text-sm text-[var(--color-fg)]">
-                  {email}
-                </span>
-                {credentials.length > 0 && (
-                  <ForwardPicker email={email} credentials={credentials} />
-                )}
-                <button
-                  type="button"
-                  onClick={() => setAdding(email)}
-                  className="inline-flex min-h-11 items-center text-sm font-medium text-[var(--color-fg)] transition-colors hover:text-white sm:min-h-0 sm:text-xs"
-                >
-                  Add password
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* Always mounted, empty list or not: forwarding the last of them empties it, and
+          what happened to them still needs saying. */}
+      <UncoveredAddresses
+        emails={needingPassword}
+        credentials={credentials}
+        onAddPassword={setAdding}
+      />
 
       {adding === null ? (
         <button
