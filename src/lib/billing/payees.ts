@@ -36,11 +36,12 @@ export type Payee = {
 
 const PAYEES: readonly Payee[] = [
   {
-    // Runs Stellar on Crunchyroll and his own Valor on Mattel, and runs every Menards
-    // profile, so fees on all three are his.
+    // Runs Stellar on Crunchyroll and Costco, his own Valor on Mattel, and every Menards
+    // profile, so fees on all four are his -- Costco's since 2026-11-20, starting with its
+    // first drop (11-19).
     id: "397045810996576266",
     name: "chess",
-    sites: ["crunchyroll", "mattel", "menards"],
+    sites: ["crunchyroll", "mattel", "menards", "costco"],
     handles: [
       { method: "venmo", value: "@TJ-Chess" },
       { method: "zelle", value: "(412) 512-8682" },
@@ -75,9 +76,10 @@ const CLAIMED_SITES = new Set(PAYEES.flatMap((payee) => payee.sites.map((s) => s
 /**
  * Who a fee on this retailer is owed to, when it isn't the operator; null when it is.
  *
- * The site's copy of the bot's `payees.forSite`: Crunchyroll, Mattel and Menards to chess,
- * Premium Bandai to peacemaker, Topps to CrispHeinz, everything else to whoever runs
- * billing. Keyed through siteKey, so Valor's "Mattel Creations" is chess's too. Read by the
+ * The site's copy of the bot's `payees.forSite`: Crunchyroll, Mattel, Menards and Costco to
+ * chess, Premium Bandai to peacemaker, Topps to CrispHeinz, everything else to whoever runs
+ * billing. Keyed through siteKey, so Valor's "Mattel Creations" and Stellar's "Costco US" are
+ * chess's too. Read by the
  * ad hoc fee, which has to reach the same answer /pas run would have -- a runner on Target
  * who issues one is not owed it, the operator is, exactly as for the rest of that night's
  * Target fees.

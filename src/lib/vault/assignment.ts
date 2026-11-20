@@ -8,12 +8,13 @@
  *   1. THE RUNNER WHO ALREADY HAS THIS MEMBER on the retailer, when all their existing rows
  *      there sit with one runner. A member's profiles on one site travel together: their
  *      fifth Target profile belongs on the same bot as the first four.
- *   2. THE RETAILER'S DEFAULT RUNNER, where one is named -- chess on Costco. For a retailer
- *      whose bot somebody runs without being owed its fees; see DEFAULT_RUNNERS.
- *   3. THE RETAILER'S PAYEE, when it has one -- chess for Crunchyroll, Mattel and Menards,
- *      peacemaker for Premium Bandai, CrispHeinz for Topps. Whoever is owed a retailer's
- *      fees is the person running its bot, so a new member there is theirs from the start
- *      rather than waiting on a full admin to hand them over.
+ *   2. THE RETAILER'S DEFAULT RUNNER, where one is named -- chess on Costco, named before its
+ *      fees were his. For a retailer whose bot somebody runs without being owed its fees;
+ *      see DEFAULT_RUNNERS.
+ *   3. THE RETAILER'S PAYEE, when it has one -- chess for Crunchyroll, Mattel, Menards and
+ *      Costco, peacemaker for Premium Bandai, CrispHeinz for Topps. Whoever is owed a
+ *      retailer's fees is the person running its bot, so a new member there is theirs from
+ *      the start rather than waiting on a full admin to hand them over.
  *   4. THE OPERATOR, for everything else. On a retailer shared between runners, a new
  *      member lands with the full admin who decides how to split them.
  *

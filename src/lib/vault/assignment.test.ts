@@ -47,13 +47,13 @@ describe("pickDefaultAssignee", () => {
   });
 
   /**
-   * chess runs Costco and is not owed its fees, so it is his default-runner entry that sends
-   * a new Costco member to him -- not a payee entry, which would have moved the money too.
+   * chess runs Costco. His default-runner entry sends a new Costco member to him, and since
+   * 2026-11-20 he is owed Costco's fees as well, so his payee entry agrees with it.
    */
   it("gives a new Costco member to chess, through his default-runner entry", () => {
     const siteRunner = defaultRunnerFor("Costco");
     expect(siteRunner).toBe(CHESS);
-    expect(payeeForSite("costco")).toBeNull();
+    expect(payeeForSite("costco")?.id).toBe(CHESS);
     expect(pick({ siteRunner })).toBe(CHESS);
     // Only while he holds the Costco role.
     expect(pick({ siteRunner, eligible: new Set([OPERATOR]) })).toBe(OPERATOR);

@@ -265,6 +265,17 @@ describe("billCoversSite", () => {
     expect(billCoversSite(OPERATOR, "menards")).toBe(false);
     expect(billCoversSite(CRISP, "menards")).toBe(false);
   });
+
+  /**
+   * Stellar reports Costco as "Costco US". Its fees have been chess's since 2026-11-20, so his
+   * bill's breakdown shows those orders and the operator's does not.
+   */
+  it("gives Costco to chess under Stellar's name for it", () => {
+    expect(billCoversSite(CHESS, "Costco US")).toBe(true);
+    expect(billCoversSite(CHESS, "https://www.costco.com")).toBe(true);
+    expect(billCoversSite(OPERATOR, "Costco US")).toBe(false);
+    expect(billCoversSite(CRISP, "costco")).toBe(false);
+  });
 });
 
 describe("mayExport", () => {

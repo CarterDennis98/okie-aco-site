@@ -65,9 +65,9 @@ export const RUNNER_ROLES: Readonly<Record<string, string>> = {
  *
  * A brand-new member's first profile on a retailer lands with whoever that retailer's fees
  * are owed to (payees.ts), and otherwise with the operator -- see pickDefaultAssignee. That
- * ties running a retailer's bot to being paid for it, which holds for chess on Menards and
- * not on Costco: chess runs Costco, and Costco's fees are still the operator's. An entry here
- * sends the new members to the runner and moves no money.
+ * ties running a retailer's bot to being paid for it, which doesn't always hold: chess ran
+ * Costco from 2026-11-09 while its fees stayed the operator's, until they became his too on
+ * 2026-11-20. An entry here sends the new members to the runner and moves no money.
  *
  * Checked after the runner who already holds the member there -- a member's profiles on one
  * retailer travel together -- and only while this runner still holds the retailer's role in
@@ -78,7 +78,8 @@ export const RUNNER_ROLES: Readonly<Record<string, string>> = {
  * members' cards belongs in the history, next to the change that did it.
  */
 export const DEFAULT_RUNNERS: Readonly<Record<string, string>> = {
-  // chess, since 2026-11-09: he runs Costco's bot, and its fees stay the operator's.
+  // chess, since 2026-11-09: he runs Costco's bot. Since 2026-11-20 he is also owed its fees
+  // (payees.ts), so his payee entry would send him the same members; the two agree.
   costco: "397045810996576266",
 };
 

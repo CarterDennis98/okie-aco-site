@@ -387,7 +387,8 @@ const SITES: Record<string, Omit<SiteStyle, "key">> = {
     // (see getMemberLogins); it is in no export until they do.
     //
     // chess runs it: he holds the Costco runner role, and a new member's Costco profile goes
-    // to him (DEFAULT_RUNNERS, lib/auth/admin-scope.ts). Its fees stay the operator's.
+    // to him (DEFAULT_RUNNERS, lib/auth/admin-scope.ts). Its fees are his too since 2026-11-20
+    // (lib/billing/payees.ts); until then they were the operator's.
     //
     // Still no app password: nothing is known to read a Costco code out of a member's inbox
     // yet. If the bot starts signing in somewhere Costco emails one, delete this line and
