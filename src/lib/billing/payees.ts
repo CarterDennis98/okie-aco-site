@@ -41,7 +41,10 @@ const PAYEES: readonly Payee[] = [
     id: "397045810996576266",
     name: "chess",
     sites: ["crunchyroll", "mattel", "menards"],
-    handles: [{ method: "venmo", value: "@TJ-Chess" }],
+    handles: [
+      { method: "venmo", value: "@TJ-Chess" },
+      { method: "zelle", value: "(412) 512-8682" },
+    ],
   },
   {
     // Runs Premium Bandai. No webhook reaches the bot from there, so /pas run never sees a
