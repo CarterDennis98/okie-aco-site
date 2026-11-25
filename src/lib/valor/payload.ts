@@ -36,10 +36,11 @@ import { providerForEmail } from "@/lib/vault/email-providers";
  *   POKÉMON CENTER  every active profile on the operator's bot but the operator's OWN --
  *                   ou1998's, kept by hand in Valor groups of their own ("PKC Personal") --
  *                   split between the instances by splitPkc.
- *   TARGET          for the second instance only: every active Target profile on the
- *                   operator's bot that picked from the Miscellaneous line (MISC_LINE) --
- *                   main-bot and backup-bot alike, since a pick names its profiles -- with
- *                   its login and the mailbox its codes arrive at.
+ *   TARGET          for the second instance only, and only with its "Target tasks" box
+ *                   ticked: every active Target profile on the operator's bot that picked
+ *                   from the Miscellaneous line (MISC_LINE) -- main-bot and backup-bot
+ *                   alike, since a pick names its profiles -- with its login and the
+ *                   mailbox its codes arrive at.
  *
  * Both instances are always split, whichever are asked for, so a profile that comes out of
  * one is said to run on the other.
@@ -134,12 +135,20 @@ function toDesired(row: ProfileRow): DesiredValorProfile {
   };
 }
 
+/**
+ * `withTarget`: whether the second instance runs the Miscellaneous line's Target side this
+ * time -- the export's "Target tasks" box. Off, no Target profile is read, decrypted or
+ * audited, and the instance comes back with `misc: null`, which the build reads as "leave
+ * Target alone".
+ */
 export async function buildValorPayload(
   operatorId: string,
   positions: ValorPosition[],
+  withTarget: boolean,
 ): Promise<ValorPayloadResult> {
   const wanted = [...new Set(positions)].sort();
-  const withMisc = wanted.includes(MISC_POSITION);
+  const withMisc = withTarget && wanted.includes(MISC_POSITION);
+  const runsMisc = (position: ValorPosition) => withMisc && position === MISC_POSITION;
 
   // --- Pokémon Center ---
   const [pkcRows, pkcKnown] = await Promise.all([
@@ -227,9 +236,7 @@ export async function buildValorPayload(
         [...split[position].main, ...split[position].backup],
         false,
       ),
-      ...(position === MISC_POSITION && misc
-        ? audit(VALOR_TARGET_SITE, position, misc.rows, true)
-        : []),
+      ...(runsMisc(position) && misc ? audit(VALOR_TARGET_SITE, position, misc.rows, true) : []),
     ]),
   });
 
@@ -295,8 +302,9 @@ export async function buildValorPayload(
       position,
       main: split[position].main.map(toDesired),
       backup: split[position].backup.map(toDesired),
-      misc: position === MISC_POSITION ? desiredMisc : null,
-      products: position === MISC_POSITION ? (misc?.catalog ?? []) : [],
+      // Null, not an empty list, when Target is off: an empty list would empty Target.
+      misc: runsMisc(position) ? desiredMisc : null,
+      products: runsMisc(position) ? (misc?.catalog ?? []) : [],
       known: [
         ...pkcKnown.map((profile) => ({
           site: "pkc" as const,
@@ -304,7 +312,7 @@ export async function buildValorPayload(
           email: profile.account.email,
           why: pkcWhy(profile, position),
         })),
-        ...(position === MISC_POSITION ? targetKnown() : []),
+        ...(runsMisc(position) ? targetKnown() : []),
       ],
     })),
   };

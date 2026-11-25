@@ -5,7 +5,13 @@ import type { ValorOverview } from "@/db/queries/valor";
 import { MISC_LINE } from "@/lib/products/misc-line";
 import { prepareValorExport } from "@/lib/valor/actions";
 import { buildValorInstance } from "@/lib/valor/build";
-import { ACO_BACKUP, ACO_MAIN, TARGET_PROXY_GROUP } from "@/lib/valor/format";
+import {
+  ACO_BACKUP,
+  ACO_MAIN,
+  TARGET_PROXY_GROUP,
+  TARGET_TASK_GROUP,
+  groupKey,
+} from "@/lib/valor/format";
 import {
   readValorSetup,
   valorSetupFile,
@@ -18,7 +24,12 @@ import {
   VALOR_POSITIONS,
   type ValorPosition,
 } from "@/lib/valor/split";
-import { summarizeValorBackup, type ValorGroupLine, type ValorSummary } from "@/lib/valor/summary";
+import {
+  hasTargetSide,
+  summarizeValorBackup,
+  type ValorGroupLine,
+  type ValorSummary,
+} from "@/lib/valor/summary";
 import type { MiscTaskLine, ValorProfileLine, ValorReport } from "@/lib/valor/types";
 
 /**
@@ -27,13 +38,16 @@ import type { MiscTaskLine, ValorProfileLine, ValorReport } from "@/lib/valor/ty
  *
  * The backups are read and rebuilt HERE, in the browser, and never uploaded: only which
  * instances to build goes to the server, which answers with what the vault says each should
- * hold. Who runs where is a fixed rule (valor/split.ts), so there is nothing to set up.
+ * hold. Who runs where is a fixed rule (valor/split.ts), so there is nothing to set up but
+ * the second instance's "Target tasks" box: whether it runs the Miscellaneous line. Until
+ * the operator clicks it, it follows the backup -- on when it has a Target side, off when it
+ * has none -- and off, Target is left exactly as it is.
  *
  * A backup is the zip Valor exports, or an older one-file .json, and comes back out as the
  * same kind of file (valor/setup.ts).
  */
 
-type Slot = { name: string; size: number; setup: ValorSetup; summary: ValorSummary };
+type Slot = { name: string; size: number; setup: ValorSetup };
 
 type Built = {
   position: ValorPosition;
@@ -75,16 +89,27 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
   const [built, setBuilt] = useState<Built[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** The "Target tasks" box as the operator set it; null until they do. */
+  const [targetChoice, setTargetChoice] = useState<boolean | null>(null);
+
+  const miscBackup = slots[MISC_POSITION]?.setup.backup;
+  const target = targetChoice ?? (miscBackup ? hasTargetSide(miscBackup) : true);
+  const runsMisc = (position: ValorPosition) => position === MISC_POSITION && target;
+  const summaries: Partial<Record<ValorPosition, ValorSummary>> = Object.fromEntries(
+    VALOR_POSITIONS.filter((p) => slots[p]).map((p) => [
+      p,
+      summarizeValorBackup(slots[p]!.setup.backup, runsMisc(p)),
+    ]),
+  );
 
   async function load(position: ValorPosition, file: File) {
     setLoading(position);
     setSlotError((e) => ({ ...e, [position]: undefined }));
     try {
       const setup = await readValorSetup(new Uint8Array(await file.arrayBuffer()));
-      const summary = summarizeValorBackup(setup.backup, position);
       setSlots((s) => ({
         ...s,
-        [position]: { name: file.name, size: file.size, setup, summary },
+        [position]: { name: file.name, size: file.size, setup },
       }));
     } catch (failure) {
       setSlots((s) => ({ ...s, [position]: undefined }));
@@ -101,7 +126,7 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
     setError(null);
     const positions = VALOR_POSITIONS.filter((p) => slots[p]);
     if (positions.length === 0) return setError("Add at least one instance's backup first.");
-    const refused = positions.filter((p) => (slots[p]?.summary.problems.length ?? 0) > 0);
+    const refused = positions.filter((p) => (summaries[p]?.problems.length ?? 0) > 0);
     if (refused.length > 0) {
       return setError(
         `Instance ${refused.join(" and ")}'s backup can't be exported as it is — see what's missing above.`,
@@ -109,7 +134,7 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
     }
 
     setBusy("Reading the vault…");
-    const payload = await prepareValorExport({ instances: positions }).catch(() => ({
+    const payload = await prepareValorExport({ instances: positions, misc: target }).catch(() => ({
       ok: false as const,
       error: "The site couldn't be reached. Nothing was exported.",
     }));
@@ -175,6 +200,7 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
     // The rebuilt files hold every card in clear. Dropping them is the point.
     setBuilt([]);
     setSlots({});
+    setTargetChoice(null);
     setStep("setup");
   }
 
@@ -229,6 +255,13 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
     <div className="space-y-6">
       {VALOR_POSITIONS.map((position) => {
         const counts = share(position);
+        const summary = summaries[position];
+        // Tasks a Target left alone still holds, from an earlier export or set up by hand.
+        const leftInTarget =
+          position === MISC_POSITION && !target
+            ? (summary?.taskGroups.find((g) => groupKey(g.name) === groupKey(TARGET_TASK_GROUP))
+                ?.count ?? 0)
+            : 0;
         return (
           <section
             key={position}
@@ -238,15 +271,44 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
             <p className="mt-1 text-sm text-[var(--color-muted)]">
               {position === 1
                 ? `Pokémon Center: the first ${FIRST_INSTANCE_CAP} main-bot and first ${FIRST_INSTANCE_CAP} backup-bot profiles, by name.`
-                : `Pokémon Center: every profile past the first ${FIRST_INSTANCE_CAP} of each. Target: the ${MISC_LINE} line's picks.`}
+                : `Pokémon Center: every profile past the first ${FIRST_INSTANCE_CAP} of each.${target ? ` Target: the ${MISC_LINE} line's picks.` : ""}`}
             </p>
             <p className="mt-1 text-sm text-[var(--color-fg)]">
               Runs {n(counts.main, "main-bot profile")} in &ldquo;{ACO_MAIN}&rdquo; and{" "}
               {n(counts.backup, "backup-bot profile")} in &ldquo;{ACO_BACKUP}&rdquo;
-              {position === MISC_POSITION &&
+              {runsMisc(position) &&
                 `, and ${n(overview.misc.profiles, "Target profile")} of ${n(overview.misc.members, "member")} for the ${MISC_LINE} line’s ${n(overview.misc.products, "product")}, on “${TARGET_PROXY_GROUP}”`}
               .
             </p>
+
+            {position === MISC_POSITION && (
+              <label className="mt-3 flex cursor-pointer items-start gap-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={target}
+                  onChange={(event) => setTargetChoice(event.currentTarget.checked)}
+                  className="mt-0.5 size-4 accent-[var(--color-brand)]"
+                />
+                <span>
+                  <span className="font-medium text-white">Target tasks</span>
+                  <span className="block text-xs text-[var(--color-muted)]">
+                    The {MISC_LINE} line&rsquo;s picks, built into Target&rsquo;s profiles, logins,
+                    mailboxes and tasks. Off, the export leaves Target exactly as it is, and a
+                    backup without it is fine.
+                    {targetChoice === null &&
+                      miscBackup &&
+                      !target &&
+                      " Off for this backup, which has no Target groups."}
+                  </span>
+                </span>
+              </label>
+            )}
+            {leftInTarget > 0 && (
+              <p className="mt-2 text-xs text-[var(--color-warn)]">
+                &ldquo;{TARGET_TASK_GROUP}&rdquo; keeps its {n(leftInTarget, "task")} as they are.
+                If Shikari runs the {MISC_LINE} line this drop, don&rsquo;t start them here.
+              </p>
+            )}
 
             <div className="mt-4">
               <label
@@ -274,10 +336,10 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
                       ? "Replace backup"
                       : "Choose this instance's Valor backup (.zip)"}
                 </span>
-                {slots[position] && (
+                {slots[position] && summary && (
                   <span>
                     {slots[position]!.name} · {megabytes(slots[position]!.size)} · Valor{" "}
-                    {slots[position]!.summary.version}
+                    {summary.version}
                   </span>
                 )}
               </label>
@@ -286,7 +348,7 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
                   {slotError[position]}
                 </p>
               )}
-              {slots[position] && <BackupSummary summary={slots[position]!.summary} />}
+              {summary && <BackupSummary summary={summary} />}
             </div>
           </section>
         );

@@ -11,13 +11,25 @@ import {
   isKnownValorVersion,
   type ValorBackup,
 } from "@/lib/valor/format";
-import { MISC_POSITION } from "@/lib/valor/split";
 
 /**
  * What the operator sees on adding a Valor backup, before anything is built: every group in
  * it and whether the export works in it, and anything that would make the build refuse it.
  * No secret in it -- names and counts only.
  */
+
+/**
+ * Whether the backup has a Target side for the Miscellaneous line at all -- a profile, task
+ * or login group by that name. The second instance's "Target tasks" box starts from this, so
+ * an instance with no Target in Valor isn't refused for it.
+ */
+export function hasTargetSide(backup: ValorBackup): boolean {
+  return (
+    groupsNamed(backup.profiles.groups, TARGET_PROFILE_GROUP).length > 0 ||
+    groupsNamed(backup.tasks.groups, TARGET_TASK_GROUP).length > 0 ||
+    groupsNamed(backup.accounts.groups, TARGET_ACCOUNT_GROUP).length > 0
+  );
+}
 
 export type ValorGroupLine = {
   name: string;
@@ -39,8 +51,8 @@ export type ValorSummary = {
   problems: string[];
 };
 
-export function summarizeValorBackup(backup: ValorBackup, position: number): ValorSummary {
-  const misc = position === MISC_POSITION;
+/** `misc`: this build runs the Miscellaneous line's Target side -- the second instance, ticked. */
+export function summarizeValorBackup(backup: ValorBackup, misc: boolean): ValorSummary {
   const problems: string[] = [];
   const need = <T extends { name: string }>(
     groups: Record<string, T>,

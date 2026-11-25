@@ -11,7 +11,8 @@ import { buildValorPayload, type ValorPayloadResult } from "@/lib/valor/payload"
  * where the secrets are, since a Server Action is a public POST endpoint.
  *
  * Nothing about the instances is saved: who runs where is a fixed rule (valor/split.ts), so
- * there is no setup to keep between drops.
+ * there is no setup to keep between drops. The one choice -- whether the second instance
+ * runs the Miscellaneous line's Target side -- comes with each request.
  */
 
 const request = z
@@ -21,6 +22,8 @@ const request = z
       .min(1)
       .max(2)
       .refine((list) => new Set(list).size === list.length, "Each instance once."),
+    /** The second instance's "Target tasks" box. A page from before it existed means on. */
+    misc: z.boolean().default(true),
   })
   .strict();
 
@@ -34,7 +37,7 @@ export async function prepareValorExport(raw: unknown): Promise<ValorPayloadResu
     return { ok: false, error: "That request didn't come through. Reload the page and try again." };
   }
   try {
-    return await buildValorPayload(viewer.discordUserId, parsed.data.instances);
+    return await buildValorPayload(viewer.discordUserId, parsed.data.instances, parsed.data.misc);
   } catch (error) {
     // The message only, like every other action here: a vault error is written never to carry
     // plaintext, and the full error object can.

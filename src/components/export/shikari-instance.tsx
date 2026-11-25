@@ -73,7 +73,7 @@ const SECTIONS: { key: keyof Sections; label: string; hint: string; within?: key
   {
     key: "misc",
     label: `${MISC_LINE} tasks`,
-    hint: `The ${MISC_LINE} line's picks, in a “${MISC_GROUP}” task group built like Target, on the same proxies. Valor builds the line too, so start it on one bot. Off, that group is emptied.`,
+    hint: `The ${MISC_LINE} line's picks, in a “${MISC_GROUP}” task group built like Target, on the same proxies. Valor's second instance can build the line too, so start it on one bot. Off, that group is emptied.`,
     within: "tasks",
   },
   {

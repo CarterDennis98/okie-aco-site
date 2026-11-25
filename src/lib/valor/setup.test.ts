@@ -73,7 +73,7 @@ describe("readValorSetup: Valor's zip", () => {
 
   it("counts Valor 3.0.241 as the Valor the export was built against", async () => {
     const setup = await readValorSetup(valorZip(valorZipFiles()));
-    expect(summarizeValorBackup(setup.backup, 2)).toMatchObject({
+    expect(summarizeValorBackup(setup.backup, true)).toMatchObject({
       version: "3.0.241",
       otherVersion: false,
       problems: [],
@@ -82,7 +82,9 @@ describe("readValorSetup: Valor's zip", () => {
       uuid: sequence(),
     });
     expect(report.warnings).toEqual([]);
-    expect(summarizeValorBackup({ ...setup.backup, version: "3.1.0" }, 1).otherVersion).toBe(true);
+    expect(summarizeValorBackup({ ...setup.backup, version: "3.1.0" }, false).otherVersion).toBe(
+      true,
+    );
   });
 
   it("refuses a zip that isn't a Valor setup it knows, rather than half-reading it", async () => {

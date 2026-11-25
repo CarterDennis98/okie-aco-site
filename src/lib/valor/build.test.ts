@@ -374,6 +374,33 @@ describe("buildValorInstance: Pokémon Center", () => {
   });
 });
 
+describe("buildValorInstance: the second instance with Target off", () => {
+  it("leaves Target exactly as it is: profiles, logins, mailboxes and tasks", () => {
+    const source = valorBackup();
+    const desired = { ...desiredInstance(source), position: 2 as const };
+    const { backup, report } = build(desired, source);
+    expect(report.misc).toBeNull();
+    expect(untouchedPkc(backup)).toBe(untouchedPkc(source));
+  });
+
+  it("builds a backup with no Target groups at all", () => {
+    const source = valorBackup();
+    delete source.profiles.groups[IDS.target];
+    delete source.profiles.lists[IDS.target];
+    delete source.tasks.groups[IDS.targetTasks];
+    delete source.tasks.lists[IDS.targetTasks];
+    delete source.accounts.groups[IDS.targetLogins];
+    delete source.accounts.lists[IDS.targetLogins];
+    const desired = { ...desiredInstance(valorBackup()), position: 2 as const };
+    desired.main.pop();
+    const { backup, report } = build(desired, source);
+    expect(report.misc).toBeNull();
+    expect(report.pkc.profiles.removed.map((l) => l.name)).toEqual(["carol - 1"]);
+    expect(backup.accounts).toEqual(source.accounts);
+    expect(backup.imap).toEqual(source.imap);
+  });
+});
+
 describe("buildValorInstance: the Miscellaneous line on Target", () => {
   const ONE = "91000001";
   const TWO = "91000002";

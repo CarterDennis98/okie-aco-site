@@ -358,15 +358,16 @@ function MiscNote({ built, report: r }: { built: BuiltInstance; report: BuildRep
   return (
     <p className="mt-0.5 text-xs text-[var(--color-fg)]">
       Task group &ldquo;{misc.name}&rdquo; is emptied ({n(out, "task")} out): this instance
-      doesn&rsquo;t run the {MISC_LINE} line, so only Valor has its tasks.
+      doesn&rsquo;t run the {MISC_LINE} line, so only Valor has its tasks, if its export has
+      &ldquo;Target tasks&rdquo; on.
     </p>
   );
 }
 
 /**
- * The Miscellaneous line across the whole export, once any instance runs it: it's on Valor
- * too, so only one bot's tasks should be started; and profiles on an instance that doesn't run
- * it have only Valor's.
+ * The Miscellaneous line across the whole export, once any instance runs it: Valor's second
+ * instance can run it too (its export's "Target tasks" box), so only one bot's tasks should be
+ * started; and profiles on an instance that doesn't run it have only Valor's, if any.
  */
 function MiscWarnings({ built }: { built: BuiltInstance[] }) {
   if (!built.some((b) => b.misc.runs)) return null;
@@ -388,11 +389,12 @@ function MiscWarnings({ built }: { built: BuiltInstance[] }) {
       {tasks > 0 && (
         <>
           <p className="font-semibold text-white">
-            The {MISC_LINE} line is on Shikari and on Valor.
+            The {MISC_LINE} line is on Shikari, and can be on Valor too.
           </p>
           <p className="mt-1 text-[var(--color-muted)]">
-            Valor&rsquo;s export builds the line&rsquo;s tasks too, on its second instance. Start
-            them on one bot only for each drop, or members get checked out twice.
+            Valor&rsquo;s export builds the line&rsquo;s tasks too when its second instance has
+            &ldquo;Target tasks&rdquo; on. Start them on one bot only for each drop, or members get
+            checked out twice.
           </p>
         </>
       )}
@@ -400,8 +402,8 @@ function MiscWarnings({ built }: { built: BuiltInstance[] }) {
         <p className={tasks > 0 ? "mt-2 text-[var(--color-fg)]" : "font-semibold text-white"}>
           {where} picked from the {MISC_LINE} line, which{" "}
           {one ? "that instance doesn't" : "those instances don't"} run: their picks are on Valor
-          only. Tick &ldquo;{MISC_LINE} tasks&rdquo; on {one ? "it" : "them"} to run them on Shikari
-          too.
+          only, and only with its &ldquo;Target tasks&rdquo; on. Tick &ldquo;{MISC_LINE}
+          tasks&rdquo; on {one ? "it" : "them"} to run them on Shikari.
         </p>
       )}
     </div>
