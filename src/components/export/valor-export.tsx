@@ -565,6 +565,11 @@ function InstanceReview({
             >
               <Names label="Added for" items={g.added} />
               <Names label="Removed" items={g.removed} tone="warn" />
+              {g.copiedFrom && (
+                <p className="text-[var(--color-warn)]">
+                  New tasks copy their settings from {g.copiedFrom}, which stays in the group.
+                </p>
+              )}
               {g.untouched > 0 && (
                 <p className="text-[var(--color-muted)]">
                   {n(g.untouched, "task")} for profiles in other groups, left as they are.

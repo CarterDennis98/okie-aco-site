@@ -80,6 +80,11 @@ export type TaskGroupReport = {
   /** Tasks for profiles in another group, which the export leaves where they are. */
   untouched: number;
   after: number;
+  /**
+   * What the new tasks copied their settings from when the group held no ACO task yet --
+   * `the task for "carter - 1" (PKC Personal)` -- or null when they copied an ACO one.
+   */
+  copiedFrom: string | null;
 };
 
 export type ProfilesReport = {

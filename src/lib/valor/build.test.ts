@@ -287,6 +287,77 @@ describe("buildValorInstance: Pokémon Center", () => {
     );
   });
 
+  it("on a first export into empty groups, copies the operator's own task in each, and leaves it", () => {
+    // ACO Main and ACO Backup empty, so the task the operator added to each task group to
+    // copy from is for one of their own profiles -- with a login, which must not spread.
+    const b = valorBackup();
+    for (const id of [IDS.main, IDS.backup]) {
+      b.profiles.lists[id] = {};
+      b.profiles.groups[id].totalAmount = 0;
+    }
+    const mine = b.tasks.lists[IDS.personalTasks].Default["k-personal"];
+    for (const [id, proxy] of [
+      [IDS.isp, IDS.pkcIsp],
+      [IDS.resi, IDS.pkcResi],
+      [IDS.backupResi, IDS.pkcResi],
+    ]) {
+      const placeholder: ValorTask = {
+        ...structuredClone(mine),
+        id: `k-copy-${id}`,
+        proxyGroupID: proxy,
+        accountGroupID: IDS.walmartLogins,
+        account: { name: "alice1@example.com", id: "l-w-1" },
+      };
+      b.tasks.lists[id].Default = { [placeholder.id]: placeholder };
+      b.tasks.groups[id].taskCounts = { Default: 1 };
+      b.tasks.groups[id].totalAmount = 1;
+    }
+
+    const { backup, report } = build(desiredInstance(valorBackup()), b);
+    expect(report.pkc.profiles.added).toHaveLength(5);
+    expect(
+      report.pkc.taskGroups.map((g) => [g.name, g.added.length, g.untouched, g.copiedFrom]),
+    ).toEqual([
+      ["PKC ACO - ISP", 3, 1, 'the task for "PKC 1" (PKC Personal)'],
+      ["PKC ACO - Resi", 3, 1, 'the task for "PKC 1" (PKC Personal)'],
+      ["PKC ACO (backup) - Resi", 2, 1, 'the task for "PKC 1" (PKC Personal)'],
+    ]);
+    expect(report.warnings).toEqual([
+      '"PKC ACO - ISP", "PKC ACO - Resi" and "PKC ACO (backup) - Resi" held no ACO task yet, so their ' +
+        "new tasks copy the settings of the task already in each. Those tasks stay as they are: delete " +
+        "them in Valor once this file is loaded, if they were only there to copy from.",
+    ]);
+
+    // Each new task: the group's own proxies, the ACO profile, no login; the operator's last.
+    for (const [id, proxy, home] of [
+      [IDS.isp, IDS.pkcIsp, IDS.main],
+      [IDS.resi, IDS.pkcResi, IDS.main],
+      [IDS.backupResi, IDS.pkcResi, IDS.backup],
+    ]) {
+      const list = tasks(backup, id);
+      const placeholder = list.pop()!;
+      expect(placeholder.id).toBe(`k-copy-${id}`);
+      expect(placeholder.profile).toEqual({ name: "PKC 1", id: "p-pkc-1" });
+      expect(list.map((t) => t.profile?.name)).toEqual(names(backup, home));
+      for (const task of list) {
+        expect(task).toMatchObject({
+          proxyGroupID: proxy,
+          profileGroupID: home,
+          account: null,
+          accountGroupID: null,
+          status: "Idle",
+        });
+        expect(task.products).toEqual(mine.products);
+      }
+    }
+    expect(backup.tasks.lists[IDS.personalTasks]).toEqual(b.tasks.lists[IDS.personalTasks]);
+
+    // Once the ACO tasks are there, they are what a later export copies from.
+    const again = build(desiredInstance(backup), backup);
+    expect(again.report.pkc.taskGroups.every((g) => g.copiedFrom === null)).toBe(true);
+    expect(again.report.warnings).toEqual([]);
+  });
+
   it("refuses to leave another group's task pointing at a profile it takes out", () => {
     const b = valorBackup();
     // A personal task borrowing an ACO profile: the export must not delete it from under it.

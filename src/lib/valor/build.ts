@@ -525,12 +525,33 @@ class ValorBuilder {
         this.syncPkcTasks(group, home, profiles === "main" ? placed.main : placed.backup, aco),
       );
     }
+
+    const copied = this.report.pkc.taskGroups.filter((g) => g.copiedFrom !== null);
+    if (copied.length > 0) {
+      const names = copied.map((g) => `"${g.name}"`);
+      const list =
+        names.length === 1
+          ? names[0]
+          : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+      this.report.warnings.push(
+        copied.length === 1
+          ? `${list} held no ACO task yet, so its new tasks copy the settings of the task already in it. ` +
+              "That task stays as it is: delete it in Valor once this file is loaded, if it was only there to copy from."
+          : `${list} held no ACO task yet, so their new tasks copy the settings of the task already in each. ` +
+              "Those tasks stay as they are: delete them in Valor once this file is loaded, if they were only there to copy from.",
+      );
+    }
   }
 
   /**
    * One task per profile of `home` in `group`: each keeps the one it has, and one without
    * gets a copy of the group's own. A task for a profile in another group -- not an ACO one
    * -- is left where it is, after the group's own.
+   *
+   * A group with no ACO task to copy -- the first export into an instance whose ACO groups
+   * are empty -- copies the task it does hold: one the operator added in Valor for a profile
+   * of their own, there being no ACO profile yet to give it. Only its settings are taken, not
+   * its profile or login; it stays where it is, and the review says to delete it.
    */
   private syncPkcTasks(
     group: ValorTaskGroup,
@@ -542,7 +563,8 @@ class ValorBuilder {
     const all = Object.values(lists[DEFAULT_CATEGORY] ?? {});
     const ours = all.filter((t) => t.profileGroupID !== null && aco.has(t.profileGroupID));
     const theirs = all.filter((t) => !ours.includes(t));
-    const template = commonest(ours);
+    const borrowed = ours.length === 0 ? commonest(theirs) : null;
+    const template = commonest(ours) ?? borrowed;
     const report: TaskGroupReport = {
       name: group.name,
       added: [],
@@ -551,6 +573,7 @@ class ValorBuilder {
       renamed: 0,
       untouched: theirs.length,
       after: 0,
+      copiedFrom: null,
     };
 
     const byProfile = new Map<string, ValorTask[]>();
@@ -580,6 +603,14 @@ class ValorBuilder {
       const fresh = this.newTask(template);
       fresh.profile = { name: profile.name, id: profile.id };
       fresh.profileGroupID = home.id;
+      if (template === borrowed) {
+        // Its login, if it had one, is its own profile's: never every ACO task's.
+        fresh.account = null;
+        fresh.accountGroupID = null;
+        report.copiedFrom = borrowed.profile
+          ? `the task for "${borrowed.profile.name}" (${this.b.profiles.groups[borrowed.profileGroupID ?? ""]?.name ?? "another group"})`
+          : "a task with no profile";
+      }
       next.push(fresh);
       report.added.push(profile.name);
     }
