@@ -10,6 +10,7 @@ import {
   TARGET_TASK_GROUP,
   VALOR_VERSION,
   groupsNamed,
+  isKnownValorVersion,
   newValorProfile,
   updateValorProfile,
   type ValorAccount,
@@ -294,9 +295,9 @@ class ValorBuilder {
   }
 
   run(): ValorReport {
-    if (this.b.version !== VALOR_VERSION) {
+    if (!isKnownValorVersion(this.b.version)) {
       this.report.warnings.push(
-        `This backup is Valor format ${this.b.version}; the export was built against ${VALOR_VERSION}. ` +
+        `This backup is from Valor ${this.b.version}; the export was built against Valor ${VALOR_VERSION}. ` +
           "Load the new file into a spare Valor first.",
       );
     }

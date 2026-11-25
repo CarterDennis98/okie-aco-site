@@ -1,9 +1,12 @@
 /**
  * Runs the Valor export's builder against REAL backups, with no database.
  *
- *   npx tsx scripts/verify-valor.ts --main "F:/Documents/Okie ACO/valor-setup-main.json" \
- *                                   --second "F:/Documents/Okie ACO/valor-setup.json"
+ *   npx tsx scripts/verify-valor.ts --main "F:/Documents/Okie ACO/valor-setup-main.zip" \
+ *                                   --second "F:/Documents/Okie ACO/valor-setup.zip"
  *   ... --out-dir <dir>    # also write the drop's rebuilt copies there
+ *
+ * Each backup is the zip Valor 3.0.241 exports, or an older one-file .json; a rebuilt
+ * copy is written in the form its backup came in (lib/valor/setup.ts).
  *
  * The backups are never written to. Three passes per instance:
  *
@@ -40,13 +43,18 @@ import {
   TARGET_PROXY_GROUP,
   TARGET_TASK_GROUP,
   groupsNamed,
-  parseValorBackup,
   serializeValorBackup,
   type ValorAddress,
   type ValorBackup,
   type ValorProfile,
   type VaultAddress,
 } from "../src/lib/valor/format";
+import {
+  readValorSetup,
+  valorSetupFile,
+  writeValorSetup,
+  type ValorSetup,
+} from "../src/lib/valor/setup";
 import { FIRST_INSTANCE_CAP } from "../src/lib/valor/split";
 import type {
   DesiredMiscProfile,
@@ -64,8 +72,8 @@ const flag = (name: string) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 const FILES: Record<1 | 2, string> = {
-  1: flag("main") ?? "F:/Documents/Okie ACO/valor-setup-main.json",
-  2: flag("second") ?? "F:/Documents/Okie ACO/valor-setup.json",
+  1: flag("main") ?? "F:/Documents/Okie ACO/valor-setup-main.zip",
+  2: flag("second") ?? "F:/Documents/Okie ACO/valor-setup.zip",
 };
 const OUT_DIR = flag("out-dir");
 
@@ -269,15 +277,34 @@ function outside(b: ValorBackup, misc: boolean): string {
 }
 
 /** The rules every rebuilt file keeps, whatever went in. */
-function checkFile(before: ValorBackup, built: ValorBuild, desired: DesiredValorInstance) {
+async function checkFile(setup: ValorSetup, built: ValorBuild, desired: DesiredValorInstance) {
+  const before = setup.backup;
   const b = built.backup;
-  const text = serializeValorBackup(b);
-  const reread = parseValorBackup(text);
-  check(JSON.stringify(reread) === JSON.stringify(b), "the file reads back as written");
-  check(
-    !text.endsWith("\n") && text.startsWith('{\n  "version"'),
-    "written as Valor writes it: two-space indent, no trailing newline",
-  );
+  const written = await writeValorSetup(setup, b);
+  const reread = await readValorSetup(written);
+  check(JSON.stringify(reread.backup) === JSON.stringify(b), "the file reads back as written");
+  if (setup.kind === "json") {
+    const text = new TextDecoder().decode(written);
+    check(
+      !text.endsWith("\n") && text.startsWith('{\n  "version"'),
+      "written as Valor writes it: two-space indent, no trailing newline",
+    );
+  } else if (reread.kind === "zip") {
+    const was = new Map(setup.entries.map((e) => [e.name, e]));
+    const sections = ["tasks.json", "profiles.json", "accounts.json", "imapAccounts.json"];
+    check(
+      reread.entries.map((e) => e.name).join("\n") === setup.entries.map((e) => e.name).join("\n"),
+      "the zip holds the same files, in the same order",
+    );
+    check(
+      reread.entries.every((e) => {
+        const old = was.get(e.name)!;
+        const same = old.crc32 === e.crc32 && Buffer.from(old.data).equals(e.data);
+        return same || sections.includes(e.name) || e.name.startsWith("AccountSessions/");
+      }),
+      "every file the export doesn't write goes back byte for byte",
+    );
+  }
   check(
     outside(before, Boolean(desired.misc)) === outside(b, Boolean(desired.misc)),
     "nothing outside the export's groups changed",
@@ -425,11 +452,12 @@ function checkFile(before: ValorBackup, built: ValorBuild, desired: DesiredValor
   check(rightTasks, "each picker: one task per qty, its TCINs comma-separated at that qty");
 }
 
-function main() {
-  const files = {
-    1: parseValorBackup(readFileSync(FILES[1], "utf8")),
-    2: parseValorBackup(readFileSync(FILES[2], "utf8")),
+async function main() {
+  const setups = {
+    1: await readValorSetup(new Uint8Array(readFileSync(FILES[1]))),
+    2: await readValorSetup(new Uint8Array(readFileSync(FILES[2]))),
   };
+  const files = { 1: setups[1].backup, 2: setups[2].backup };
   for (const position of [1, 2] as const) {
     const b = files[position];
     console.log(`Instance ${position}: ${FILES[position]}`);
@@ -498,7 +526,7 @@ function main() {
       check(m.imap.added.length + m.imap.updated.length === 0, "no mailbox new or changed");
       check(m.tasks.changed.length === 0, "every Target task runs what it ran");
     }
-    checkFile(source, trip, want);
+    await checkFile(setups[position], trip, want);
 
     // --- 2. a drop ---
     console.log(`\nInstance ${position} -- 2. A drop`);
@@ -623,12 +651,14 @@ function main() {
         "mixed-qty picker gets a task per qty",
       );
     }
-    checkFile(source, drop, edited);
-    if (OUT_DIR)
+    await checkFile(setups[position], drop, edited);
+    if (OUT_DIR) {
+      const { extension } = valorSetupFile(setups[position]);
       writeFileSync(
-        join(OUT_DIR, `verify-valor-instance-${position}.json`),
-        serializeValorBackup(drop.backup),
+        join(OUT_DIR, `verify-valor-instance-${position}.${extension}`),
+        await writeValorSetup(setups[position], drop.backup),
       );
+    }
 
     // --- 3. again ---
     console.log(`\nInstance ${position} -- 3. Again, on the drop's output`);
@@ -644,9 +674,7 @@ function main() {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
-}
+});

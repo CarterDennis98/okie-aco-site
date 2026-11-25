@@ -4,6 +4,9 @@ import { countryName, stateName } from "@/lib/vault/aycd";
  * Valor's backup ("setup") file, as Valor 3.0 writes it -- read off the operator's two real
  * instances on 2026-11-10 -- and how a vault profile is written into it.
  *
+ * Valor 3.0.241 (read 2026-11-24) exports these same sections as a zip instead, one file
+ * each; setup.ts reads and writes that, and the export works on the object below either way.
+ *
  * ONE JSON OBJECT, pretty-printed with two spaces, no trailing newline:
  *
  *   version            "3.0"
@@ -127,7 +130,10 @@ export type ValorAccount = {
   email: string;
   password: string;
   proxy: unknown;
-  /** Signed in: what an export must keep rather than recreate. */
+  /**
+   * Signed in: what an export must keep rather than recreate. `true` in a zip, whose
+   * AccountSessions/<site>.json holds the session itself, keyed by the login's id.
+   */
   session: unknown;
   selected: boolean;
   [key: string]: unknown;
@@ -171,6 +177,17 @@ export type ValorBackup = {
 
 /** The version these shapes were read from. Another one still loads, with a warning. */
 export const VALOR_VERSION = "3.0";
+
+/**
+ * Whether `version` is the Valor these shapes were read from: "3.0" as the one-file backup
+ * says it, or a 3.0 build ("3.0.241") as a zip's manifest does.
+ */
+export function isKnownValorVersion(version: unknown): boolean {
+  return (
+    version === VALOR_VERSION ||
+    (typeof version === "string" && version.startsWith(`${VALOR_VERSION}.`))
+  );
+}
 
 // ---------------------------------------------------------------------------
 // The groups the export works in, by name
@@ -239,8 +256,15 @@ export function parseValorBackup(text: string): ValorBackup {
   try {
     root = JSON.parse(text);
   } catch {
-    throw new ValorFormatError("That file isn't valid JSON, so it isn't a Valor backup.");
+    throw new ValorFormatError(
+      "That file is neither a zip nor valid JSON, so it isn't a Valor setup.",
+    );
   }
+  return checkValorBackup(root);
+}
+
+/** `root`, already parsed -- a zip's sections put together -- checked the same way. */
+export function checkValorBackup(root: unknown): ValorBackup {
   const problems = valorProblems(root);
   if (problems.length > 0) {
     throw new ValorFormatError(

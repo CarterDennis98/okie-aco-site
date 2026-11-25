@@ -5,14 +5,13 @@ import type { ValorOverview } from "@/db/queries/valor";
 import { MISC_LINE } from "@/lib/products/misc-line";
 import { prepareValorExport } from "@/lib/valor/actions";
 import { buildValorInstance } from "@/lib/valor/build";
+import { ACO_BACKUP, ACO_MAIN, TARGET_PROXY_GROUP } from "@/lib/valor/format";
 import {
-  ACO_BACKUP,
-  ACO_MAIN,
-  TARGET_PROXY_GROUP,
-  parseValorBackup,
-  serializeValorBackup,
-  type ValorBackup,
-} from "@/lib/valor/format";
+  readValorSetup,
+  valorSetupFile,
+  writeValorSetup,
+  type ValorSetup,
+} from "@/lib/valor/setup";
 import {
   FIRST_INSTANCE_CAP,
   MISC_POSITION,
@@ -29,9 +28,12 @@ import type { MiscTaskLine, ValorProfileLine, ValorReport } from "@/lib/valor/ty
  * The backups are read and rebuilt HERE, in the browser, and never uploaded: only which
  * instances to build goes to the server, which answers with what the vault says each should
  * hold. Who runs where is a fixed rule (valor/split.ts), so there is nothing to set up.
+ *
+ * A backup is the zip Valor exports, or an older one-file .json, and comes back out as the
+ * same kind of file (valor/setup.ts).
  */
 
-type Slot = { name: string; size: number; backup: ValorBackup; summary: ValorSummary };
+type Slot = { name: string; size: number; setup: ValorSetup; summary: ValorSummary };
 
 type Built = {
   position: ValorPosition;
@@ -40,7 +42,7 @@ type Built = {
   productNames: Record<string, string>;
   report: ValorReport | null;
   /** The rebuilt file, or null when it must not be downloaded. */
-  text: string | null;
+  file: Blob | null;
   error: string | null;
 };
 
@@ -78,11 +80,11 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
     setLoading(position);
     setSlotError((e) => ({ ...e, [position]: undefined }));
     try {
-      const backup = parseValorBackup(await file.text());
-      const summary = summarizeValorBackup(backup, position);
+      const setup = await readValorSetup(new Uint8Array(await file.arrayBuffer()));
+      const summary = summarizeValorBackup(setup.backup, position);
       setSlots((s) => ({
         ...s,
-        [position]: { name: file.name, size: file.size, backup, summary },
+        [position]: { name: file.name, size: file.size, setup, summary },
       }));
     } catch (failure) {
       setSlots((s) => ({ ...s, [position]: undefined }));
@@ -119,37 +121,41 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
     setBusy("Building the backups…");
     await nextFrame();
     const stamp = new Date().toISOString().slice(0, 10);
-    const results = positions.map((position): Built => {
-      const slot = slots[position]!;
-      const desired = payload.instances.find((i) => i.position === position)!;
-      const base = {
-        position,
-        sourceName: slot.name,
-        fileName: `okie-valor-instance-${position}-${stamp}.json`,
-        productNames: Object.fromEntries(desired.products.map((p) => [p.sku, p.name])),
-      };
-      try {
-        const { backup, report } = buildValorInstance(slot.backup, desired, {
-          uuid: () => crypto.randomUUID(),
-        });
-        return { ...base, report, text: serializeValorBackup(backup), error: null };
-      } catch (failure) {
-        return {
-          ...base,
-          report: null,
-          text: null,
-          error: failure instanceof Error ? failure.message : "This backup couldn't be rebuilt.",
+    const results = await Promise.all(
+      positions.map(async (position): Promise<Built> => {
+        const slot = slots[position]!;
+        const desired = payload.instances.find((i) => i.position === position)!;
+        const { extension, type } = valorSetupFile(slot.setup);
+        const base = {
+          position,
+          sourceName: slot.name,
+          fileName: `okie-valor-instance-${position}-${stamp}.${extension}`,
+          productNames: Object.fromEntries(desired.products.map((p) => [p.sku, p.name])),
         };
-      }
-    });
+        try {
+          const { backup, report } = buildValorInstance(slot.setup.backup, desired, {
+            uuid: () => crypto.randomUUID(),
+          });
+          const bytes = await writeValorSetup(slot.setup, backup);
+          return { ...base, report, file: new Blob([bytes], { type }), error: null };
+        } catch (failure) {
+          return {
+            ...base,
+            report: null,
+            file: null,
+            error: failure instanceof Error ? failure.message : "This backup couldn't be rebuilt.",
+          };
+        }
+      }),
+    );
     setBuilt(results);
     setBusy(null);
     setStep("review");
   }
 
   function download(instance: Built) {
-    if (!instance.text) return;
-    const url = URL.createObjectURL(new Blob([instance.text], { type: "application/json" }));
+    if (!instance.file) return;
+    const url = URL.createObjectURL(instance.file);
     const link = document.createElement("a");
     link.href = url;
     link.download = instance.fileName;
@@ -173,7 +179,7 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
   }
 
   if (step !== "setup") {
-    const ready = built.filter((b) => b.text);
+    const ready = built.filter((b) => b.file);
     return (
       <div className="space-y-6">
         {built.map((b) => (
@@ -253,7 +259,7 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
               >
                 <input
                   type="file"
-                  accept=".json,application/json"
+                  accept=".zip,.json,application/zip,application/json"
                   className="sr-only"
                   onChange={(event) => {
                     const file = event.currentTarget.files?.[0];
@@ -266,11 +272,11 @@ export function ValorExport({ overview }: { overview: ValorOverview }) {
                     ? "Reading…"
                     : slots[position]
                       ? "Replace backup"
-                      : "Choose this instance's Valor backup (.json)"}
+                      : "Choose this instance's Valor backup (.zip)"}
                 </span>
                 {slots[position] && (
                   <span>
-                    {slots[position]!.name} · {megabytes(slots[position]!.size)} · Valor format{" "}
+                    {slots[position]!.name} · {megabytes(slots[position]!.size)} · Valor{" "}
                     {slots[position]!.summary.version}
                   </span>
                 )}
@@ -337,7 +343,7 @@ function BackupSummary({ summary }: { summary: ValorSummary }) {
       )}
       {summary.otherVersion && (
         <p className="text-[var(--color-warn)]">
-          Valor format {summary.version} — the export was built against 3.0. Check the rebuilt file
+          Valor {summary.version} — the export was built against Valor 3.0. Check the rebuilt file
           in a spare Valor first.
         </p>
       )}
@@ -489,14 +495,14 @@ function InstanceReview({
           <h3 className="text-lg font-bold text-white">Instance {built.position}</h3>
           <p className="text-xs text-[var(--color-muted)]">
             From {built.sourceName}
-            {r ? ` · Valor format ${r.version}` : ""}
+            {r ? ` · Valor ${r.version}` : ""}
             {r
               ? ` · ${n(r.pkc.main, "main-bot profile")}, ${n(r.pkc.backup, "backup-bot profile")}`
               : ""}
             {r?.misc ? ` · ${n(r.misc.tasks.after, "Target task")}` : ""}
           </p>
         </div>
-        {done && built.text && (
+        {done && built.file && (
           <button type="button" onClick={onDownload} className={secondary}>
             Download again
           </button>

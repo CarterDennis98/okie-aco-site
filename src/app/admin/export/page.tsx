@@ -109,10 +109,10 @@ export default async function ExportPage() {
             Valor
           </h2>
           <p className="mb-5 max-w-3xl text-sm text-[var(--color-muted)]">
-            Add each Valor instance&rsquo;s backup (the setup <code>.json</code>). It&rsquo;s read
-            and rebuilt here in your browser — the file is never uploaded. Pokémon Center profiles
-            come from the vault, and the second instance&rsquo;s Target tasks from the {MISC_LINE}{" "}
-            line on{" "}
+            Add each Valor instance&rsquo;s backup (the setup <code>.zip</code> Valor exports).
+            It&rsquo;s read and rebuilt here in your browser — the file is never uploaded, and it
+            comes back as a zip to import into Valor. Pokémon Center profiles come from the vault,
+            and the second instance&rsquo;s Target tasks from the {MISC_LINE} line on{" "}
             <Link
               href="/dashboard/products"
               className="underline underline-offset-2 hover:text-[var(--color-fg)]"

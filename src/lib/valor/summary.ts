@@ -6,9 +6,9 @@ import {
   TARGET_PROFILE_GROUP,
   TARGET_PROXY_GROUP,
   TARGET_TASK_GROUP,
-  VALOR_VERSION,
   groupKey,
   groupsNamed,
+  isKnownValorVersion,
   type ValorBackup,
 } from "@/lib/valor/format";
 import { MISC_POSITION } from "@/lib/valor/split";
@@ -27,8 +27,9 @@ export type ValorGroupLine = {
 };
 
 export type ValorSummary = {
+  /** Valor's version: "3.0" from a one-file backup, "3.0.241" from a zip's manifest. */
   version: string;
-  /** Another format than the export was built against: it still builds, with a warning. */
+  /** Another version than the export was built against: it still builds, with a warning. */
   otherVersion: boolean;
   profileGroups: ValorGroupLine[];
   taskGroups: ValorGroupLine[];
@@ -85,7 +86,7 @@ export function summarizeValorBackup(backup: ValorBackup, position: number): Val
 
   return {
     version: String(backup.version),
-    otherVersion: backup.version !== VALOR_VERSION,
+    otherVersion: !isKnownValorVersion(backup.version),
     profileGroups: lines(
       backup.profiles.groups,
       (id) => Object.keys(backup.profiles.lists[id] ?? {}).length,
